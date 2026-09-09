@@ -1,6 +1,6 @@
 # ExposureScopeX Web Application
 
-> Documentation validated 2026-09-09. Start at `docs/README.md`; current schema head is `015_scan_schedules`.
+> Documentation validated 2026-09-09. Start at `docs/README.md`; current schema head is `016_audit_retention`.
 
 **AI-Assisted Attack Surface Management & Security Reconnaissance Platform**
 
@@ -10,21 +10,34 @@ A controlled self-hosted platform for security engineers, SOC teams, and penetra
 
 ## Architecture
 
-```
-Browser ── nginx (:8081/:8444) ── Next.js (:3001) / FastAPI (:8001)
-                                                │
-                                         PostgreSQL + Redis
-                                                │
-                              Celery workers / scanner Jobs
+```mermaid
+flowchart TB
+    C[Browser or API client] --> N[NGINX edge :8081 / :8444]
+    N --> UI[Next.js :3001]
+    N --> API[FastAPI :8001]
+    API --> DB[(PostgreSQL)]
+    API --> Q[(Redis queues)]
+    Beat[Celery scheduler] --> Q
+    Q --> Shared[Shared local worker]
+    Q -. worker-pools profile .-> Web[Web/API workers]
+    Q -. worker-pools profile .-> Specialist[Cloud/artifact/mobile/report workers]
+    Shared --> Engine[Scanner engine]
+    Web --> Engine
+    Specialist --> Adapters[Specialized adapters]
+    Engine --> Evidence[Local or S3 evidence]
+    Adapters --> Evidence
+    Shared --> DB
+    Web --> DB
+    Specialist --> DB
 ```
 
 | Service | Technology | Port | Purpose |
 |---------|-----------|------|---------|
 | Frontend | Next.js 15, TypeScript, Tailwind, shadcn/ui | 3001 loopback | Web interface |
-| Backend | FastAPI, SQLAlchemy, Pydantic | 8001 loopback | REST API + WebSocket |
+| Backend | FastAPI, SQLAlchemy, Pydantic | 8001 loopback | REST API and control plane |
 | Database | PostgreSQL 16 | Internal | Persistent storage |
 | Cache/Queue | Redis 7 | Internal | Celery, rate limits and pub/sub |
-| Worker | Celery + pinned scanner image | None | Background execution |
+| Worker | Celery + version-pinned scanner image | None | Background execution |
 
 ---
 
@@ -46,10 +59,12 @@ cp .env.example .env
 ### 2. Start all services
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-For normal day-to-day restarts, use `docker compose up -d` without `--build`. Rebuild only after Dockerfile, dependency, or copied worker/frontend/backend image changes.
+The first start builds the application and scanner images. For normal day-to-day
+restarts, use `docker compose up -d` without `--build`. Rebuild only after a
+Dockerfile, dependency, or copied worker/frontend/backend source changes.
 
 Worker startup refreshes Nuclei templates only when stale, and Celery Beat performs the same locked refresh daily. Community sources use shallow fetch/reset plus Git garbage collection, so restarts and scans do not repeatedly clone repositories. Repository assessments keep a shallow checkout while pruning `.git` metadata by default to reduce artifact growth.
 

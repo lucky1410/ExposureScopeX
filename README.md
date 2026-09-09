@@ -1,16 +1,122 @@
-# ExposureScopeX — Continuous Attack Surface & Exposure Monitoring Framework
+# ExposureScopeX
 
 **Version 2.2.0**
 
-The web platform is documented separately. Start with
-[`webapp/docs/README.md`](webapp/docs/README.md) for product status,
-architecture, deployment, modules, API, operations, security and backlog.
+ExposureScopeX is a Docker-first, self-hosted exposure management and security
+assessment platform. It combines a Next.js operations console, FastAPI control
+plane, PostgreSQL evidence model, Redis/Celery orchestration, and isolated
+scanner workers for authorized ASM, web/API, MCP, cloud, repository, container,
+Kubernetes, and mobile-artifact workflows.
 
-ExposureScopeX is a modular, CLI-based offensive security framework that automates a full penetration test workflow — from zero-packet passive recon through subdomain enumeration, port scanning, web crawling, CVE correlation, vulnerability scanning, and cloud misconfiguration checks — then continuously monitors your attack surface for changes. Works with any target type: domain, URL, IP, CIDR, or a mixed file of all four.
+The supported day-to-day interface is the web platform. The root
+`exposurescopex.sh` command is intentionally retained as the scanner engine used
+inside worker containers and as an advanced standalone operator interface. You
+do not need to invoke it to run the web product.
+
+Current product truth, deployment boundaries, and backlog are maintained in
+[`webapp/docs/README.md`](webapp/docs/README.md) and
+[`webapp/BACKLOG.md`](webapp/BACKLOG.md).
 
 ---
 
-## Features
+## Start the Platform
+
+```bash
+git clone https://github.com/lucky1410/ExposureScopeX.git
+cd ExposureScopeX/webapp
+cp .env.example .env
+docker compose up -d --build
+docker compose ps
+```
+
+Open the Web UI at <http://localhost:3001>, the reverse proxy at
+<http://localhost:8081>, or API documentation at <http://localhost:8001/docs>.
+
+After the first build, normal restarts do not rebuild images:
+
+```bash
+docker compose up -d
+```
+
+Use `docker compose up -d --build` only after source, dependencies, or a
+Dockerfile changes. Do not use `docker compose down -v`; the `-v` option removes
+the persistent PostgreSQL, Redis, and monitoring volumes.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    U[Browser / API client] -->|HTTP/S| N[NGINX edge]
+    N --> F[Next.js frontend]
+    N --> B[FastAPI control plane]
+    B --> P[(PostgreSQL)]
+    B --> R[(Redis)]
+    B -->|enqueue| R
+    R --> W[Celery scanner worker]
+    R --> S[Celery scheduler]
+    W --> E[Scanner engine and adapters]
+    E --> A[(Evidence artifacts)]
+    W --> P
+    S --> P
+    M[Prometheus, optional] --> B
+    G[Grafana, optional] --> M
+
+    subgraph Docker Compose
+      N
+      F
+      B
+      P
+      R
+      W
+      S
+      M
+      G
+    end
+```
+
+```mermaid
+sequenceDiagram
+    actor Analyst
+    participant UI as Web UI
+    participant API as FastAPI
+    participant DB as PostgreSQL
+    participant Q as Redis/Celery
+    participant Worker as Scanner worker
+
+    Analyst->>UI: Define scope, authorization, and profile
+    UI->>API: Preview execution
+    API->>DB: Validate tenant, quota, and authorization
+    API-->>UI: Tools, stages, safety controls, estimate
+    Analyst->>UI: Start assessment
+    UI->>API: Dispatch scan
+    API->>DB: Persist immutable execution context
+    API->>Q: Enqueue compatible worker job
+    Q->>Worker: Execute bounded stages
+    Worker->>DB: Events, provenance, assets, findings
+    UI->>API: Poll progress or cancel
+    API-->>UI: Scan-scoped evidence and reports
+```
+
+### Containerization Boundary
+
+| Component | Deployment |
+|---|---|
+| Frontend, API, scheduler, scanner workers | Built and run as containers |
+| PostgreSQL, Redis, NGINX | Pinned upstream container images |
+| Prometheus and Grafana | Optional Compose `monitoring` profile |
+| Scanner CLI and shell modules | Executed inside the worker container |
+| Nuclei community templates | Reusable Docker volume; refreshed without rebuilding |
+| Cloud provider APIs and SaaS integrations | External services called through configured adapters |
+| Kubernetes job execution | Optional external cluster integration |
+| Dynamic Android/iOS testing | Optional external device/emulator adapter |
+
+The local product stack is containerized end to end. External clouds, target
+systems, Kubernetes clusters, registries, identity providers, and mobile device
+farms require their own approved credentials and infrastructure.
+
+---
+
+## Scanner Engine Capabilities
 
 | Category | Capabilities |
 |---|---|
@@ -40,7 +146,10 @@ ExposureScopeX is a modular, CLI-based offensive security framework that automat
 
 ---
 
-## Installation
+## Standalone CLI Installation (Advanced)
+
+This section is only for running the scanner engine directly on the host. Web
+platform users should use the Docker workflow above.
 
 ### Requirements
 - **OS**: Linux (Kali, ParrotOS, Ubuntu) or macOS (Homebrew)
@@ -94,7 +203,7 @@ RESULTS_DIR="results"
 
 ---
 
-## Usage
+## Standalone CLI Usage
 
 ### Adaptive Auto-Scan (no flags needed)
 
