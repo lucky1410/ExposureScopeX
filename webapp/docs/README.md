@@ -2,7 +2,7 @@
 
 **Verified against source:** 2026-09-09
 **Product release:** 2.2.0
-**Database schema:** `015_scan_schedules`
+**Database schema:** `016_audit_retention`
 
 This index defines the current documentation sources. Runtime OpenAPI, Alembic
 migrations, the worker capability registry, and executable tests take priority

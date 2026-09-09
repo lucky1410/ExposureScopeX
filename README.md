@@ -17,6 +17,13 @@ Current product truth, deployment boundaries, and backlog are maintained in
 [`webapp/docs/README.md`](webapp/docs/README.md) and
 [`webapp/BACKLOG.md`](webapp/BACKLOG.md).
 
+![ExposureScopeX platform architecture](webapp/docs/assets/platform-architecture.svg)
+
+> **Docker setup:** the local platform stack is defined in
+> [`webapp/docker-compose.yml`](webapp/docker-compose.yml). Follow
+> [`DOCKER_SETUP.md`](DOCKER_SETUP.md) for startup, profiles, storage, and
+> rebuild guidance.
+
 ---
 
 ## Start the Platform
@@ -43,6 +50,9 @@ Dockerfile changes. Do not use `docker compose down -v`; the `-v` option removes
 the persistent PostgreSQL, Redis, and monitoring volumes.
 
 ## Architecture
+
+The static overview above supports GitHub clients that do not render Mermaid.
+The diagrams below remain the maintainable source-level views.
 
 ```mermaid
 flowchart LR

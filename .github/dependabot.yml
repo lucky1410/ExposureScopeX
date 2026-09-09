@@ -3,13 +3,27 @@ updates:
   - package-ecosystem: pip
     directory: /webapp/backend
     schedule: { interval: weekly, day: monday }
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 1
     labels: [dependencies, security]
+    groups:
+      backend-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: /webapp/frontend
     schedule: { interval: weekly, day: monday }
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 1
     labels: [dependencies, security]
+    groups:
+      frontend-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: docker
     directories:
       - /
@@ -17,8 +31,24 @@ updates:
       - /webapp/frontend
       - /webapp/worker
     schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 1
     labels: [dependencies, containers]
+    groups:
+      container-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 1
     labels: [dependencies, ci]
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

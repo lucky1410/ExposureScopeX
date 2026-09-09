@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">ExposureScopeX platform architecture</title>
+  <desc id="desc">Browser traffic enters NGINX and reaches the Next.js frontend and FastAPI control plane. PostgreSQL stores platform data, Redis and Celery orchestrate jobs, and workers invoke scanner adapters and persist evidence.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#08131f"/>
+      <stop offset="1" stop-color="#132636"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#79d3c5"/>
+    </marker>
+    <style>
+      .title { fill: #f7fafc; font: 700 28px sans-serif; }
+      .subtitle { fill: #a9bac8; font: 15px sans-serif; }
+      .box { fill: #142b3b; stroke: #31546a; stroke-width: 2; rx: 14; }
+      .edge { fill: #183347; stroke: #f47b45; stroke-width: 2; rx: 14; }
+      .data { fill: #102b2b; stroke: #3ea99a; stroke-width: 2; rx: 14; }
+      .external { fill: #2b2630; stroke: #bb8d66; stroke-width: 2; rx: 14; }
+      .label { fill: #f7fafc; font: 700 17px sans-serif; text-anchor: middle; }
+      .small { fill: #b9c9d4; font: 13px sans-serif; text-anchor: middle; }
+      .line { fill: none; stroke: #79d3c5; stroke-width: 2.5; marker-end: url(#arrow); }
+      .boundary { fill: none; stroke: #536b7a; stroke-width: 2; stroke-dasharray: 8 7; rx: 22; }
+      .boundary-label { fill: #8ea3b1; font: 700 14px sans-serif; letter-spacing: 2px; }
+    </style>
+  </defs>
+  <rect width="1200" height="620" fill="url(#bg)" rx="24"/>
+  <text x="52" y="55" class="title">ExposureScopeX Architecture</text>
+  <text x="52" y="82" class="subtitle">Docker-first control plane, asynchronous scan execution, and evidence storage</text>
+  <rect x="200" y="105" width="948" height="440" class="boundary"/>
+  <text x="225" y="133" class="boundary-label">DOCKER COMPOSE PLATFORM</text>
+  <rect x="35" y="230" width="125" height="82" class="external"/>
+  <text x="98" y="264" class="label">Analyst</text><text x="98" y="288" class="small">Browser / API</text>
+  <rect x="235" y="230" width="130" height="82" class="edge"/>
+  <text x="300" y="264" class="label">NGINX</text><text x="300" y="288" class="small">edge routing</text>
+  <rect x="425" y="150" width="170" height="82" class="box"/>
+  <text x="510" y="184" class="label">Next.js</text><text x="510" y="208" class="small">operations console</text>
+  <rect x="425" y="310" width="170" height="82" class="box"/>
+  <text x="510" y="344" class="label">FastAPI</text><text x="510" y="368" class="small">control plane</text>
+  <rect x="655" y="150" width="170" height="82" class="data"/>
+  <text x="740" y="184" class="label">PostgreSQL</text><text x="740" y="208" class="small">tenant + evidence data</text>
+  <rect x="655" y="310" width="170" height="82" class="data"/>
+  <text x="740" y="344" class="label">Redis</text><text x="740" y="368" class="small">queue + coordination</text>
+  <rect x="885" y="150" width="205" height="82" class="box"/>
+  <text x="988" y="184" class="label">Scheduler</text><text x="988" y="208" class="small">policy + recurring jobs</text>
+  <rect x="885" y="310" width="205" height="82" class="box"/>
+  <text x="988" y="344" class="label">Scanner Workers</text><text x="988" y="368" class="small">isolated capability pools</text>
+  <rect x="885" y="445" width="205" height="68" class="external"/>
+  <text x="988" y="474" class="label">Tool Adapters</text><text x="988" y="496" class="small">targets + external APIs</text>
+  <path d="M160 271 H235" class="line"/>
+  <path d="M365 251 C395 251 395 191 425 191" class="line"/>
+  <path d="M365 291 C395 291 395 351 425 351" class="line"/>
+  <path d="M595 335 C620 320 625 214 655 202" class="line"/>
+  <path d="M595 351 H655" class="line"/>
+  <path d="M825 351 H885" class="line"/>
+  <path d="M825 202 H885" class="line"/>
+  <path d="M988 232 V310" class="line"/>
+  <path d="M988 392 V445" class="line"/>
+  <path d="M885 331 C855 315 855 222 825 207" class="line"/>
+  <text x="52" y="583" class="subtitle">Optional profiles add monitoring and dedicated web, API, cloud, mobile, artifact, report, and core worker pools.</text>
+</svg>
