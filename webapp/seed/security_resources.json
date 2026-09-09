@@ -1,0 +1,876 @@
+[
+  {
+    "category": "recon",
+    "subcategory": "Search Engines",
+    "name": "Shodan",
+    "description": "Search engine for Internet-connected devices. Find open ports, services, vulnerabilities, and exposed assets worldwide.",
+    "url": "https://www.shodan.io",
+    "icon": "search",
+    "tags": ["search-engine", "iot", "ports", "services", "api"],
+    "is_featured": true
+  },
+  {
+    "category": "recon",
+    "subcategory": "Search Engines",
+    "name": "Censys",
+    "description": "Internet-wide scanning platform providing visibility into hosts, certificates, and services across the IPv4 space.",
+    "url": "https://search.censys.io",
+    "icon": "search",
+    "tags": ["search-engine", "certificates", "hosts", "api"],
+    "is_featured": true
+  },
+  {
+    "category": "recon",
+    "subcategory": "Search Engines",
+    "name": "Fofa",
+    "description": "Chinese cyberspace search engine for discovering internet assets, similar to Shodan.",
+    "url": "https://en.fofa.info",
+    "icon": "search",
+    "tags": ["search-engine", "assets", "china"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Search Engines",
+    "name": "ZoomEye",
+    "description": "Cyberspace search engine recording information of devices, websites, services and components.",
+    "url": "https://www.zoomeye.org",
+    "icon": "search",
+    "tags": ["search-engine", "devices", "services"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Search Engines",
+    "name": "GreyNoise",
+    "description": "Analyzes internet-wide scan and attack traffic to help distinguish threats from noise.",
+    "url": "https://www.greynoise.io",
+    "icon": "search",
+    "tags": ["threat-intel", "noise", "scanning", "api"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "DNS Intelligence",
+    "name": "crt.sh",
+    "description": "Certificate Transparency log search engine. Find subdomains via SSL/TLS certificates.",
+    "url": "https://crt.sh",
+    "icon": "shield",
+    "tags": ["certificates", "subdomains", "ct-logs", "free"],
+    "is_featured": true
+  },
+  {
+    "category": "recon",
+    "subcategory": "DNS Intelligence",
+    "name": "DNSDumpster",
+    "description": "Free domain research tool for finding host-related information including DNS records and subdomains.",
+    "url": "https://dnsdumpster.com",
+    "icon": "globe",
+    "tags": ["dns", "subdomains", "mapping", "free"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "DNS Intelligence",
+    "name": "ViewDNS.info",
+    "description": "Collection of DNS tools including reverse IP lookup, DNS propagation, and historical DNS data.",
+    "url": "https://viewdns.info",
+    "icon": "globe",
+    "tags": ["dns", "reverse-ip", "historical", "free"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "DNS Intelligence",
+    "name": "SecurityTrails",
+    "description": "Complete DNS and domain intelligence platform with historical data and subdomain discovery.",
+    "url": "https://securitytrails.com",
+    "icon": "globe",
+    "tags": ["dns", "historical", "subdomains", "api"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "DNS Intelligence",
+    "name": "DNSRecon",
+    "description": "DNS enumeration tool supporting zone transfers, brute force, and Google dork queries.",
+    "url": "https://github.com/darkoperator/dnsrecon",
+    "icon": "terminal",
+    "tags": ["dns", "enumeration", "zone-transfer", "tool"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Domain Intelligence",
+    "name": "WHOIS Lookup",
+    "description": "Query registration data for domain names, IP addresses, and autonomous systems.",
+    "url": "https://whois.domaintools.com",
+    "icon": "info",
+    "tags": ["whois", "registration", "ownership"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Domain Intelligence",
+    "name": "DomainTools",
+    "description": "Enterprise-grade domain and DNS intelligence for threat investigation and brand protection.",
+    "url": "https://www.domaintools.com",
+    "icon": "globe",
+    "tags": ["domain", "whois", "intelligence", "enterprise"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Domain Intelligence",
+    "name": "Sublist3r",
+    "description": "Fast subdomains enumeration tool using multiple search engines and services.",
+    "url": "https://github.com/aboul3la/Sublist3r",
+    "icon": "terminal",
+    "tags": ["subdomains", "enumeration", "tool"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Email Intelligence",
+    "name": "Hunter.io",
+    "description": "Find and verify professional email addresses for any domain.",
+    "url": "https://hunter.io",
+    "icon": "mail",
+    "tags": ["email", "osint", "verification", "api"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Email Intelligence",
+    "name": "Have I Been Pwned",
+    "description": "Check if email addresses or passwords have been compromised in data breaches.",
+    "url": "https://haveibeenpwned.com",
+    "icon": "alert-triangle",
+    "tags": ["breach", "email", "passwords", "api"],
+    "is_featured": true
+  },
+  {
+    "category": "recon",
+    "subcategory": "Email Intelligence",
+    "name": "Phonebook.cz",
+    "description": "Lists domains, email addresses, and URLs indexed from IntelligenceX data.",
+    "url": "https://phonebook.cz",
+    "icon": "mail",
+    "tags": ["email", "domains", "urls", "free"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Web Intelligence",
+    "name": "Wappalyzer",
+    "description": "Identify technologies used on websites including CMS, frameworks, analytics, and CDN.",
+    "url": "https://www.wappalyzer.com",
+    "icon": "cpu",
+    "tags": ["technology", "fingerprinting", "web", "browser-extension"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Web Intelligence",
+    "name": "BuiltWith",
+    "description": "Website profiler showing technology stacks, analytics, hosting, and CMS information.",
+    "url": "https://builtwith.com",
+    "icon": "cpu",
+    "tags": ["technology", "profiling", "analytics"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Web Intelligence",
+    "name": "Wayback Machine",
+    "description": "Internet Archive's web page cache. Find historical versions of websites and discover hidden content.",
+    "url": "https://web.archive.org",
+    "icon": "clock",
+    "tags": ["archive", "historical", "web", "free"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Code Intelligence",
+    "name": "GitHub Code Search",
+    "description": "Search public GitHub repositories for leaked credentials, API keys, and sensitive information.",
+    "url": "https://github.com/search",
+    "icon": "code",
+    "tags": ["code", "secrets", "github", "free"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Code Intelligence",
+    "name": "GitLeaks",
+    "description": "SAST tool for detecting hardcoded secrets like passwords, API keys, and tokens in git repos.",
+    "url": "https://github.com/gitleaks/gitleaks",
+    "icon": "terminal",
+    "tags": ["secrets", "git", "scanning", "tool"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Code Intelligence",
+    "name": "TruffleHog",
+    "description": "Find and verify leaked credentials in git repositories, S3 buckets, and other sources.",
+    "url": "https://github.com/trufflesecurity/trufflehog",
+    "icon": "terminal",
+    "tags": ["secrets", "credentials", "git", "tool"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Threat Intelligence",
+    "name": "VirusTotal",
+    "description": "Analyze suspicious files, domains, IPs and URLs to detect malware and other threats.",
+    "url": "https://www.virustotal.com",
+    "icon": "shield",
+    "tags": ["malware", "files", "urls", "api"],
+    "is_featured": true
+  },
+  {
+    "category": "recon",
+    "subcategory": "Threat Intelligence",
+    "name": "AbuseIPDB",
+    "description": "IP address abuse reporting and checking database for identifying malicious activity.",
+    "url": "https://www.abuseipdb.com",
+    "icon": "alert-triangle",
+    "tags": ["ip", "abuse", "reputation", "api"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Threat Intelligence",
+    "name": "AlienVault OTX",
+    "description": "Open Threat Exchange - collaborative threat intelligence sharing platform.",
+    "url": "https://otx.alienvault.com",
+    "icon": "eye",
+    "tags": ["threat-intel", "ioc", "sharing", "free"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Frameworks",
+    "name": "OSINT Framework",
+    "description": "Collection of OSINT tools organized by category for intelligence gathering.",
+    "url": "https://osintframework.com",
+    "icon": "layout",
+    "tags": ["framework", "collection", "osint", "free"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Frameworks",
+    "name": "theHarvester",
+    "description": "E-mails, subdomains, hosts, employee names, open ports and banners from public sources.",
+    "url": "https://github.com/laramies/theHarvester",
+    "icon": "terminal",
+    "tags": ["osint", "emails", "subdomains", "tool"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Frameworks",
+    "name": "Awesome Shodan Queries",
+    "description": "Curated list of useful Shodan queries for finding exposed services and devices.",
+    "url": "https://github.com/jakejarvis/awesome-shodan-queries",
+    "icon": "list",
+    "tags": ["shodan", "queries", "reference", "free"]
+  },
+  {
+    "category": "recon",
+    "subcategory": "Frameworks",
+    "name": "Google Hacking Database",
+    "description": "Database of Google dorks for finding sensitive information exposed via search engines.",
+    "url": "https://www.exploit-db.com/google-hacking-database",
+    "icon": "search",
+    "tags": ["google", "dorks", "reference", "free"]
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Knowledge Bases",
+    "name": "HackTricks",
+    "description": "Comprehensive pentesting and security knowledge base covering web, AD, cloud, mobile and more.",
+    "url": "https://book.hacktricks.xyz",
+    "icon": "book-open",
+    "tags": ["pentesting", "methodology", "reference", "free"],
+    "is_featured": true
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Knowledge Bases",
+    "name": "OWASP Testing Guide",
+    "description": "Comprehensive guide for testing web application security, covering all OWASP categories.",
+    "url": "https://owasp.org/www-project-web-security-testing-guide/",
+    "icon": "book-open",
+    "tags": ["owasp", "methodology", "web", "free"]
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Knowledge Bases",
+    "name": "PortSwigger Web Security Academy",
+    "description": "Free online web security training with labs covering SQLi, XSS, SSRF, and more.",
+    "url": "https://portswigger.net/web-security",
+    "icon": "graduation-cap",
+    "tags": ["training", "labs", "web", "free"]
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Payload References",
+    "name": "PayloadsAllTheThings",
+    "description": "Comprehensive list of payloads and bypasses for web application security testing.",
+    "url": "https://github.com/swisskyrepo/PayloadsAllTheThings",
+    "icon": "code",
+    "tags": ["payloads", "bypass", "reference", "free"],
+    "is_featured": true
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Payload References",
+    "name": "SecLists",
+    "description": "Collection of multiple types of lists: usernames, passwords, URLs, fuzzing payloads, web shells.",
+    "url": "https://github.com/danielmiessler/SecLists",
+    "icon": "list",
+    "tags": ["wordlists", "fuzzing", "passwords", "free"],
+    "is_featured": true
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Payload References",
+    "name": "fuzzdb",
+    "description": "Dictionary of attack patterns and primitives for black-box application testing.",
+    "url": "https://github.com/fuzzdb-project/fuzzdb",
+    "icon": "list",
+    "tags": ["fuzzing", "payloads", "patterns", "free"]
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Authentication",
+    "name": "JWT.io",
+    "description": "JSON Web Token debugger and library reference for JWT-based authentication testing.",
+    "url": "https://jwt.io",
+    "icon": "key",
+    "tags": ["jwt", "authentication", "debugging", "free"]
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Authentication",
+    "name": "jwt_tool",
+    "description": "Toolkit for testing, tweaking, and cracking JSON Web Tokens.",
+    "url": "https://github.com/ticarpi/jwt_tool",
+    "icon": "terminal",
+    "tags": ["jwt", "testing", "cracking", "tool"]
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Scanners",
+    "name": "Nuclei",
+    "description": "Fast and customizable vulnerability scanner based on YAML templates.",
+    "url": "https://github.com/projectdiscovery/nuclei",
+    "icon": "zap",
+    "tags": ["scanner", "templates", "automation", "tool"],
+    "is_featured": true
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Scanners",
+    "name": "Nikto",
+    "description": "Web server scanner that tests for dangerous files, outdated versions, and configuration issues.",
+    "url": "https://github.com/sullo/nikto",
+    "icon": "terminal",
+    "tags": ["scanner", "web-server", "cgi", "tool"]
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Scanners",
+    "name": "SQLMap",
+    "description": "Automatic SQL injection and database takeover tool.",
+    "url": "https://sqlmap.org",
+    "icon": "database",
+    "tags": ["sqli", "database", "automation", "tool"]
+  },
+  {
+    "category": "web_security",
+    "subcategory": "Scanners",
+    "name": "Dalfox",
+    "description": "Fast parameter analysis and XSS scanning tool.",
+    "url": "https://github.com/hahwul/dalfox",
+    "icon": "zap",
+    "tags": ["xss", "scanning", "parameters", "tool"]
+  },
+  {
+    "category": "exploitation",
+    "subcategory": "Vulnerability Databases",
+    "name": "Exploit-DB",
+    "description": "Archive of public exploits and corresponding vulnerable software for security research.",
+    "url": "https://www.exploit-db.com",
+    "icon": "database",
+    "tags": ["exploits", "database", "research", "free"],
+    "is_featured": true
+  },
+  {
+    "category": "exploitation",
+    "subcategory": "Vulnerability Databases",
+    "name": "Rapid7 Vulnerability Database",
+    "description": "Curated vulnerability intelligence with exploit availability and remediation guidance.",
+    "url": "https://www.rapid7.com/db/",
+    "icon": "database",
+    "tags": ["vulnerabilities", "exploits", "remediation"]
+  },
+  {
+    "category": "exploitation",
+    "subcategory": "Vulnerability Databases",
+    "name": "NIST NVD",
+    "description": "U.S. government repository of standards-based vulnerability data using CVSS scoring.",
+    "url": "https://nvd.nist.gov",
+    "icon": "shield",
+    "tags": ["cve", "cvss", "standards", "government"]
+  },
+  {
+    "category": "exploitation",
+    "subcategory": "Vulnerability Databases",
+    "name": "CISA KEV Catalog",
+    "description": "CISA Known Exploited Vulnerabilities catalog — vulnerabilities actively being exploited in the wild.",
+    "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+    "icon": "alert-triangle",
+    "tags": ["kev", "exploited", "cisa", "government"]
+  },
+  {
+    "category": "exploitation",
+    "subcategory": "Frameworks",
+    "name": "Metasploit Framework",
+    "description": "World's most used penetration testing framework for exploit development and execution.",
+    "url": "https://www.metasploit.com",
+    "icon": "terminal",
+    "tags": ["framework", "exploits", "post-exploitation", "tool"]
+  },
+  {
+    "category": "exploitation",
+    "subcategory": "Shells & Payloads",
+    "name": "PentestMonkey Reverse Shells",
+    "description": "Cheat sheet for various reverse shell one-liners in multiple languages.",
+    "url": "https://pentestmonkey.net/cheat-sheet/shells/reverse-shell-cheat-sheet",
+    "icon": "terminal",
+    "tags": ["reverse-shell", "cheatsheet", "reference", "free"]
+  },
+  {
+    "category": "exploitation",
+    "subcategory": "Shells & Payloads",
+    "name": "RevShells",
+    "description": "Reverse shell generator supporting multiple languages and encoding options.",
+    "url": "https://www.revshells.com",
+    "icon": "terminal",
+    "tags": ["reverse-shell", "generator", "encoding", "free"]
+  },
+  {
+    "category": "exploitation",
+    "subcategory": "Evasion",
+    "name": "AMSI.fail",
+    "description": "Generates AMSI bypass snippets for PowerShell to evade antimalware scanning.",
+    "url": "https://amsi.fail",
+    "icon": "shield-off",
+    "tags": ["amsi", "bypass", "powershell", "evasion"]
+  },
+  {
+    "category": "privesc",
+    "subcategory": "Windows",
+    "name": "WinPEAS",
+    "description": "Windows Privilege Escalation Awesome Scripts — automated enumeration for Windows privesc vectors.",
+    "url": "https://github.com/peass-ng/PEASS-ng/tree/master/winPEAS",
+    "icon": "arrow-up-circle",
+    "tags": ["windows", "privesc", "enumeration", "tool"],
+    "is_featured": true
+  },
+  {
+    "category": "privesc",
+    "subcategory": "Windows",
+    "name": "PrivescCheck",
+    "description": "PowerShell script to enumerate common Windows security misconfigurations for privilege escalation.",
+    "url": "https://github.com/itm4n/PrivescCheck",
+    "icon": "check-circle",
+    "tags": ["windows", "powershell", "misconfigurations", "tool"]
+  },
+  {
+    "category": "privesc",
+    "subcategory": "Windows",
+    "name": "Priv2Admin",
+    "description": "Windows privilege to admin mapping — how to leverage Windows privileges for escalation.",
+    "url": "https://github.com/gtworek/Priv2Admin",
+    "icon": "arrow-up-circle",
+    "tags": ["windows", "privileges", "mapping", "reference"]
+  },
+  {
+    "category": "privesc",
+    "subcategory": "Windows",
+    "name": "wesng",
+    "description": "Windows Exploit Suggester — Next Generation. Find missing patches and suggest exploits.",
+    "url": "https://github.com/bitsadmin/wesng",
+    "icon": "search",
+    "tags": ["windows", "patches", "exploits", "tool"]
+  },
+  {
+    "category": "privesc",
+    "subcategory": "Windows",
+    "name": "PowerUp",
+    "description": "PowerShell tool for auditing common Windows privilege escalation vectors.",
+    "url": "https://github.com/PowerShellMafia/PowerSploit/tree/master/Privesc",
+    "icon": "terminal",
+    "tags": ["windows", "powershell", "audit", "tool"]
+  },
+  {
+    "category": "privesc",
+    "subcategory": "Windows",
+    "name": "SharpUp",
+    "description": "C# port of PowerUp for auditing common Windows privilege escalation vectors.",
+    "url": "https://github.com/GhostPack/SharpUp",
+    "icon": "terminal",
+    "tags": ["windows", "csharp", "audit", "tool"]
+  },
+  {
+    "category": "privesc",
+    "subcategory": "Linux",
+    "name": "LinPEAS",
+    "description": "Linux Privilege Escalation Awesome Scripts — automated enumeration for Linux privesc vectors.",
+    "url": "https://github.com/peass-ng/PEASS-ng/tree/master/linPEAS",
+    "icon": "arrow-up-circle",
+    "tags": ["linux", "privesc", "enumeration", "tool"],
+    "is_featured": true
+  },
+  {
+    "category": "privesc",
+    "subcategory": "Linux",
+    "name": "LinEnum",
+    "description": "Scripted local Linux enumeration and privilege escalation checks.",
+    "url": "https://github.com/rebootuser/LinEnum",
+    "icon": "terminal",
+    "tags": ["linux", "enumeration", "privesc", "tool"]
+  },
+  {
+    "category": "privesc",
+    "subcategory": "Linux",
+    "name": "linux-exploit-suggester",
+    "description": "Suggests exploits for known Linux kernel vulnerabilities based on kernel version.",
+    "url": "https://github.com/The-Z-Labs/linux-exploit-suggester",
+    "icon": "search",
+    "tags": ["linux", "kernel", "exploits", "tool"]
+  },
+  {
+    "category": "privesc",
+    "subcategory": "Linux",
+    "name": "pspy",
+    "description": "Monitor Linux processes without root permissions — find cron jobs and hidden processes.",
+    "url": "https://github.com/DominicBreuker/pspy",
+    "icon": "eye",
+    "tags": ["linux", "processes", "monitoring", "tool"]
+  },
+  {
+    "category": "privesc",
+    "subcategory": "References",
+    "name": "GTFOBins",
+    "description": "Curated list of Unix binaries that can be used to bypass local security restrictions.",
+    "url": "https://gtfobins.github.io",
+    "icon": "terminal",
+    "tags": ["linux", "binaries", "bypass", "reference"],
+    "is_featured": true
+  },
+  {
+    "category": "privesc",
+    "subcategory": "References",
+    "name": "LOLBAS",
+    "description": "Living Off The Land Binaries, Scripts, and Libraries — Windows native tools for attacks.",
+    "url": "https://lolbas-project.github.io",
+    "icon": "terminal",
+    "tags": ["windows", "binaries", "living-off-the-land", "reference"],
+    "is_featured": true
+  },
+  {
+    "category": "malware",
+    "subcategory": "Online Sandboxes",
+    "name": "ANY.RUN",
+    "description": "Interactive online malware analysis sandbox for dynamic and static analysis.",
+    "url": "https://any.run",
+    "icon": "play",
+    "tags": ["sandbox", "malware", "dynamic-analysis", "free-tier"]
+  },
+  {
+    "category": "malware",
+    "subcategory": "Online Sandboxes",
+    "name": "Hybrid Analysis",
+    "description": "Free malware analysis service powered by CrowdStrike Falcon Sandbox.",
+    "url": "https://www.hybrid-analysis.com",
+    "icon": "microscope",
+    "tags": ["sandbox", "malware", "crowdstrike", "free"]
+  },
+  {
+    "category": "malware",
+    "subcategory": "Online Sandboxes",
+    "name": "Joe Sandbox",
+    "description": "Advanced malware analysis with deep behavioral analysis and reporting.",
+    "url": "https://www.joesandbox.com",
+    "icon": "microscope",
+    "tags": ["sandbox", "behavioral", "analysis", "enterprise"]
+  },
+  {
+    "category": "malware",
+    "subcategory": "File Analysis",
+    "name": "CrackStation",
+    "description": "Free hash cracking service supporting MD5, SHA1, SHA256 and other hash types.",
+    "url": "https://crackstation.net",
+    "icon": "unlock",
+    "tags": ["hash", "cracking", "passwords", "free"]
+  },
+  {
+    "category": "malware",
+    "subcategory": "File Analysis",
+    "name": "Compiler Explorer",
+    "description": "Interactive compiler for inspecting assembly output of compiled code.",
+    "url": "https://godbolt.org",
+    "icon": "code",
+    "tags": ["compiler", "assembly", "reverse-engineering", "free"]
+  },
+  {
+    "category": "malware",
+    "subcategory": "Threat Intelligence",
+    "name": "Cisco Talos Intelligence",
+    "description": "Cisco's threat intelligence organization providing IP, domain, and file reputation data.",
+    "url": "https://talosintelligence.com",
+    "icon": "shield",
+    "tags": ["reputation", "ip", "domain", "cisco"]
+  },
+  {
+    "category": "malware",
+    "subcategory": "Threat Intelligence",
+    "name": "MalwareBazaar",
+    "description": "Sharing platform for malware samples to help security researchers and threat analysts.",
+    "url": "https://bazaar.abuse.ch",
+    "icon": "bug",
+    "tags": ["malware", "samples", "sharing", "free"]
+  },
+  {
+    "category": "malware",
+    "subcategory": "Threat Intelligence",
+    "name": "URLhaus",
+    "description": "Database of malware distribution URLs shared by the security community.",
+    "url": "https://urlhaus.abuse.ch",
+    "icon": "link",
+    "tags": ["urls", "malware", "distribution", "free"]
+  },
+  {
+    "category": "active_directory",
+    "subcategory": "Tools",
+    "name": "BloodHound",
+    "description": "Active Directory attack path mapping and relationship visualization tool.",
+    "url": "https://github.com/BloodHoundAD/BloodHound",
+    "icon": "git-branch",
+    "tags": ["ad", "attack-path", "visualization", "tool"],
+    "is_featured": true
+  },
+  {
+    "category": "active_directory",
+    "subcategory": "Tools",
+    "name": "Impacket",
+    "description": "Collection of Python classes for working with network protocols, commonly used for AD attacks.",
+    "url": "https://github.com/fortra/impacket",
+    "icon": "terminal",
+    "tags": ["ad", "protocols", "python", "tool"]
+  },
+  {
+    "category": "active_directory",
+    "subcategory": "Tools",
+    "name": "CrackMapExec",
+    "description": "Swiss army knife for pentesting Active Directory environments.",
+    "url": "https://github.com/byt3bl33d3r/CrackMapExec",
+    "icon": "terminal",
+    "tags": ["ad", "lateral-movement", "enumeration", "tool"]
+  },
+  {
+    "category": "active_directory",
+    "subcategory": "Knowledge",
+    "name": "HackTricks Active Directory",
+    "description": "Comprehensive Active Directory pentesting methodology and techniques.",
+    "url": "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology",
+    "icon": "book-open",
+    "tags": ["ad", "methodology", "reference", "free"]
+  },
+  {
+    "category": "cloud",
+    "subcategory": "AWS",
+    "name": "ScoutSuite",
+    "description": "Multi-cloud security auditing tool supporting AWS, Azure, GCP, Alibaba, and Oracle.",
+    "url": "https://github.com/nccgroup/ScoutSuite",
+    "icon": "cloud",
+    "tags": ["cloud", "audit", "multi-cloud", "tool"]
+  },
+  {
+    "category": "cloud",
+    "subcategory": "AWS",
+    "name": "Prowler",
+    "description": "AWS and Azure security best practices assessment, auditing, and hardening tool.",
+    "url": "https://github.com/prowler-cloud/prowler",
+    "icon": "cloud",
+    "tags": ["aws", "azure", "compliance", "tool"],
+    "is_featured": true
+  },
+  {
+    "category": "cloud",
+    "subcategory": "Knowledge",
+    "name": "HackTricks Cloud",
+    "description": "Cloud security pentesting methodology covering AWS, Azure, GCP, and Kubernetes.",
+    "url": "https://cloud.hacktricks.xyz",
+    "icon": "book-open",
+    "tags": ["cloud", "methodology", "reference", "free"]
+  },
+  {
+    "category": "cloud",
+    "subcategory": "Kubernetes",
+    "name": "kube-hunter",
+    "description": "Hunt for security weaknesses in Kubernetes clusters.",
+    "url": "https://github.com/aquasecurity/kube-hunter",
+    "icon": "box",
+    "tags": ["kubernetes", "scanning", "security", "tool"]
+  },
+  {
+    "category": "blue_team",
+    "subcategory": "Detection",
+    "name": "Sigma Rules",
+    "description": "Generic signature format for SIEM systems to describe log events in a structured format.",
+    "url": "https://github.com/SigmaHQ/sigma",
+    "icon": "shield",
+    "tags": ["detection", "siem", "rules", "free"]
+  },
+  {
+    "category": "blue_team",
+    "subcategory": "Detection",
+    "name": "YARA Rules",
+    "description": "Pattern matching tool for malware researchers to identify and classify malware samples.",
+    "url": "https://github.com/Yara-Rules/rules",
+    "icon": "shield",
+    "tags": ["detection", "malware", "patterns", "free"]
+  },
+  {
+    "category": "blue_team",
+    "subcategory": "Frameworks",
+    "name": "MITRE ATT&CK",
+    "description": "Knowledge base of adversary tactics and techniques based on real-world observations.",
+    "url": "https://attack.mitre.org",
+    "icon": "target",
+    "tags": ["framework", "tactics", "techniques", "free"],
+    "is_featured": true
+  },
+  {
+    "category": "blue_team",
+    "subcategory": "Frameworks",
+    "name": "MITRE D3FEND",
+    "description": "Knowledge graph of cybersecurity countermeasures mapped to ATT&CK techniques.",
+    "url": "https://d3fend.mitre.org",
+    "icon": "shield",
+    "tags": ["defense", "countermeasures", "mapping", "free"]
+  },
+  {
+    "category": "blue_team",
+    "subcategory": "Incident Response",
+    "name": "TheHive",
+    "description": "Scalable security incident response platform for SOC, CSIRT, and CERT teams.",
+    "url": "https://thehive-project.org",
+    "icon": "alert-circle",
+    "tags": ["incident-response", "soc", "platform", "open-source"]
+  },
+  {
+    "category": "learning",
+    "subcategory": "Practice Labs",
+    "name": "TryHackMe",
+    "description": "Online platform for learning cyber security through hands-on exercises and labs.",
+    "url": "https://tryhackme.com",
+    "icon": "graduation-cap",
+    "tags": ["training", "labs", "ctf", "beginner-friendly"],
+    "is_featured": true
+  },
+  {
+    "category": "learning",
+    "subcategory": "Practice Labs",
+    "name": "Hack The Box",
+    "description": "Online platform to test and advance your skills in penetration testing and cybersecurity.",
+    "url": "https://www.hackthebox.com",
+    "icon": "box",
+    "tags": ["training", "labs", "ctf", "advanced"],
+    "is_featured": true
+  },
+  {
+    "category": "learning",
+    "subcategory": "Practice Labs",
+    "name": "PentesterLab",
+    "description": "Hands-on exercises and bootcamps for learning web penetration testing.",
+    "url": "https://pentesterlab.com",
+    "icon": "graduation-cap",
+    "tags": ["training", "web", "exercises"]
+  },
+  {
+    "category": "learning",
+    "subcategory": "Practice Labs",
+    "name": "OverTheWire",
+    "description": "War games to learn and practice security concepts through progressive challenges.",
+    "url": "https://overthewire.org",
+    "icon": "terminal",
+    "tags": ["wargames", "linux", "challenges", "free"]
+  },
+  {
+    "category": "learning",
+    "subcategory": "News & Research",
+    "name": "BleepingComputer",
+    "description": "Technology news site covering cybersecurity, technology, and emerging threats.",
+    "url": "https://www.bleepingcomputer.com",
+    "icon": "newspaper",
+    "tags": ["news", "cybersecurity", "threats"]
+  },
+  {
+    "category": "learning",
+    "subcategory": "News & Research",
+    "name": "The Hacker News",
+    "description": "Leading cybersecurity news platform covering latest threats, vulnerabilities, and data breaches.",
+    "url": "https://thehackernews.com",
+    "icon": "newspaper",
+    "tags": ["news", "vulnerabilities", "breaches"]
+  },
+  {
+    "category": "learning",
+    "subcategory": "News & Research",
+    "name": "Krebs on Security",
+    "description": "In-depth security news and investigation by journalist Brian Krebs.",
+    "url": "https://krebsonsecurity.com",
+    "icon": "newspaper",
+    "tags": ["news", "investigation", "journalism"]
+  },
+  {
+    "category": "learning",
+    "subcategory": "News & Research",
+    "name": "Dark Reading",
+    "description": "Comprehensive cybersecurity news, analysis, and expert insights.",
+    "url": "https://www.darkreading.com",
+    "icon": "newspaper",
+    "tags": ["news", "analysis", "enterprise"]
+  },
+  {
+    "category": "learning",
+    "subcategory": "Standards",
+    "name": "NIST Cybersecurity Framework",
+    "description": "Framework for improving critical infrastructure cybersecurity.",
+    "url": "https://www.nist.gov/cyberframework",
+    "icon": "shield",
+    "tags": ["standards", "framework", "compliance", "government"]
+  },
+  {
+    "category": "learning",
+    "subcategory": "Standards",
+    "name": "OWASP Top 10",
+    "description": "Standard awareness document representing the most critical web application security risks.",
+    "url": "https://owasp.org/www-project-top-ten/",
+    "icon": "alert-triangle",
+    "tags": ["web", "risks", "standards", "free"]
+  },
+  {
+    "category": "learning",
+    "subcategory": "Standards",
+    "name": "CIS Benchmarks",
+    "description": "Configuration guidelines for secure deployment of operating systems, middleware, and applications.",
+    "url": "https://www.cisecurity.org/cis-benchmarks",
+    "icon": "check-circle",
+    "tags": ["hardening", "benchmarks", "configuration"]
+  },
+  {
+    "category": "learning",
+    "subcategory": "Podcasts",
+    "name": "Darknet Diaries",
+    "description": "True stories from the dark side of the Internet covering hackers, breaches, and cybercrime.",
+    "url": "https://darknetdiaries.com",
+    "icon": "headphones",
+    "tags": ["podcast", "stories", "cybercrime"]
+  },
+  {
+    "category": "learning",
+    "subcategory": "Podcasts",
+    "name": "Security Now",
+    "description": "Weekly security podcast by Steve Gibson covering security news and deep dives.",
+    "url": "https://twit.tv/shows/security-now",
+    "icon": "headphones",
+    "tags": ["podcast", "news", "deep-dive"]
+  }
+]

@@ -1,0 +1,44 @@
+#!/bin/bash
+# ExposureScopeX Global Configuration Template
+# Copy this file to exposurescopex.conf and fill in your values
+# DO NOT commit exposurescopex.conf to version control
+
+# Directories (auto-detected, usually no need to change)
+INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RESULTS_DIR="${EXPOSURESCOPEX_RESULTS_DIR:-${INSTALL_DIR}/results}"
+MODULES_DIR="${INSTALL_DIR}/modules"
+CONFIG_DIR="${INSTALL_DIR}/config"
+LOG_FILE="${EXPOSURESCOPEX_LOG_FILE:-${RESULTS_DIR}/exposurescopex.log}"
+
+# Tools Configuration
+CMD_NMAP="nmap"
+CMD_NUCLEI="nuclei"
+CMD_SUBFINDER="subfinder"
+CMD_ASSETFINDER="assetfinder"
+# ... etc ...
+
+# API Keys - Use environment variables for sensitive data
+# Example: export SHODAN_API_KEY="your_key_here" before running
+SHODAN_API_KEY="${SHODAN_API_KEY:-}"
+CENSYS_API_ID="${CENSYS_API_ID:-}"
+CENSYS_API_SECRET="${CENSYS_API_SECRET:-}"
+VIRUSTOTAL_API_KEY="${VIRUSTOTAL_API_KEY:-}"
+HIBP_API_KEY="${HIBP_API_KEY:-}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
+TEAMS_WEBHOOK_URL="${TEAMS_WEBHOOK_URL:-}"
+SPLUNK_HEC_URL="${SPLUNK_HEC_URL:-}"
+SPLUNK_HEC_TOKEN="${SPLUNK_HEC_TOKEN:-}"
+SYSLOG_HOST="${SYSLOG_HOST:-}"
+SYSLOG_PORT="${SYSLOG_PORT:-514}"
+
+# Autonomous Agent (Claude API)
+# Required for --agent mode. Get your key at: https://console.anthropic.com
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+AGENT_MODEL="${AGENT_MODEL:-claude-opus-4-6}"
+AGENT_MAX_ITERATIONS="${AGENT_MAX_ITERATIONS:-25}"
+
+# Default Settings
+SCAN_SPEED="medium"
+THREADS=50
+USER_AGENT="ExposureScopeX-Framework/1.0"

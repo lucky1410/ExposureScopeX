@@ -1,0 +1,12 @@
+.git
+.env
+**/.env
+**/.DS_Store
+**/__pycache__
+**/*.pyc
+results
+backups
+webapp/frontend/node_modules
+webapp/frontend/.next
+webapp/backend/tests
+webapp/nginx/certs

@@ -1,0 +1,26 @@
+config/exposurescopex.conf
+!config/exposurescopex.conf.template
+
+# Results
+results/
+*.log
+
+# Environment files
+.env
+.env.local
+webapp/.env
+webapp/.env.local
+
+# OS files
+.DS_Store
+.vscode/
+*.swp
+
+# Python cache (if Python added later)
+__pycache__/
+*.pyc
+
+# Frontend build artifacts
+webapp/frontend/node_modules/
+webapp/frontend/.next/
+webapp/backups/

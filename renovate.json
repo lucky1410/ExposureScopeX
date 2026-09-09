@@ -1,0 +1,35 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":dependencyDashboard"],
+  "labels": ["dependencies", "security"],
+  "minimumReleaseAge": "3 days",
+  "schedule": ["before 5am on monday"],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"]
+  },
+  "packageRules": [
+    {
+      "description": "Never merge security tooling without the full compatibility gate",
+      "matchFileNames": ["webapp/worker/Dockerfile"],
+      "automerge": false,
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Group non-major GitHub Actions maintenance",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["digest", "patch", "minor"],
+      "groupName": "GitHub Actions maintenance"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^webapp\\/worker\\/Dockerfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\nARG [A-Z0-9_]+_VERSION=(?<currentValue>\\S+)"
+      ],
+      "versioningTemplate": "loose"
+    }
+  ]
+}

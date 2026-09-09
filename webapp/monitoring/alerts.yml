@@ -1,0 +1,27 @@
+groups:
+  - name: exposurescopex
+    rules:
+      - alert: ExposureScopeXDown
+        expr: up{job="exposurescopex"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: ExposureScopeX metrics endpoint is unavailable
+      - alert: ExposureScopeXStaleScans
+        expr: exposurescopex_stale_active_scans > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: ExposureScopeX has stale active scans
+      - alert: ExposureScopeXQueueBacklog
+        expr: sum({__name__=~"exposurescopex_queue_depth_.*"}) > 25
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: ExposureScopeX scan queue backlog is growing
+      - alert: ExposureScopeXHighErrorRate
+        expr: sum(rate(exposurescopex_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(exposurescopex_http_requests_total[5m])), 1) > 0.05
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: ExposureScopeX API error rate exceeds 5 percent

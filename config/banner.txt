@@ -9,4 +9,4 @@
              |_|                                         |_|                
 
       ExposureScopeX - Continuous Attack Surface & Exposure Monitoring
-      v1.0.0 | Built for Professionals
+      v1.0.1 | Built for Professionals

@@ -1,7 +1,7 @@
 FROM kalilinux/kali-rolling
 
 # Update and install dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     jq \
     nmap \
@@ -30,7 +30,9 @@ COPY . /app
 
 # Make scripts executable
 RUN chmod +x exposurescopex.sh modules/*.sh
+RUN useradd --system --uid 10001 --home-dir /app scanner && chown -R scanner:scanner /app
 
 # Entry point
+USER scanner
 ENTRYPOINT ["./exposurescopex.sh"]
 CMD ["-h"]

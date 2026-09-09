@@ -1,0 +1,19 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {"type":"stat","title":"Running scans","gridPos":{"h":8,"w":6,"x":0,"y":0},"targets":[{"expr":"exposurescopex_scans_running","refId":"A"}]},
+    {"type":"stat","title":"Stale scans","gridPos":{"h":8,"w":6,"x":6,"y":0},"targets":[{"expr":"exposurescopex_stale_active_scans","refId":"A"}]},
+    {"type":"timeseries","title":"Queue depth","gridPos":{"h":8,"w":12,"x":12,"y":0},"targets":[{"expr":"{__name__=~\"exposurescopex_queue_depth_.*\"}","legendFormat":"{{__name__}}","refId":"A"}]},
+    {"type":"timeseries","title":"API request rate","gridPos":{"h":9,"w":12,"x":0,"y":8},"targets":[{"expr":"sum by (status) (rate(exposurescopex_http_requests_total[5m]))","legendFormat":"HTTP {{status}}","refId":"A"}]},
+    {"type":"timeseries","title":"API cumulative duration","gridPos":{"h":9,"w":12,"x":12,"y":8},"targets":[{"expr":"sum(rate(exposurescopex_http_request_duration_seconds_total[5m]))","refId":"A"}]}
+  ],
+  "refresh":"15s",
+  "schemaVersion":39,
+  "tags":["exposurescopex","security"],
+  "templating":{"list":[]},
+  "time":{"from":"now-6h","to":"now"},
+  "title":"ExposureScopeX Operations",
+  "uid":"exposurescopex-operations",
+  "version":1
+}

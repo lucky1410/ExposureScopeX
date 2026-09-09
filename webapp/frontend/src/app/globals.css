@@ -1,0 +1,188 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 42 44% 97%;
+    --foreground: 214 39% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 214 39% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 214 39% 12%;
+
+    --primary: 13 72% 46%;
+    --primary-foreground: 35 60% 98%;
+
+    --secondary: 42 26% 92%;
+    --secondary-foreground: 214 39% 12%;
+
+    --muted: 34 25% 93%;
+    --muted-foreground: 214 16% 38%;
+
+    --accent: 22 52% 90%;
+    --accent-foreground: 214 39% 12%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 26 24% 83%;
+    --input: 26 24% 83%;
+    --ring: 13 72% 46%;
+
+    --radius: 1rem;
+  }
+
+  .dark {
+    --background: 214 32% 8%;
+    --foreground: 38 30% 93%;
+
+    --card: 214 28% 11%;
+    --card-foreground: 38 30% 93%;
+
+    --popover: 214 28% 11%;
+    --popover-foreground: 38 30% 93%;
+
+    --primary: 18 88% 61%;
+    --primary-foreground: 214 32% 8%;
+
+    --secondary: 214 21% 16%;
+    --secondary-foreground: 38 30% 93%;
+
+    --muted: 214 21% 16%;
+    --muted-foreground: 35 14% 67%;
+
+    --accent: 218 25% 18%;
+    --accent-foreground: 38 30% 93%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 219 18% 22%;
+    --input: 219 18% 22%;
+    --ring: 18 88% 61%;
+
+    --radius: 1rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-geist-sans, "Instrument Sans", sans-serif);
+    background-image:
+      radial-gradient(circle at top left, hsl(var(--primary) / 0.1), transparent 22rem),
+      radial-gradient(circle at top right, hsl(var(--foreground) / 0.08), transparent 28rem),
+      linear-gradient(180deg, hsl(var(--background)), hsl(var(--background)));
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--background));
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border)) hsl(var(--background));
+}
+
+/* Severity utility classes */
+@layer utilities {
+  .severity-critical {
+    @apply text-red-500;
+  }
+  .severity-high {
+    @apply text-orange-500;
+  }
+  .severity-medium {
+    @apply text-yellow-500;
+  }
+  .severity-low {
+    @apply text-blue-500;
+  }
+  .severity-info {
+    @apply text-slate-400;
+  }
+
+  .severity-bg-critical {
+    @apply bg-red-500/10 text-red-500 border-red-500/20;
+  }
+  .severity-bg-high {
+    @apply bg-orange-500/10 text-orange-500 border-orange-500/20;
+  }
+  .severity-bg-medium {
+    @apply bg-yellow-500/10 text-yellow-500 border-yellow-500/20;
+  }
+  .severity-bg-low {
+    @apply bg-blue-500/10 text-blue-500 border-blue-500/20;
+  }
+  .severity-bg-info {
+    @apply bg-slate-500/10 text-slate-400 border-slate-500/20;
+  }
+
+  .glow-cyan {
+    box-shadow: 0 24px 90px rgba(255, 106, 46, 0.14);
+  }
+
+  .glow-red {
+    box-shadow: 0 0 20px rgba(239, 68, 68, 0.15);
+  }
+
+  .cyber-grid {
+    background-image:
+      linear-gradient(hsl(var(--foreground) / 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--foreground) / 0.045) 1px, transparent 1px);
+    background-size: 72px 72px;
+  }
+
+  .brand-panel {
+    @apply rounded-[1.75rem] border border-border/70 shadow-[0_24px_100px_rgba(15,23,42,0.12)] backdrop-blur-xl;
+    background-color: hsl(var(--card) / 0.88);
+  }
+
+  .brand-noise::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.18;
+    background-image:
+      linear-gradient(to right, transparent 0, transparent calc(100% - 1px), hsl(var(--foreground) / 0.05) calc(100% - 1px)),
+      linear-gradient(to bottom, transparent 0, transparent calc(100% - 1px), hsl(var(--foreground) / 0.05) calc(100% - 1px));
+    background-size: 26px 26px;
+    mask-image: radial-gradient(circle at center, black, transparent 84%);
+  }
+
+  .metric-kicker {
+    @apply text-[11px] font-semibold uppercase tracking-[0.28em] text-muted-foreground;
+  }
+
+  .editorial-title {
+    @apply text-4xl font-semibold tracking-[-0.04em] sm:text-5xl;
+  }
+
+  .editorial-subtitle {
+    @apply max-w-2xl text-base leading-7 text-muted-foreground sm:text-lg;
+  }
+}

@@ -2,92 +2,373 @@
 
 # ExposureScopeX - Continuous Attack Surface & Exposure Monitoring Framework
 # Author: Lakshmikanth
-# Version: 1.0.0
+# Version: 2.2.0
 
-# Source Configuration and Utils
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/config/exposurescopex.conf"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Bootstrap configuration
+# ──────────────────────────────────────────────────────────────────────────────
+if [ ! -f "${SCRIPT_DIR}/config/exposurescopex.conf" ]; then
+    if [ -f "${SCRIPT_DIR}/config/exposurescopex.conf.template" ]; then
+        echo "Config not found — creating from template: config/exposurescopex.conf"
+        cp "${SCRIPT_DIR}/config/exposurescopex.conf.template" \
+           "${SCRIPT_DIR}/config/exposurescopex.conf"
+        echo "Edit config/exposurescopex.conf to add API keys (do not commit this file)."
+    else
+        echo "Config template missing: config/exposurescopex.conf.template"
+    fi
+fi
+
+source "${SCRIPT_DIR}/config/exposurescopex.conf" || true
+
+# Core utilities load first (other modules depend on log_* and validate_*)
 source "${SCRIPT_DIR}/modules/utils.sh"
+source "${SCRIPT_DIR}/modules/safe_execution.sh"
+source "${SCRIPT_DIR}/modules/error_handling.sh"
+
+setup_signal_handlers
+
+# Feature modules
+source "${SCRIPT_DIR}/modules/scope.sh"
+source "${SCRIPT_DIR}/modules/continuous.sh"
+source "${SCRIPT_DIR}/modules/passive.sh"
 source "${SCRIPT_DIR}/modules/enumeration.sh"
+source "${SCRIPT_DIR}/modules/dns_recon.sh"
 source "${SCRIPT_DIR}/modules/port_scan.sh"
-source "${SCRIPT_DIR}/modules/vuln_scan.sh"
+source "${SCRIPT_DIR}/modules/ssl_check.sh"
+source "${SCRIPT_DIR}/modules/crawler.sh"
 source "${SCRIPT_DIR}/modules/web_test.sh"
+source "${SCRIPT_DIR}/modules/screenshot.sh"
+source "${SCRIPT_DIR}/modules/api_security.sh"
+source "${SCRIPT_DIR}/modules/vuln_scan.sh"
+source "${SCRIPT_DIR}/modules/cvematch.sh"
 source "${SCRIPT_DIR}/modules/exploitation.sh"
 source "${SCRIPT_DIR}/modules/osint.sh"
 source "${SCRIPT_DIR}/modules/cloud.sh"
+source "${SCRIPT_DIR}/modules/findings_db.sh"
 source "${SCRIPT_DIR}/modules/reporting.sh"
 source "${SCRIPT_DIR}/modules/integrations.sh"
+source "${SCRIPT_DIR}/modules/agent.sh"
 
-# Initialize variables
+# ──────────────────────────────────────────────────────────────────────────────
+# Runtime variables
+# ──────────────────────────────────────────────────────────────────────────────
 TARGET_DOMAIN=""
 TARGET_FILE=""
+TARGET_TYPE=""        # auto-detected: domain | url | ip | cidr | file
+SCOPE_CONF=""
 RUN_ENUM=false
 RUN_SCAN=false
 RUN_EXPLOIT=false
 RUN_CLOUD=false
 RUN_REPORT=false
+RUN_DIFF=false
+RUN_OSINT=true
+RUN_CI=false           # --ci         : exit non-zero if HIGH+ findings found
+RUN_BASELINE=false     # --baseline   : suppress known findings from report
+RUN_PASSIVE=false      # --passive-only: zero-packet recon only
+RUN_SCREENSHOTS=false  # --screenshots: capture visual snapshots of web targets
+RUN_CVE_MATCH=false    # --cve        : correlate fingerprints with NVD
+RUN_CRAWL=false        # --crawl      : run dedicated deep crawler phase
+RUN_AGENT=false        # --agent      : autonomous AI-driven assessment
 OUTPUT_FILE=""
 MODE="medium"
 AUTO_MODE=false
+PROXY_URL=""           # --proxy URL
 SLACK_NOTIFY=false
 TEAMS_NOTIFY=false
 SIEM_NOTIFY=false
+VERBOSE=false
+SCHEDULE_EXPR=""
+INTERVAL_HOURS=""
+UNSCHEDULE=false
+LIST_SCHEDULES=false
 
-# Help Menu
+# ──────────────────────────────────────────────────────────────────────────────
+# Help
+# ──────────────────────────────────────────────────────────────────────────────
 show_help() {
     print_banner
-    echo "Usage: ./exposurescopex.sh [options]"
-    echo ""
-    echo "Options:"
-    echo "  -d, --domain DOMAIN       Target single domain"
-    echo "  -f, --file FILE           File containing list of domains"
-    echo "  -e, --enum                Run enumeration (subdomains, assets)"
-    echo "  -s, --scan                Run vulnerability scanning"
-    echo "  -x, --exploit             Enable exploitation (CAUTION)"
-    echo "  -c, --cloud               Run cloud misconfiguration detection"
-    echo "  -o, --output FILE         Custom output file prefix"
-    echo "  -m, --mode LEVEL          Scan mode: light, medium, aggressive (default: medium)"
-    echo "  --slack                   Send notifications to Slack"
-    echo "  --teams                   Send notifications to Teams"
-    echo "  --siem                    Send logs to SIEM"
-    echo "  --auto                    Non-interactive mode (auto-yes)"
-    echo "  -r, --report              Generate MD & PDF report"
-    echo "  -h, --help                Show this help message"
-    echo ""
-    echo "Examples:"
-    echo "  ./exposurescopex.sh -d example.com -e -s -r"
-    echo "  ./exposurescopex.sh -f targets.txt --auto --slack"
-    echo ""
+    cat <<'HELPEOF'
+Usage: ./exposurescopex.sh [options]
+
+TARGET
+  -d, --domain DOMAIN       Single target domain
+  -f, --file   FILE         File with list of domains
+
+SCAN PHASES
+  -e, --enum                Subdomain enumeration + DNS recon
+  -s, --scan                Port scan + SSL/TLS + web test + API + vuln scan
+  -c, --cloud               Cloud misconfiguration + bucket enumeration
+  -x, --exploit             Exploitation (Hydra SSH, Metasploit) — CAUTION
+  -r, --report              Generate MD / HTML / PDF / SARIF report
+
+AUTONOMOUS AGENT
+      --agent               AI-driven adaptive assessment (requires ANTHROPIC_API_KEY)
+                            Claude plans + executes its own enumeration strategy
+      --agent-model MODEL   Claude model to use (default: claude-opus-4-6)
+      --agent-max-steps N   Max agentic iterations (default: 25)
+
+SCAN OPTIONS
+  -m, --mode   LEVEL        Scan speed: light | medium | aggressive (default: medium)
+  -o, --output FILE         Custom output file prefix
+      --no-osint            Skip OSINT module (Shodan/VT API calls)
+      --scope  FILE         Scope file — only scan listed domains/CIDRs
+      --diff                Compare results to previous scan, report changes
+      --baseline            Suppress known findings; report only new ones
+      --proxy  URL          Route tool traffic through proxy (e.g. http://127.0.0.1:8080)
+      --ci                  Exit non-zero if HIGH+ findings found (for CI/CD pipelines)
+
+CONTINUOUS MONITORING
+      --schedule CRON       Register cron job (e.g. "0 2 * * *") then exit
+      --interval HOURS      Schedule every N hours (1/6/12/24/48/168)
+      --unschedule          Remove scheduled monitoring for the target
+      --list-schedules      Show all active ExposureScopeX cron entries
+
+NOTIFICATIONS
+      --slack               Send results to Slack
+      --teams               Send results to Microsoft Teams
+      --siem                Forward logs to SIEM (Splunk HEC / syslog)
+
+MISC
+      --auto                Non-interactive mode (no prompts)
+  -v, --verbose             Debug output
+  -h, --help                This message
+
+CI/CD EXIT CODES (when --ci is set)
+  0 = No HIGH or CRITICAL findings
+  1 = HIGH findings present
+  2 = CRITICAL findings present
+
+EXAMPLES
+  # Autonomous AI agent — adapts its own enumeration strategy
+  ./exposurescopex.sh -d example.com --agent
+
+  # Agent in passive-only mode (no packets to target)
+  ./exposurescopex.sh -d example.com --agent --passive-only
+
+  # Full one-time scan with report
+  ./exposurescopex.sh -d example.com -e -s -c -r
+
+  # Scan through Burp Suite proxy
+  ./exposurescopex.sh -d example.com -s -r --proxy http://127.0.0.1:8080
+
+  # Diff against previous run (change detection)
+  ./exposurescopex.sh -d example.com -e -s -r --diff
+
+  # Only new findings (suppress known)
+  ./exposurescopex.sh -d example.com -e -s -r --diff --baseline
+
+  # CI/CD pipeline gate
+  ./exposurescopex.sh -d example.com -s --auto --ci && echo "clean" || echo "findings!"
+
+  # Schedule nightly at 02:00 with Slack alerts, then exit
+  ./exposurescopex.sh -d example.com --schedule "0 2 * * *" --slack
+
+  # Shorthand: schedule every 24 hours
+  ./exposurescopex.sh -d example.com --interval 24 --slack
+
+  # Batch file scan (OSINT + cloud run per-domain)
+  ./exposurescopex.sh -f targets.txt -s -c -r --auto --slack
+
+HELPEOF
 }
 
-# Parse Arguments
+# ──────────────────────────────────────────────────────────────────────────────
+# Argument parsing
+# ──────────────────────────────────────────────────────────────────────────────
 while [[ "$#" -gt 0 ]]; do
     case $1 in
-        -d|--domain) TARGET_DOMAIN="$2"; shift ;;
-        -f|--file) TARGET_FILE="$2"; shift ;;
-        -e|--enum) RUN_ENUM=true ;;
-        -s|--scan) RUN_SCAN=true ;;
-        -x|--exploit) RUN_EXPLOIT=true ;;
-        -c|--cloud) RUN_CLOUD=true ;;
-        -o|--output) OUTPUT_FILE="$2"; shift ;;
-        -m|--mode) MODE="$2"; shift ;;
-        --slack) SLACK_NOTIFY=true ;;
-        --teams) TEAMS_NOTIFY=true ;;
-        --siem) SIEM_NOTIFY=true ;;
-        --auto) AUTO_MODE=true ;;
-        -r|--report) RUN_REPORT=true ;;
-        -h|--help) show_help; exit 0 ;;
-        *) log_error "Unknown parameter passed: $1"; show_help; exit 1 ;;
+        -d|--domain|-t|--target) TARGET_DOMAIN="$2"; shift ;;
+        -f|--file)          TARGET_FILE="$2";    shift ;;
+        -e|--enum)          RUN_ENUM=true ;;
+        -s|--scan)          RUN_SCAN=true ;;
+        -x|--exploit)       RUN_EXPLOIT=true ;;
+        -c|--cloud)         RUN_CLOUD=true ;;
+        -o|--output)        OUTPUT_FILE="$2";    shift ;;
+        -m|--mode)          MODE="$2";           shift ;;
+        -r|--report)        RUN_REPORT=true ;;
+        -v|--verbose)       VERBOSE=true ;;
+        --no-osint)         RUN_OSINT=false ;;
+        --diff)             RUN_DIFF=true ;;
+        --baseline)         RUN_BASELINE=true; RUN_DIFF=true ;;
+        --scope)            SCOPE_CONF="$2";     shift ;;
+        --proxy)            PROXY_URL="$2";      shift ;;
+        --ci)               RUN_CI=true ;;
+        --passive-only)     RUN_PASSIVE=true ;;
+        --screenshots)      RUN_SCREENSHOTS=true ;;
+        --cve)              RUN_CVE_MATCH=true ;;
+        --crawl)            RUN_CRAWL=true ;;
+        --agent)            RUN_AGENT=true ;;
+        --agent-model)      AGENT_MODEL="$2";         shift ;;
+        --agent-max-steps)  AGENT_MAX_ITERATIONS="$2"; shift ;;
+        --stealth)          STEALTH_MODE=true ;;
+        --stealth-min)      STEALTH_DELAY_MIN="$2"; shift ;;
+        --stealth-max)      STEALTH_DELAY_MAX="$2"; shift ;;
+        --slack)            SLACK_NOTIFY=true ;;
+        --teams)            TEAMS_NOTIFY=true ;;
+        --siem)             SIEM_NOTIFY=true ;;
+        --auto)             AUTO_MODE=true ;;
+        --schedule)         SCHEDULE_EXPR="$2";  shift ;;
+        --interval)         INTERVAL_HOURS="$2"; shift ;;
+        --unschedule)       UNSCHEDULE=true ;;
+        --list-schedules)   LIST_SCHEDULES=true ;;
+        -h|--help)          show_help; exit 0 ;;
+        *) log_error "Unknown option: $1"; show_help; exit 1 ;;
     esac
     shift
 done
 
-# Main Execution
+# ──────────────────────────────────────────────────────────────────────────────
+# Proxy: set environment variables so curl and most tools pick it up
+# ──────────────────────────────────────────────────────────────────────────────
+if [ -n "$PROXY_URL" ]; then
+    export http_proxy="$PROXY_URL"
+    export https_proxy="$PROXY_URL"
+    export HTTP_PROXY="$PROXY_URL"
+    export HTTPS_PROXY="$PROXY_URL"
+    log_info "Proxy configured: $PROXY_URL"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Scheduling-only commands (no scan; exit immediately after)
+# ──────────────────────────────────────────────────────────────────────────────
+if [ "$LIST_SCHEDULES" = true ]; then
+    list_schedules
+    exit 0
+fi
+
+if [ "$UNSCHEDULE" = true ]; then
+    [ -z "$TARGET_DOMAIN" ] && { log_error "--unschedule requires -d <domain>"; exit 1; }
+    remove_schedule "$TARGET_DOMAIN"
+    exit 0
+fi
+
+if [ -n "$INTERVAL_HOURS" ]; then
+    [ -z "$TARGET_DOMAIN" ] && { log_error "--interval requires -d <domain>"; exit 1; }
+    SCHEDULE_EXPR=$(hours_to_cron "$INTERVAL_HOURS")
+    log_info "Interval ${INTERVAL_HOURS}h → cron: $SCHEDULE_EXPR"
+fi
+
+if [ -n "$SCHEDULE_EXPR" ]; then
+    [ -z "$TARGET_DOMAIN" ] && { log_error "--schedule requires -d <domain>"; exit 1; }
+    print_banner
+    setup_schedule "$TARGET_DOMAIN" "$SCHEDULE_EXPR"
+    log_success "Monitoring scheduled for $TARGET_DOMAIN. Verify: crontab -l"
+    exit 0
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Auto-select scan phases based on detected target type.
+# Only called when the user provided NO explicit phase flags.
+# ──────────────────────────────────────────────────────────────────────────────
+auto_select_phases() {
+    local type=$1
+    log_info "Auto-selected phases for target type: $type"
+    case "$type" in
+        domain)
+            # Full workflow: enum → DNS → OSINT → port → SSL → web → API → vuln → cloud → report
+            RUN_ENUM=true; RUN_SCAN=true; RUN_CLOUD=true; RUN_REPORT=true
+            ;;
+        url)
+            # URL already has a specific entry point — skip subdomain enum, DNS, OSINT, cloud
+            RUN_SCAN=true; RUN_REPORT=true; RUN_OSINT=false
+            ;;
+        ip)
+            # Skip enum/DNS/email; run port scan, web (if http open), vuln, cloud, OSINT (IP-based)
+            RUN_SCAN=true; RUN_CLOUD=true; RUN_REPORT=true
+            ;;
+        cidr)
+            # Ping sweep → port scan → vuln scan; skip domain-specific phases
+            RUN_SCAN=true; RUN_REPORT=true; RUN_OSINT=false
+            ;;
+        file)
+            # Mixed file: enable all phases; per-line type detection skips inapplicable modules
+            RUN_ENUM=true; RUN_SCAN=true; RUN_CLOUD=true; RUN_REPORT=true
+            ;;
+    esac
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helper: iterate file targets for per-target operations.
+# Accepts any valid target type per line (domain, URL, IP, CIDR).
+# Calls $1 (function name) for each valid, in-scope entry.
+# ──────────────────────────────────────────────────────────────────────────────
+_run_per_domain() {
+    local fn=$1
+    local accepted_types=${2:-domain,url,ip,cidr}
+    if [ -n "$TARGET_DOMAIN" ]; then
+        local single_type
+        single_type=$(detect_target_type "$TARGET_DOMAIN" 2>/dev/null)
+        if [[ ",$accepted_types," == *",$single_type,"* ]]; then
+            "$fn" "$TARGET_DOMAIN" "$SESSION_DIR"
+        else
+            log_info "[$single_type] Skipping $fn (not applicable)"
+        fi
+    elif [ -n "$TARGET_FILE" ]; then
+        while IFS= read -r target; do
+            [[ -z "$target" || "$target" =~ ^# ]] && continue
+            local ttype
+            ttype=$(detect_target_type "$target" 2>/dev/null)
+            if [ "$ttype" = "unknown" ]; then
+                log_warn "Skipping unrecognized target: $target"
+                continue
+            fi
+            if [ -n "$SCOPE_CONF" ] && ! is_in_scope "$target"; then
+                log_warn "Out of scope, skipping: $target"
+                continue
+            fi
+            if [[ ",$accepted_types," != *",$ttype,"* ]]; then
+                continue
+            fi
+            log_info "[$ttype] Running $fn for $target..."
+            "$fn" "$target" "$SESSION_DIR"
+        done < "$TARGET_FILE"
+    fi
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Apply baseline filter: keep only findings NOT present in previous state
+# ──────────────────────────────────────────────────────────────────────────────
+_apply_baseline() {
+    local session_dir=$1
+    local prev_state=$2
+    local nuclei_file="${session_dir}/nuclei_results.txt"
+
+    [ ! -f "$nuclei_file" ] && return 0
+    [ -z "$prev_state" ] || [ ! -f "$prev_state" ] && {
+        log_warn "--baseline has no previous state to compare — showing all findings"
+        return 0
+    }
+
+    local prev_vulns current_vulns new_only
+    prev_vulns=$(jq -r '.vulns[]?' "$prev_state" 2>/dev/null | sort)
+    current_vulns=$(sort "$nuclei_file")
+    new_only=$(comm -13 <(echo "$prev_vulns") <(echo "$current_vulns") 2>/dev/null | grep -v '^$' || true)
+
+    local orig_count
+    orig_count=$(wc -l < "$nuclei_file" 2>/dev/null || echo 0)
+
+    if [ -z "$new_only" ]; then
+        log_info "Baseline: all $orig_count findings were present in previous scan — nothing new"
+        : > "$nuclei_file"
+    else
+        echo "$new_only" > "$nuclei_file"
+        local new_count
+        new_count=$(wc -l < "$nuclei_file" 2>/dev/null || echo 0)
+        log_info "Baseline: $new_count new findings (suppressed $((orig_count - new_count)) known)"
+    fi
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Main scan workflow
+# ──────────────────────────────────────────────────────────────────────────────
 main() {
     print_banner
-    log_info "Starting ExposureScopeX Framework..."
+    log_info "ExposureScopeX v2.2.0 starting..."
 
-    # Validation
+    # ── Validate targets ───────────────────────────────────────────────────
     if [ -z "$TARGET_DOMAIN" ] && [ -z "$TARGET_FILE" ]; then
         log_error "No target specified. Use -d or -f."
         show_help
@@ -95,108 +376,257 @@ main() {
     fi
 
     if [ -n "$TARGET_DOMAIN" ]; then
-        if ! validate_domain "$TARGET_DOMAIN"; then
-            log_fatal "Invalid domain format: $TARGET_DOMAIN"
+        TARGET_TYPE=$(detect_target_type "$TARGET_DOMAIN")
+        if [ "$TARGET_TYPE" = "unknown" ]; then
+            log_fatal "Cannot determine type for: $TARGET_DOMAIN — expected domain, URL, IP, or CIDR"
         fi
-        log_info "Target: $TARGET_DOMAIN"
+        log_info "Target: $TARGET_DOMAIN  [type: $TARGET_TYPE]"
     fi
 
     if [ -n "$TARGET_FILE" ]; then
-        if ! validate_file "$TARGET_FILE"; then
-            log_fatal "Target file not found: $TARGET_FILE"
-        fi
-        log_info "Target List: $TARGET_FILE"
+        validate_file "$TARGET_FILE" || log_fatal "Target file not found: $TARGET_FILE"
+        TARGET_TYPE="file"
+        log_info "Target file: $TARGET_FILE  [type: file — domain/URL/IP/CIDR lines accepted]"
     fi
 
-    # Create Results Directory
+    # ── Auto-select phases when none were specified explicitly ─────────────
+    if [ "$RUN_ENUM" = false ] && [ "$RUN_SCAN" = false ] && \
+       [ "$RUN_CLOUD" = false ] && [ "$RUN_REPORT" = false ] && \
+       [ "$RUN_EXPLOIT" = false ]; then
+        auto_select_phases "$TARGET_TYPE"
+    fi
+
+    # ── Scope loading ──────────────────────────────────────────────────────
+    if [ -n "$SCOPE_CONF" ]; then
+        load_scope "$SCOPE_CONF" || log_warn "Scope load failed — proceeding without enforcement"
+        print_scope
+        if [ -n "$TARGET_DOMAIN" ]; then
+            assert_in_scope "$TARGET_DOMAIN" || log_fatal "Primary target is out of scope"
+        fi
+    fi
+
+    # ── Passive-only mode: block any active phases ─────────────────────────
+    if [ "$RUN_PASSIVE" = true ]; then
+        RUN_SCAN=false; RUN_EXPLOIT=false; RUN_CLOUD=false
+        log_info "[passive-only] Active scan phases disabled — running passive recon only"
+    fi
+
+    # ── Stealth mode announcement ──────────────────────────────────────────
+    if [ "$STEALTH_MODE" = true ]; then
+        log_info "[stealth] Randomised inter-tool delays: ${STEALTH_DELAY_MIN}–${STEALTH_DELAY_MAX}s"
+    fi
+
+    # ── Dependencies ───────────────────────────────────────────────────────
+    check_dependency "curl"
+    check_dependency "jq"
+
+    # ── Session directory ──────────────────────────────────────────────────
     if [ -n "$TARGET_DOMAIN" ]; then
-        SESSION_DIR="${RESULTS_DIR}/${TARGET_DOMAIN}_$(date +%Y%m%d_%H%M%S)"
+        SESSION_DIR="${RESULTS_DIR}/$(sanitize_filename "$TARGET_DOMAIN")_$(date +%Y%m%d_%H%M%S)"
     else
         SESSION_DIR="${RESULTS_DIR}/batch_$(date +%Y%m%d_%H%M%S)"
     fi
     mkdir -p "$SESSION_DIR"
-    log_info "Results will be saved to: $SESSION_DIR"
+    : > "${SESSION_DIR}/tool_runs.tsv"
+    log_info "Session: $SESSION_DIR"
 
-    # Dependency Checks (Basic)
-    check_dependency "curl"
-    check_dependency "jq"
+    # ── Load previous state for diff/baseline ─────────────────────────────
+    PREV_STATE_FILE=""
+    if { [ "$RUN_DIFF" = true ] || [ "$RUN_BASELINE" = true ]; } && [ -n "$TARGET_DOMAIN" ]; then
+        PREV_STATE_FILE=$(load_previous_state "$TARGET_DOMAIN" 2>/dev/null || true)
+        if [ -n "$PREV_STATE_FILE" ]; then
+            log_info "Previous state: $PREV_STATE_FILE"
+        else
+            log_info "No previous state — this will be the baseline for future runs"
+        fi
+    fi
 
-    # Workflow Logic
-    
-    # 1. Enumeration
+    # ── DB init ────────────────────────────────────────────────────────────
+    db_init
+    db_register_scan "${TARGET_DOMAIN:-${TARGET_FILE:-batch}}" "$SESSION_DIR" "$MODE"
+
+    # ── Agent mode: hand control to the autonomous AI agent ───────────────
+    # Must be after SESSION_DIR and db_init so output files have a real path.
+    if [ "$RUN_AGENT" = true ]; then
+        run_agent "${TARGET_DOMAIN:-${TARGET_FILE:-batch}}" "$SESSION_DIR"
+        [ "$RUN_REPORT" = true ] && generate_report "$SESSION_DIR"
+        log_success "ExposureScopeX agent session complete: $SESSION_DIR"
+        exit 0
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 0 — Passive Reconnaissance (zero-packet)
+    # ──────────────────────────────────────────────────────────────────────
+    if [ "$RUN_PASSIVE" = true ] || [ "$RUN_ENUM" = true ]; then
+        _run_per_domain run_passive_recon domain
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 1 — Enumeration
+    # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_ENUM" = true ]; then
-        run_enumeration "$TARGET_DOMAIN" "$SESSION_DIR"
-    elif [ "$RUN_SCAN" = true ] && [ -n "$TARGET_DOMAIN" ]; then
-        # Case 1: Scan selected but no enum.
-        if [ "$AUTO_MODE" = false ]; then
-            read -p "Enumeration skipped. Do you want to run it first? (y/n) " choice
-            if [[ "$choice" =~ ^[Yy]$ ]]; then
-                run_enumeration "$TARGET_DOMAIN" "$SESSION_DIR"
-            fi
+        _run_per_domain run_enumeration domain
+        if [ -n "$SCOPE_CONF" ] && [ -f "${SESSION_DIR}/subdomains.txt" ]; then
+            filter_by_scope "${SESSION_DIR}/subdomains.txt" "${SESSION_DIR}/subdomains_inscope.txt"
+            mv "${SESSION_DIR}/subdomains_inscope.txt" "${SESSION_DIR}/subdomains.txt"
         fi
+    elif [ "$RUN_SCAN" = true ] && [ -n "$TARGET_DOMAIN" ] && [ "$AUTO_MODE" = false ]; then
+        read -rp "Enumeration skipped. Run it first? (y/n) " choice
+        [[ "$choice" =~ ^[Yy]$ ]] && run_enumeration "$TARGET_DOMAIN" "$SESSION_DIR"
     fi
 
-    # 2. Port Scanning
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 2 — DNS Reconnaissance
+    # ──────────────────────────────────────────────────────────────────────
+    if { [ "$RUN_ENUM" = true ] || [ "$RUN_SCAN" = true ]; }; then
+        _run_per_domain run_dns_recon domain
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 3 — OSINT (runs per-domain for both -d and -f)
+    # ──────────────────────────────────────────────────────────────────────
+    if [ "$RUN_OSINT" = true ]; then
+        _run_per_domain run_osint domain
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 4 — Port Scanning
+    # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_SCAN" = true ]; then
-        if [ -n "$TARGET_FILE" ]; then
-            run_port_scan "$TARGET_FILE" "$SESSION_DIR"
-        else
-            run_port_scan "$TARGET_DOMAIN" "$SESSION_DIR"
-        fi
+        run_port_scan "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
     fi
 
-    # 3. Vulnerability Scanning
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 5 — SSL/TLS + HTTP Headers + Email Security (per-domain)
+    # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_SCAN" = true ]; then
-        if [ -n "$TARGET_FILE" ]; then
-            run_vuln_scan "$TARGET_FILE" "$SESSION_DIR"
-            run_web_test "$TARGET_FILE" "$SESSION_DIR"
-        else
-            run_vuln_scan "$TARGET_DOMAIN" "$SESSION_DIR"
-            run_web_test "$TARGET_DOMAIN" "$SESSION_DIR"
-        fi
+        _run_per_domain run_ssl_check domain
+        _run_per_domain run_email_security_check domain
     fi
 
-    # 4. Cloud Misconfiguration
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 6 — Cloud Security (runs per-domain for both -d and -f)
+    # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_CLOUD" = true ]; then
-        if [ -n "$TARGET_DOMAIN" ]; then
-            run_cloud_scan "$TARGET_DOMAIN" "$SESSION_DIR"
-        else
-            log_warn "Cloud scan requires a domain target."
-        fi
+        _run_per_domain run_cloud_scan domain
     fi
 
-    # 5. OSINT
-    if [ -n "$TARGET_DOMAIN" ]; then
-        run_osint "$TARGET_DOMAIN" "$SESSION_DIR"
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 6b — Deep Web Crawler
+    # ──────────────────────────────────────────────────────────────────────
+    if [ "$RUN_SCAN" = true ] || [ "$RUN_CRAWL" = true ]; then
+        run_crawler "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
     fi
 
-    # 6. Exploitation
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 7 — Web Application Testing
+    # ──────────────────────────────────────────────────────────────────────
+    if [ "$RUN_SCAN" = true ]; then
+        run_web_test "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 8 — API Security Testing (per-domain)
+    # ──────────────────────────────────────────────────────────────────────
+    if [ "$RUN_SCAN" = true ]; then
+        _run_per_domain run_api_security domain
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 8b — Screenshot Capture
+    # ──────────────────────────────────────────────────────────────────────
+    if [ "$RUN_SCREENSHOTS" = true ] || [ "$RUN_SCAN" = true ]; then
+        run_screenshots "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 9 — Vulnerability Scanning (Nuclei — aggregates all prior output)
+    # ──────────────────────────────────────────────────────────────────────
+    if [ "$RUN_SCAN" = true ]; then
+        run_vuln_scan "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 9b — CVE Correlation
+    # ──────────────────────────────────────────────────────────────────────
+    if [ "$RUN_CVE_MATCH" = true ] || [ "$RUN_SCAN" = true ]; then
+        run_cve_match "${TARGET_DOMAIN:-batch}" "$SESSION_DIR"
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 9c — Import findings into DB + print summary
+    # ──────────────────────────────────────────────────────────────────────
+    db_import_nuclei "$SESSION_DIR"
+    db_print_summary
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 10 — Exploitation
+    # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_EXPLOIT" = true ]; then
-        if [ -n "$TARGET_DOMAIN" ]; then
-            run_exploitation "$TARGET_DOMAIN" "$SESSION_DIR"
-        fi
+        _run_per_domain run_exploitation domain,ip
     fi
 
-    # 7. Reporting
-    if [ "$RUN_REPORT" = true ]; then
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 11 — State save + change detection + baseline filter
+    # ──────────────────────────────────────────────────────────────────────
+    if [ -n "$TARGET_DOMAIN" ]; then
+        # Diff before baseline filter so changes.md shows full picture
+        if [ "$RUN_DIFF" = true ] && [ -n "$PREV_STATE_FILE" ]; then
+            diff_states "$PREV_STATE_FILE" "$SESSION_DIR"
+        fi
+
+        # Baseline: strip known findings from nuclei_results.txt before report
+        if [ "$RUN_BASELINE" = true ]; then
+            _apply_baseline "$SESSION_DIR" "$PREV_STATE_FILE"
+        fi
+
+        save_state "$TARGET_DOMAIN" "$SESSION_DIR"
+        update_latest_symlink "$TARGET_DOMAIN" "$SESSION_DIR"
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PHASE 12 — Reporting + notifications
+    # ──────────────────────────────────────────────────────────────────────
+    _do_report_and_notify() {
         generate_report "$SESSION_DIR"
-        send_slack_notification "ExposureScopeX Scan Completed for $TARGET_DOMAIN" "${SESSION_DIR}/report.pdf"
-        send_teams_notification "ExposureScopeX Scan Completed for $TARGET_DOMAIN"
-    elif [ "$RUN_SCAN" = true ] && [ "$RUN_REPORT" = false ]; then
-         if [ "$AUTO_MODE" = false ]; then
-            read -p "Scan finished. Generate report? (y/n) " choice
-             if [[ "$choice" =~ ^[Yy]$ ]]; then
-                generate_report "$SESSION_DIR"
-                send_slack_notification "ExposureScopeX Scan Completed for $TARGET_DOMAIN" "${SESSION_DIR}/report.pdf"
-            fi
-        fi
+        local label="${TARGET_DOMAIN:-batch}"
+        [ "$SLACK_NOTIFY" = true ] && \
+            send_slack_notification "ExposureScopeX complete: $label" "${SESSION_DIR}/report.pdf"
+        [ "$TEAMS_NOTIFY" = true ] && \
+            send_teams_notification "ExposureScopeX complete: $label"
+        [ "$SIEM_NOTIFY"  = true ] && \
+            send_siem_log "Scan complete for $label" "INFO"
+    }
+
+    if [ "$RUN_REPORT" = true ]; then
+        _do_report_and_notify
+    elif [ "$RUN_SCAN" = true ] && [ "$AUTO_MODE" = false ]; then
+        read -rp "Scan finished. Generate report? (y/n) " choice
+        [[ "$choice" =~ ^[Yy]$ ]] && _do_report_and_notify
     fi
 
-    log_success "ExposureScopeX Session Completed."
+    log_success "ExposureScopeX session complete: $SESSION_DIR"
+
+    # ──────────────────────────────────────────────────────────────────────
+    # CI/CD exit codes — must be last
+    # ──────────────────────────────────────────────────────────────────────
+    if [ "$RUN_CI" = true ]; then
+        local critical_count=0 high_count=0
+        if [ -f "${SESSION_DIR}/nuclei_results.txt" ]; then
+            critical_count=$(grep -ci "\[critical\]" "${SESSION_DIR}/nuclei_results.txt" 2>/dev/null || echo 0)
+            high_count=$(grep -ci "\[high\]"         "${SESSION_DIR}/nuclei_results.txt" 2>/dev/null || echo 0)
+        fi
+        if [ "$critical_count" -gt 0 ]; then
+            log_warn "CI: $critical_count CRITICAL finding(s) — exit 2"
+            exit 2
+        elif [ "$high_count" -gt 0 ]; then
+            log_warn "CI: $high_count HIGH finding(s) — exit 1"
+            exit 1
+        fi
+        log_success "CI: No HIGH or CRITICAL findings — exit 0"
+    fi
 }
 
-# Trap for cleanup
-trap 'log_info "Exiting..."; exit 0' SIGINT SIGTERM
+trap 'handle_interrupt' SIGINT SIGTERM
 
-# Run Main
 main
