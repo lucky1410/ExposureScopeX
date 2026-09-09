@@ -118,7 +118,7 @@ RUN --mount=type=cache,id=exsx-security-go-mod,target=/go/pkg/mod \
     go build -ldflags "-s -w -X main.version=${GRYPE_VERSION#v} -X main.gitDescription=${GRYPE_VERSION}" \
       -o /out/grype github.com/anchore/grype/cmd/grype
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
