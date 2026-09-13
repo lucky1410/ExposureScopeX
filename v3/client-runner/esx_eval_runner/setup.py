@@ -9,10 +9,11 @@ import re
 import secrets
 import webbrowser
 from typing import Any
+from urllib.parse import urlparse
 
 from .discovery import discover_repository
 from .profiles import PROFILE_NAMES, build_cases, profile
-from .runner import CONFIG_SCHEMA_VERSION
+from .runner import CONFIG_SCHEMA_VERSION, _is_loopback_host
 
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
@@ -33,11 +34,13 @@ def create_http_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     if target.exists() and any(target.iterdir()):
         raise ValueError(f"Refusing to overwrite non-empty folder: {target}")
     dataset_version = f"{values['agent_id']}-{profile_name}-1.0"
+    host = urlparse(values["url"]).hostname or ""
+    target_environment = "local" if _is_loopback_host(host) else "staging"
     config = {
         "schema_version": CONFIG_SCHEMA_VERSION,
         "evaluation": {"name": f"{values['agent_id']} {profile(profile_name)['name'].lower()}", "agent_id": values["agent_id"], "subject_version": values["subject_version"], "subject_type": values.get("subject_type", "agent"), "project_key": values["project_key"], "dataset_version": dataset_version, "required_dimensions": ["classification", "confidence"]},
         "dataset": {"version": dataset_version, "cases": cases},
-        "adapter": {"type": "http_json_target", "url": values["url"], "request_mode": values.get("request_mode", "message"), "response_label_path": values.get("response_label_path", "decision.label"), "response_confidence_path": values.get("response_confidence_path", "decision.confidence"), "timeout_seconds": 60, "allow_remote": bool(values.get("allow_remote"))},
+        "adapter": {"type": "http_json_target", "url": values["url"], "request_mode": values.get("request_mode", "message"), "response_label_path": values.get("response_label_path", "decision.label"), "response_confidence_path": values.get("response_confidence_path", "decision.confidence"), "timeout_seconds": 60, "allow_remote": bool(values.get("allow_remote")), "target_environment": target_environment, "max_cases": 500, "minimum_delay_ms": 100},
         "source": {"origin": "local"},
         "plan": {"profile": profile_name, "profile_description": profile(profile_name)["description"], "review_required": True},
     }

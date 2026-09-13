@@ -45,6 +45,21 @@ The terminal report and HTML report never upload automatically. The HTML report
 contains only derived, redacted evaluation data, not case prompts or raw model
 responses.
 
+## Security boundary
+
+The local setup page binds only to `127.0.0.1`. The built-in HTTP connector
+accepts loopback targets only by default. A remote target must be explicitly
+marked as `staging` and use HTTPS; plain remote HTTP, URL credentials, query
+secrets, and redirects are rejected. Requests are identified with an
+`X-ESX-Evaluation-Mode: local-pre-release` header, are limited to 500 cases by
+default, and pause briefly between cases.
+
+This is a secure-by-default baseline, not a sandbox. A run can still invoke a
+real workflow and its tools. Use a dedicated test tenant, least-privilege test
+credentials, safe test data, and an endpoint that rejects production actions.
+Do not configure production systems as staging. Command adapters are trusted
+local code and run with the invoking user's OS permissions.
+
 ## Local-only quick start
 
 These steps are all a colleague needs for a real local test. No Docker,

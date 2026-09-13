@@ -17,7 +17,7 @@ from esx_eval_runner.cli import _starter_cases, init_command, run_command
 from esx_eval_runner.discovery import discover_repository
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
 from esx_eval_runner.profiles import build_cases
-from esx_eval_runner.runner import build_package, read_json
+from esx_eval_runner.runner import RunnerError, build_package, read_json
 from esx_eval_runner.setup import create_http_plan
 
 
@@ -133,7 +133,7 @@ class LocalRunTests(unittest.TestCase):
                 "schema_version": "esx-client-runner-config-1.0",
                 "evaluation": {"name": "HTTP target", "agent_id": "demo-agent", "subject_version": "1.0.0", "project_key": "demo", "dataset_version": "http-1.0", "required_dimensions": ["classification", "confidence"]},
                 "dataset": {"version": "http-1.0", "cases": cases},
-                "adapter": {"type": "http_json_target", "url": f"http://127.0.0.1:{server.server_port}/evaluate", "response_label_path": "decision.label", "response_confidence_path": "decision.confidence"},
+                "adapter": {"type": "http_json_target", "url": f"http://127.0.0.1:{server.server_port}/evaluate", "response_label_path": "decision.label", "response_confidence_path": "decision.confidence", "target_environment": "local", "minimum_delay_ms": 0},
             }
             package = build_package(config)
             self.assertEqual(package["execution"]["adapter_type"], "http_json_target")
@@ -162,6 +162,19 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(config["adapter"]["type"], "http_json_target")
             self.assertEqual(len(config["dataset"]["cases"]), 4)
             self.assertTrue((target / "README.md").is_file())
+
+    def test_http_target_rejects_insecure_or_unapproved_network_destinations(self) -> None:
+        base = {
+            "schema_version": "esx-client-runner-config-1.0",
+            "evaluation": {"name": "network policy", "agent_id": "demo-agent", "subject_version": "1.0.0", "project_key": "demo", "dataset_version": "network-1.0", "required_dimensions": ["classification", "confidence"]},
+            "dataset": {"version": "network-1.0", "cases": [{"case_id": "one", "input": {"message": "test"}, "expected_label": "safe"}]},
+        }
+        insecure = {**base, "adapter": {"type": "http_json_target", "url": "http://staging.example.test/evaluate", "response_label_path": "label", "response_confidence_path": "confidence", "allow_remote": True, "target_environment": "staging"}}
+        with self.assertRaisesRegex(RunnerError, "must use HTTPS"):
+            build_package(insecure)
+        unapproved = {**base, "adapter": {"type": "http_json_target", "url": "https://staging.example.test/evaluate", "response_label_path": "label", "response_confidence_path": "confidence", "target_environment": "staging"}}
+        with self.assertRaisesRegex(RunnerError, "requires allow_remote"):
+            build_package(unapproved)
 
     def test_full_fixture_calculates_every_advanced_metric_offline(self) -> None:
         config = read_json(ROOT / "examples" / "full-metrics.sample.json")

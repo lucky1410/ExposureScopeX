@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timezone
 import hashlib
+import ipaddress
 import json
 from pathlib import Path
 import re
@@ -13,7 +14,7 @@ import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
 from cryptography.hazmat.primitives import serialization
@@ -40,6 +41,13 @@ SUPPORTED_DIMENSIONS = BASE_DIMENSIONS | {
     "cost_efficiency",
 }
 _SAFE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$")
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    """Keep a configured evaluation target from silently reaching another URL."""
+
+    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+        return None
 
 
 class RunnerError(RuntimeError):
@@ -169,9 +177,17 @@ def _validate_http_target(adapter: dict[str, Any]) -> None:
     parsed = urlparse(url) if isinstance(url, str) else None
     if not parsed or parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise RunnerError("http_json_target.url must be an http or https URL")
-    loopback = parsed.hostname.lower() in {"localhost", "127.0.0.1", "::1"}
-    if not loopback and adapter.get("allow_remote") is not True:
-        raise RunnerError("http_json_target only permits loopback URLs by default; set allow_remote to true for an approved staging target")
+    if parsed.username or parsed.password or parsed.fragment or parsed.query:
+        raise RunnerError("http_json_target.url must not contain credentials, a query string, or a fragment; use headers_from_env for secrets")
+    loopback = _is_loopback_host(parsed.hostname)
+    environment = adapter.get("target_environment")
+    if loopback:
+        if environment != "local":
+            raise RunnerError("Loopback HTTP targets must declare target_environment as local")
+    elif parsed.scheme != "https":
+        raise RunnerError("Non-local HTTP targets must use HTTPS")
+    elif adapter.get("allow_remote") is not True or environment != "staging":
+        raise RunnerError("A non-local target requires allow_remote=true and target_environment=staging; production targets are not supported")
     if adapter.get("request_mode", "message") not in {"message", "input"}:
         raise RunnerError("http_json_target.request_mode must be message or input")
     for name in ("response_label_path", "response_confidence_path"):
@@ -184,6 +200,21 @@ def _validate_http_target(adapter: dict[str, Any]) -> None:
         for header, env_name in headers.items()
     ):
         raise RunnerError("http_json_target.headers_from_env must map header names to uppercase environment-variable names")
+    max_cases = adapter.get("max_cases", 500)
+    if not isinstance(max_cases, int) or max_cases < 1 or max_cases > 10_000:
+        raise RunnerError("http_json_target.max_cases must be an integer between 1 and 10,000")
+    delay_ms = adapter.get("minimum_delay_ms", 100)
+    if not isinstance(delay_ms, int) or delay_ms < 0 or delay_ms > 60_000:
+        raise RunnerError("http_json_target.minimum_delay_ms must be an integer between 0 and 60,000")
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def _invoke_command_adapter(
@@ -251,7 +282,15 @@ def _invoke_http_json_target(
     adapter: dict[str, Any], cases: list[dict[str, Any]], evaluation: dict[str, Any]
 ) -> tuple[dict[str, Any], int, str, str]:
     """Call a customer-owned JSON endpoint once per case without retaining responses."""
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if len(cases) > adapter.get("max_cases", 500):
+        raise RunnerError("HTTP target case count exceeds its configured safety limit")
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": f"ExposureScopeX-Eval-Runner/{__version__}",
+        "X-ESX-Evaluation-Mode": "local-pre-release",
+        "X-ESX-Evaluation-Run": str(uuid4()),
+    }
     for header, env_name in adapter.get("headers_from_env", {}).items():
         import os
         secret = os.environ.get(env_name)
@@ -262,7 +301,8 @@ def _invoke_http_json_target(
     response_hash = hashlib.sha256()
     request_summary = []
     started = time.monotonic()
-    for case in cases:
+    opener = build_opener(_NoRedirect())
+    for index, case in enumerate(cases):
         input_data = case["input"]
         if adapter.get("request_mode", "message") == "message":
             message = input_data.get("message") if isinstance(input_data, dict) else None
@@ -274,7 +314,7 @@ def _invoke_http_json_target(
         request_summary.append({"case_id": case["case_id"], "body_sha256": sha256(body)})
         try:
             request = Request(adapter["url"], data=canonical_json(body), headers=headers, method="POST")
-            with urlopen(request, timeout=adapter.get("timeout_seconds", 60)) as raw_response:
+            with opener.open(request, timeout=adapter.get("timeout_seconds", 60)) as raw_response:
                 response_bytes = raw_response.read(1_048_577)
         except HTTPError as exc:
             raise RunnerError(f"HTTP target returned status {exc.code}; its body remains local") from exc
@@ -290,6 +330,8 @@ def _invoke_http_json_target(
         label = _read_json_path(payload, adapter["response_label_path"])
         confidence = _read_json_path(payload, adapter["response_confidence_path"])
         results.append({"case_id": case["case_id"], "predicted_label": label, "confidence": confidence})
+        if index < len(cases) - 1 and adapter.get("minimum_delay_ms", 100):
+            time.sleep(adapter.get("minimum_delay_ms", 100) / 1000)
     response = {"schema_version": ADAPTER_RESPONSE_SCHEMA_VERSION_V2, "results": results, "measurements": {}}
     duration_ms = round((time.monotonic() - started) * 1000)
     return response, duration_ms, sha256(request_summary), response_hash.hexdigest()
