@@ -34,6 +34,7 @@ jobs:
           sha256sum dist/*.whl > dist/SHA256SUMS
 
       - name: Attest build provenance
+        if: ${{ vars.ESX_ENABLE_GITHUB_ATTESTATIONS == 'true' }}
         uses: actions/attest@v4
         with:
           subject-path: v3/client-runner/dist/*.whl

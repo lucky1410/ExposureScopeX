@@ -19,10 +19,11 @@ standard output. See [`ADAPTER_V2.md`](ADAPTER_V2.md) and `examples/`.
 For customer workstations and CI, install a versioned release asset rather than a
 source checkout. Each release publishes a wheel, `SHA256SUMS`, and a GitHub Actions
 build-provenance attestation. The following PowerShell commands download version
-`0.4.0`, check its SHA-256 before installation, and verify its GitHub provenance:
+`0.4.1` and check its SHA-256 before installation. For releases that include a
+GitHub provenance attestation, run the optional final verification command:
 
 ```powershell
-$version = "0.4.0"
+$version = "0.4.1"
 $tag = "esx-eval-runner-v$version"
 $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
 $release = "https://github.com/lucky1410/ExposureScopeX/releases/download/$tag"
@@ -32,15 +33,16 @@ Invoke-WebRequest "$release/SHA256SUMS" -OutFile SHA256SUMS
 $expected = ((Get-Content SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
 $actual = (Get-FileHash $wheel -Algorithm SHA256).Hash.ToLower()
 if ($actual -ne $expected) { throw "Runner checksum verification failed. Do not install this file." }
-gh attestation verify ".\$wheel" --repo lucky1410/ExposureScopeX
 py -3.12 -m pip install ".\$wheel"
 ```
 
-Do not install a release if either verification step fails. `gh attestation verify`
-requires the GitHub CLI. Release assets become available after the maintainer
-publishes the matching Git tag; see [`RELEASING.md`](RELEASING.md). GitHub supports
-artifact attestations for public repositories on current plans, and for private or
-internal repositories on GitHub Enterprise Cloud.
+Do not install a release if checksum verification fails. If the release states that
+provenance is available, also run `gh attestation verify ".\$wheel" --repo
+lucky1410/ExposureScopeX`; that command requires the GitHub CLI. Release assets
+become available after the maintainer publishes the matching Git tag; see
+[`RELEASING.md`](RELEASING.md). GitHub supports artifact attestations for public
+repositories on current plans, and for private or internal repositories on GitHub
+Enterprise Cloud.
 
 ## Run a local evaluation
 
