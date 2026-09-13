@@ -1,0 +1,276 @@
+{
+  "schema_version": "1.0",
+  "dataset_id": "dvwa-web-application",
+  "dataset_version": "0.3.0-draft",
+  "status": "draft",
+  "methodology_version": "1.0.0-draft",
+  "fixture": {
+    "application": "Damn Vulnerable Web Application",
+    "image_reference": "ghcr.io/digininja/dvwa:latest",
+    "image_digest": null,
+    "source_revision": null,
+    "target_hosts": ["dvwa.lab.internal"],
+    "reset_required": true,
+    "variants": {
+      "low": {"security_level": "low"},
+      "impossible": {"security_level": "impossible"}
+    }
+  },
+  "sources": [
+    "https://github.com/digininja/DVWA",
+    "https://github.com/digininja/DVWA/blob/master/dvwa/includes/dvwaPage.inc.php",
+    "https://owasp.org/www-project-web-security-testing-guide/stable/"
+  ],
+  "cases": [
+    {
+      "case_id": "DVWA-CONFIG-CSP-001",
+      "title": "Content Security Policy header absent",
+      "family": "service_tls_http_configuration",
+      "policy_status": "allowed",
+      "applicable_profiles": ["light", "medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": true},
+      "required_evidence_kinds": ["response"],
+      "observation_keys": ["http.header.absent:content-security-policy"],
+      "oracle": "An original target response lacks the Content-Security-Policy header."
+    },
+    {
+      "case_id": "DVWA-CONFIG-NOSNIFF-001",
+      "title": "MIME sniffing protection header absent",
+      "family": "service_tls_http_configuration",
+      "policy_status": "allowed",
+      "applicable_profiles": ["light", "medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": true},
+      "required_evidence_kinds": ["response"],
+      "observation_keys": ["http.header.absent:x-content-type-options"],
+      "oracle": "An original target response lacks X-Content-Type-Options: nosniff."
+    },
+    {
+      "case_id": "DVWA-CONFIG-FRAME-001",
+      "title": "Framing protection absent",
+      "family": "client_side",
+      "policy_status": "allowed",
+      "applicable_profiles": ["light", "medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": true},
+      "required_evidence_kinds": ["response"],
+      "observation_keys": ["http.header.absent:x-frame-options"],
+      "oracle": "An original target response lacks both an effective CSP frame-ancestors directive and X-Frame-Options."
+    },
+    {
+      "case_id": "DVWA-CONFIG-REFERRER-001",
+      "title": "Referrer policy absent",
+      "family": "client_side",
+      "policy_status": "allowed",
+      "applicable_profiles": ["light", "medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": true},
+      "required_evidence_kinds": ["response"],
+      "observation_keys": ["http.header.absent:referrer-policy"],
+      "oracle": "An original target response lacks an explicit Referrer-Policy header."
+    },
+    {
+      "case_id": "DVWA-DISC-PHPINFO-001",
+      "title": "Public PHPInfo diagnostic page",
+      "family": "information_disclosure",
+      "policy_status": "allowed",
+      "applicable_profiles": ["light", "medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": true},
+      "required_evidence_kinds": ["request", "response", "browser_capture"],
+      "observation_keys": ["nuclei.template:phpinfo-files"],
+      "oracle": "An independent GET returns a PHPInfo response and the original browser capture records the exposed diagnostic page."
+    },
+    {
+      "case_id": "DVWA-CONFIG-CACHE-CONTROL-NEG-001",
+      "title": "Cache-Control header is present control",
+      "family": "service_tls_http_configuration",
+      "policy_status": "allowed",
+      "applicable_profiles": ["light", "medium", "aggressive"],
+      "expected_by_variant": {"low": false, "impossible": false},
+      "required_evidence_kinds": [],
+      "observation_keys": ["http.header.absent:cache-control"],
+      "oracle": "An original target response includes a Cache-Control header. A reported absence is a false positive."
+    },
+    {
+      "case_id": "DVWA-AUTH-BRUTE-001",
+      "title": "Credential brute-force resistance",
+      "family": "authentication",
+      "policy_status": "prohibited",
+      "applicable_profiles": [],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": [],
+      "oracle": "Excluded because credential attacks are outside the platform safety boundary."
+    },
+    {
+      "case_id": "DVWA-INPV-CMDI-001",
+      "title": "OS command injection",
+      "family": "input_validation",
+      "wstg": ["WSTG-INPV-12"],
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response"],
+      "oracle": "A unique harmless canary is returned only when interpreted by the command execution context; no system data is read."
+    },
+    {
+      "case_id": "DVWA-SESS-CSRF-001",
+      "title": "Cross-site request forgery",
+      "family": "session_management",
+      "policy_status": "allowed",
+      "applicable_profiles": ["aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response", "before_after_state"],
+      "oracle": "An explicitly approved reversible test action succeeds without the expected anti-CSRF control and is restored afterward."
+    },
+    {
+      "case_id": "DVWA-ATHZ-FILE-INCLUDE-001",
+      "title": "Local file inclusion",
+      "family": "authorization",
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response"],
+      "oracle": "A fixture-owned harmless marker file outside the intended include choice is returned; operating-system files are never requested."
+    },
+    {
+      "case_id": "DVWA-INPV-UPLOAD-001",
+      "title": "Unrestricted file upload",
+      "family": "input_validation",
+      "policy_status": "allowed",
+      "applicable_profiles": ["aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response", "before_after_state"],
+      "oracle": "An approved inert text canary is accepted contrary to policy, verified, and removed; no executable content is uploaded."
+    },
+    {
+      "case_id": "DVWA-AUTH-CAPTCHA-001",
+      "title": "Insecure CAPTCHA workflow",
+      "family": "authentication",
+      "policy_status": "prohibited",
+      "applicable_profiles": [],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": [],
+      "oracle": "Excluded from the local benchmark because it requires an external CAPTCHA dependency."
+    },
+    {
+      "case_id": "DVWA-INPV-SQLI-001",
+      "title": "SQL injection",
+      "family": "input_validation",
+      "wstg": ["WSTG-INPV-05"],
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response"],
+      "oracle": "Paired fixture-safe boolean requests produce the labelled differential without extracting unrelated records."
+    },
+    {
+      "case_id": "DVWA-INPV-SQLI-BLIND-001",
+      "title": "Blind SQL injection",
+      "family": "input_validation",
+      "wstg": ["WSTG-INPV-05"],
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response", "differential_measurement"],
+      "oracle": "Repeated paired boolean observations meet the declared response-difference threshold without data extraction or time-delay payloads."
+    },
+    {
+      "case_id": "DVWA-SESS-WEAK-ID-001",
+      "title": "Weak session identifier",
+      "family": "session_management",
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["response", "statistical_sample"],
+      "oracle": "A bounded sample demonstrates the fixture's labelled predictable identifier behavior without attempting session takeover."
+    },
+    {
+      "case_id": "DVWA-CLNT-DOM-XSS-001",
+      "title": "DOM-based cross-site scripting",
+      "family": "client_side",
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "browser_capture", "dom_trace"],
+      "oracle": "An inert unique browser canary reaches an executable DOM sink under instrumentation without external callbacks."
+    },
+    {
+      "case_id": "DVWA-INPV-XSS-REFLECTED-001",
+      "title": "Reflected cross-site scripting",
+      "family": "input_validation",
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response", "browser_capture"],
+      "oracle": "A unique inert browser canary is reflected into an executable context and observed under isolated instrumentation."
+    },
+    {
+      "case_id": "DVWA-INPV-XSS-STORED-001",
+      "title": "Stored cross-site scripting",
+      "family": "input_validation",
+      "policy_status": "allowed",
+      "applicable_profiles": ["aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response", "browser_capture", "before_after_state"],
+      "oracle": "An explicitly approved inert canary persists and reaches an executable context, then fixture state is reset."
+    },
+    {
+      "case_id": "DVWA-CLNT-CSP-BYPASS-001",
+      "title": "Content Security Policy bypass",
+      "family": "client_side",
+      "policy_status": "prohibited",
+      "applicable_profiles": [],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": [],
+      "oracle": "Excluded until the fixture is fully local and external callback dependencies are removed."
+    },
+    {
+      "case_id": "DVWA-CLNT-JS-001",
+      "title": "Client-side JavaScript control weakness",
+      "family": "client_side",
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["browser_capture", "dom_trace"],
+      "oracle": "Browser instrumentation demonstrates that a security decision relies on modifiable client-side state."
+    },
+    {
+      "case_id": "DVWA-ATHZ-BYPASS-001",
+      "title": "Authorization bypass",
+      "family": "authorization",
+      "wstg": ["WSTG-ATHZ-02"],
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response", "role_matrix"],
+      "oracle": "Paired authorized sessions demonstrate access outside the lower-privileged role without modifying protected data."
+    },
+    {
+      "case_id": "DVWA-CLNT-REDIRECT-001",
+      "title": "Open redirect",
+      "family": "client_side",
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response"],
+      "oracle": "The application redirects to an inert reserved-domain URL without allowlist enforcement; navigation is not followed externally."
+    },
+    {
+      "case_id": "DVWA-CRYP-001",
+      "title": "Cryptographic implementation weakness",
+      "family": "service_tls_http_configuration",
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response", "analysis_trace"],
+      "oracle": "Fixture-provided samples demonstrate the labelled deterministic or weak cryptographic property without recovering real secrets."
+    },
+    {
+      "case_id": "DVWA-API-001",
+      "title": "API security weakness",
+      "family": "api_security",
+      "policy_status": "allowed",
+      "applicable_profiles": ["medium", "aggressive"],
+      "expected_by_variant": {"low": true, "impossible": false},
+      "required_evidence_kinds": ["request", "response"],
+      "oracle": "A fixture-defined safe API invariant fails under the labelled request pair without modifying production-like data."
+    }
+  ]
+}

@@ -1,0 +1,175 @@
+# Assessment Lifecycle and Analyst Flow
+
+Status: target workflow contract  
+Workflow version: 1.0.0-draft
+
+## 1. Product Flow
+
+```mermaid
+flowchart LR
+    A[Create assessment] --> B[Define target and scope]
+    B --> C[Confirm authorization and ROE]
+    C --> D[Choose profile and credentials]
+    D --> E[Applicability and capability preflight]
+    E -->|blocked| X[Blocked report with reasons]
+    E --> F[Approve immutable plan]
+    F --> G[Execute specialist work units]
+    G --> H[Ingest evidence immediately]
+    H --> I[Normalize candidate observations]
+    I --> J[Independent validation]
+    J -->|unsupported| K[Rejected or inconclusive]
+    J -->|supported| L[Analyst review when required]
+    K --> M[Coverage and exception ledger]
+    L --> N[Confirmed finding]
+    N --> M
+    M --> O[Benchmark gate for product releases]
+    M --> P[Generate client fact set]
+    P --> Q[DOCX]
+    P --> R[PDF]
+    P --> S[Evidence bundle]
+    Q & R & S --> T[Retest and closure]
+```
+
+The benchmark gate evaluates the scanner product on labelled fixtures. It does
+not delay a client report or rewrite client findings. Client reports disclose
+coverage and validation state; release benchmarks determine whether a profile
+may be marketed as production-ready.
+
+## 2. Execution Sequence
+
+```mermaid
+sequenceDiagram
+    actor Analyst
+    participant UI as Web/API
+    participant Control as Control plane
+    participant DB as PostgreSQL
+    participant Supervisor
+    participant Agent as Specialist agent
+    participant Evidence as Evidence store
+    participant Validator
+    participant Reporter
+
+    Analyst->>UI: Scope, ROE, profile, credentials
+    UI->>Control: Create authorized assessment
+    Control->>Control: Normalize scope and compile applicability
+    Control->>DB: Persist assessment, immutable plan and coverage denominator
+    Control-->>Analyst: Plan and required approvals
+    Analyst->>Control: Approve plan
+    Control->>DB: Queue versioned work units
+    loop Each dependency-ready work unit
+        Supervisor->>DB: Claim work with lease
+        Supervisor->>Supervisor: Revalidate scope, policy and deadline
+        Supervisor->>Agent: Execute typed work request
+        Agent->>Evidence: Persist original output and capture metadata
+        Evidence-->>DB: Register digest and provenance
+        Agent->>DB: Emit structured candidate observations
+        Supervisor->>DB: Record terminal stage and coverage state
+    end
+    Validator->>Evidence: Verify originals, hashes and evidence oracle
+    Validator->>DB: Confirm, reject or mark inconclusive
+    Analyst->>DB: Review required dispositions and business context
+    Reporter->>DB: Read one versioned validated fact set
+    Reporter->>Evidence: Package referenced originals
+    Reporter-->>Analyst: DOCX, PDF and evidence bundle
+```
+
+## 3. Lifecycle State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Draft
+    Draft --> AwaitingAuthorization
+    AwaitingAuthorization --> Planned: authorization accepted
+    AwaitingAuthorization --> Blocked: authorization or scope invalid
+    Planned --> Queued: immutable plan approved
+    Queued --> Running: first work unit claimed
+    Running --> AwaitingReview: execution terminal, review required
+    Running --> Finalizing: execution terminal, no review required
+    Running --> Cancelling: analyst cancellation
+    AwaitingReview --> Finalizing: dispositions complete
+    AwaitingReview --> Partial: unresolved required review
+    Finalizing --> Complete: all completion gates pass
+    Finalizing --> Partial: useful result with coverage exception
+    Finalizing --> Failed: no minimally valid result
+    Cancelling --> Cancelled: active work terminated
+    Blocked --> [*]
+    Complete --> Retest
+    Partial --> Retest
+    Failed --> Retest
+    Cancelled --> [*]
+    Retest --> Closed
+    Closed --> [*]
+```
+
+Stage terminal states remain `succeeded`, `failed`, `timed_out`, `skipped`,
+`blocked`, or `cancelled`. An assessment-level Complete state is impossible when
+an applicable required test is anything other than succeeded and evidence-valid.
+
+## 4. Core Data Contracts
+
+| Contract | Authoritative contents | Producer | Consumer |
+|---|---|---|---|
+| Scope decision | Targets, exclusions, ownership, authorization, window, rates, safety permissions | Scope agent | Planner, supervisor, audit |
+| Methodology plan | Profile version, applicable test cases, dependencies, budgets, expected evidence | Planner | Supervisor, coverage ledger |
+| Work request | One allowlisted capability, target subset, credentials reference, deadline, idempotency key | Supervisor | Specialist agent |
+| Tool execution | Tool/adaptor identity, version, sanitized configuration, timing, exit and resource state | Specialist agent | Evidence custody, coverage |
+| Artifact record | Immutable location, SHA-256, media type, size, timestamp, scope and stage IDs | Evidence custody | Validator, reporter |
+| Candidate observation | Stable source identity, claim, asset, raw evidence links and parser version | Specialist/normalizer | Validator |
+| Validation decision | Confirmed, rejected or inconclusive; oracle result; rationale and contradictions | Independent validator | Analyst, findings |
+| Finding | Stable fingerprint, severity, confidence basis, reproduction, remediation and evidence | Finding service | Analyst, reporter, risk |
+| Coverage record | Applicable/tested/result/reason per methodology case and role | Supervisor/validator | UI, reporter, benchmark |
+| Benchmark result | Dataset identity, confusion matrix, precision, recall, F1, evidence and release decision | Benchmark service | Engineering release gate |
+| Report fact set | Frozen assessment, coverage, findings, evidence references and approvals | Reporting service | DOCX/PDF/bundle renderers |
+
+## 5. Failure and Partial-Result Flow
+
+`scope_preflight` is an execution barrier. If target resolution or scope
+validation fails, every later queued network stage is atomically marked blocked
+with the preflight failure as its cause. A scanner process that had no valid
+target can therefore never be presented as successful coverage.
+
+1. Persist tool output continuously or at bounded checkpoints.
+2. Ingest candidate observations before advancing to a dependent stage.
+3. On timeout, terminate the complete process group and record the hard deadline.
+4. Preserve all earlier artifacts and findings.
+5. Continue independent validation when its required inputs exist.
+6. Mark unexecuted dependent tests blocked with a causal reference.
+7. Generate a Partial, Failed, or Cancelled report from the retained fact set.
+8. Permit report regeneration and analyst disposition without rerunning scanners.
+
+## 6. Finding Decision Flow
+
+```mermaid
+flowchart TD
+    C[Candidate observation] --> S{In scope?}
+    S -->|No| R1[Reject: out of scope]
+    S -->|Yes| O{Source original and hash valid?}
+    O -->|No| I1[Inconclusive: evidence failure]
+    O -->|Yes| P{Parser reproducible?}
+    P -->|No| I2[Inconclusive: parser mismatch]
+    P -->|Yes| V{Case oracle satisfied?}
+    V -->|No| R2[Reject or false positive]
+    V -->|Yes| D{Duplicate or contradictory?}
+    D -->|Duplicate| M[Merge observations]
+    D -->|Contradictory| I3[Inconclusive pending review]
+    D -->|No| A{Analyst review required?}
+    M --> A
+    A -->|Yes| H[Human disposition]
+    A -->|No| F[Confirmed finding]
+    H -->|Approve| F
+    H -->|Reject| R3[Rejected with rationale]
+```
+
+## 7. UI Flow Requirements
+
+- Assessment creation shows scope, authorization, profile behavior, prohibited
+  actions, supplied roles, expected test families, and missing capabilities.
+- The execution page shows current stage, current test case, real tool status,
+  elapsed time, hard deadline, evidence count, findings pending validation, and
+  explicit blocked/failed causes.
+- Findings distinguish Candidate, Confirmed, Rejected, Inconclusive, Accepted
+  Risk, and Remediated states.
+- Coverage is shown by methodology family and role, not a fabricated percentage.
+- Reports show readiness only after fact-set, evidence, and rendering validation.
+- Benchmark pages always identify dataset, fixture digest, profile, tool versions,
+  sample size, confusion matrix, precision, recall, F1, and release eligibility.

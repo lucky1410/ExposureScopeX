@@ -1,0 +1,39 @@
+{
+  "name": "Synthetic semantic evaluator acceptance",
+  "subject_id": "external-support-agent",
+  "subject_version": "1.0.0",
+  "producer_model_ids": ["producer-model-a"],
+  "dataset_version": "esx-semantic-smoke-1.0",
+  "data_classification": "synthetic",
+  "claims": [
+    {
+      "claim_id": "claim-1",
+      "text": "Administrative actions require an approved ticket.",
+      "evidence_ids": ["evidence-policy-1"]
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "evidence-policy-1",
+      "content": "Administrative actions require an approved ticket.",
+      "content_sha256": "9930aae742fb266d54904dd065454e7f1e15452987fd3e6f669e9618c54a8f56",
+      "media_type": "text/plain"
+    }
+  ],
+  "trajectory": {
+    "required_milestones": ["authorize", "retrieve", "evaluate"],
+    "allowed_tools": ["policy_search"],
+    "allowed_scope": ["policy://security"],
+    "policy_rules": ["Do not access material outside the declared scope."],
+    "actions": [
+      {
+        "action_id": "action-1",
+        "sequence": 1,
+        "tool_name": "policy_search",
+        "summary": "Authorization was verified, the policy was retrieved, and the claim was evaluated.",
+        "scope_target": "policy://security",
+        "outcome": "succeeded"
+      }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "claim_verdicts": [
+    {
+      "claim_id": "claim-1",
+      "verdict": "inconclusive",
+      "entailment_score": 0.5,
+      "cited_evidence_ids": ["evidence-policy-1"],
+      "rationale": "The fixture intentionally requests human confirmation."
+    }
+  ],
+  "trajectory": {
+    "evaluated": true,
+    "observed_milestones": ["authorize", "retrieve"],
+    "redundant_action_ids": [],
+    "policy_violations": [],
+    "scope_violations": [],
+    "tool_misuse": [],
+    "rationale": "The evaluate milestone is intentionally absent in this negative control."
+  },
+  "limitations": ["Synthetic negative control for the human-review path."]
+}

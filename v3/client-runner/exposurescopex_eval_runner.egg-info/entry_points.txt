@@ -1,0 +1,2 @@
+[console_scripts]
+esx-eval = esx_eval_runner.cli:main

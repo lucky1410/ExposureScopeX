@@ -1,0 +1,2 @@
+target,authorization_id,authorization_expires_at,allowed_paths,excluded_paths,allowed_ports,credential_reference
+https://app.example.test,AUTH-2026-001,2026-12-31T23:59:59Z,/;/api,/logout;/admin/destructive,443,vault://engagements/example/test-user

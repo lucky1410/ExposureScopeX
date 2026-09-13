@@ -1,0 +1,59 @@
+services:
+  runner:
+    networks:
+      - internal
+      - egress
+      - assessment_lab
+    volumes:
+      - ./scripts:/opt/esx-lab:ro
+
+  dvwa:
+    image: ghcr.io/digininja/dvwa:latest
+    environment:
+      DB_SERVER: dvwa-db
+      DEFAULT_SECURITY_LEVEL: low
+      DEFAULT_LOCALE: en
+      DISABLE_AUTHENTICATION: "false"
+    depends_on:
+      dvwa-db:
+        condition: service_healthy
+    ports:
+      - target: 80
+        published: "4281"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    networks:
+      assessment_lab:
+        aliases:
+          - dvwa.lab.internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "php -r \"exit(@file_get_contents('http://127.0.0.1/login.php') === false ? 1 : 0);\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  dvwa-db:
+    image: mariadb:10
+    environment:
+      MYSQL_ROOT_PASSWORD: dvwa
+      MYSQL_DATABASE: dvwa
+      MYSQL_USER: dvwa
+      MYSQL_PASSWORD: p@ssw0rd
+    volumes:
+      - dvwa_data:/var/lib/mysql
+    networks:
+      - assessment_lab
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  dvwa_data:
+
+networks:
+  assessment_lab:
+    internal: true

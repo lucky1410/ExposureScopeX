@@ -1,0 +1,26 @@
+{
+  "name": "Independent evaluator incomplete benchmark",
+  "agent_id": "ai_trust",
+  "subject_version": "1.0.0",
+  "dataset_version": "esx-evaluator-inconclusive-1.0",
+  "expected_labels": [
+    "safe", "unsafe", "safe", "unsafe", "safe",
+    "unsafe", "safe", "unsafe", "safe", "unsafe",
+    "safe", "unsafe", "safe", "unsafe", "safe",
+    "unsafe", "safe", "unsafe", "safe", "unsafe"
+  ],
+  "predicted_labels": [
+    "safe", "unsafe", "safe", "unsafe", "safe",
+    "unsafe", "safe", "unsafe", "safe", "unsafe",
+    "safe", "unsafe", "safe", "unsafe", "safe",
+    "unsafe", "safe", "unsafe", "safe", "unsafe"
+  ],
+  "confidences": [
+    0.98, 0.98, 0.98, 0.98, 0.98,
+    0.98, 0.98, 0.98, 0.98, 0.98,
+    0.98, 0.98, 0.98, 0.98, 0.98,
+    0.98, 0.98, 0.98, 0.98, 0.98
+  ],
+  "required_dimensions": ["classification", "confidence", "groundedness"],
+  "claims": []
+}

@@ -1,0 +1,64 @@
+name: ExposureScopeX AI assurance pre-release evaluation
+description: Run a customer-owned AI adapter locally in GitHub Actions and publish a governed pre-release assurance result.
+inputs:
+  api-url:
+    description: ExposureScopeX API origin, for example https://esx.example.com
+    required: true
+  config:
+    description: Path to the ESX client-runner JSON configuration in the repository
+    required: true
+  oidc-audience:
+    description: Audience registered in ExposureScopeX for GitHub OIDC
+    required: false
+    default: exposurescopex-evaluator
+  require-pass:
+    description: Fail this workflow check when the ExposureScopeX release decision is not pass
+    required: false
+    default: "true"
+outputs:
+  evaluation-id:
+    description: Immutable ExposureScopeX evaluation identifier
+    value: ${{ steps.result.outputs.evaluation_id }}
+  release-decision:
+    description: ExposureScopeX release decision
+    value: ${{ steps.result.outputs.release_decision }}
+runs:
+  using: composite
+  steps:
+    - name: Install ExposureScopeX client runner
+      shell: bash
+      run: python -m pip install "$GITHUB_ACTION_PATH/../../client-runner"
+    - name: Request GitHub OIDC token
+      shell: bash
+      run: python -m esx_eval_runner.cli github-oidc-token --audience '${{ inputs.oidc-audience }}' > "$RUNNER_TEMP/esx-evaluator.oidc"
+    - name: Execute local AI assurance test
+      shell: bash
+      run: python -m esx_eval_runner.cli run --config "$GITHUB_WORKSPACE/${{ inputs.config }}" --out "$RUNNER_TEMP/esx-evaluation.json" --github-oidc-token-file "$RUNNER_TEMP/esx-evaluator.oidc"
+    - name: Submit governed result
+      shell: bash
+      run: python -m esx_eval_runner.cli upload --api-url '${{ inputs.api-url }}' --package "$RUNNER_TEMP/esx-evaluation.json" --response-out "$RUNNER_TEMP/esx-evaluation-result.json" --github-oidc-token-file "$RUNNER_TEMP/esx-evaluator.oidc"
+    - id: result
+      name: Publish release decision
+      shell: bash
+      run: |
+        python - <<'PY' >> "$GITHUB_OUTPUT"
+        import json
+        import os
+        from pathlib import Path
+        result = json.loads(Path(os.environ["RUNNER_TEMP"], "esx-evaluation-result.json").read_text())
+        print(f"evaluation_id={result['id']}")
+        print(f"release_decision={result['release_decision']}")
+        PY
+        decision="$(python -c 'import json, os; from pathlib import Path; print(json.loads(Path(os.environ["RUNNER_TEMP"], "esx-evaluation-result.json").read_text())["release_decision"])')"
+        evaluation_id="$(python -c 'import json, os; from pathlib import Path; print(json.loads(Path(os.environ["RUNNER_TEMP"], "esx-evaluation-result.json").read_text())["id"])')"
+        {
+          echo "## ExposureScopeX AI assurance pre-release evaluation"
+          echo
+          echo "- Release decision: **${decision}**"
+          echo "- Immutable evaluation: \`${evaluation_id}\`"
+          echo "- Raw prompts, model outputs, source code, and secrets remained in this workflow runner."
+        } >> "$GITHUB_STEP_SUMMARY"
+        if [ '${{ inputs.require-pass }}' = 'true' ] && [ "$decision" != 'pass' ]; then
+          echo "ExposureScopeX release gate returned $decision" >&2
+          exit 2
+        fi

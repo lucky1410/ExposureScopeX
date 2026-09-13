@@ -1,0 +1,9 @@
+{
+  "target": "https://app.example.test",
+  "authorization_id": "AUTH-2026-001",
+  "authorization_expires_at": "2026-12-31T23:59:59Z",
+  "allowed_paths": ["/", "/api"],
+  "excluded_paths": ["/logout", "/admin/destructive"],
+  "allowed_ports": [443],
+  "credential_reference": "vault://engagements/example/test-user"
+}

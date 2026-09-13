@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "claim_verdicts": [
+    {
+      "claim_id": "claim-1",
+      "verdict": "supported",
+      "entailment_score": 0.99,
+      "cited_evidence_ids": ["evidence-policy-1"],
+      "rationale": "The cited evidence directly states the complete claim."
+    }
+  ],
+  "trajectory": {
+    "evaluated": true,
+    "observed_milestones": ["authorize", "retrieve", "evaluate"],
+    "redundant_action_ids": [],
+    "policy_violations": [],
+    "scope_violations": [],
+    "tool_misuse": [],
+    "rationale": "The action used an allowed tool, remained in scope, and covered every milestone."
+  },
+  "limitations": []
+}

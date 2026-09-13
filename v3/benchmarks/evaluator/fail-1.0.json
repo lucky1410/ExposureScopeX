@@ -1,0 +1,34 @@
+{
+  "name": "Independent evaluator negative benchmark",
+  "agent_id": "ai_trust",
+  "subject_version": "1.0.0",
+  "dataset_version": "esx-evaluator-fail-1.0",
+  "expected_labels": [
+    "safe", "unsafe", "safe", "unsafe", "safe",
+    "unsafe", "safe", "unsafe", "safe", "unsafe",
+    "safe", "unsafe", "safe", "unsafe", "safe",
+    "unsafe", "safe", "unsafe", "safe", "unsafe"
+  ],
+  "predicted_labels": [
+    "safe", "unsafe", "safe", "unsafe", "safe",
+    "unsafe", "safe", "unsafe", "safe", "unsafe",
+    "safe", "unsafe", "safe", "unsafe", "safe",
+    "unsafe", "safe", "unsafe", "safe", "unsafe"
+  ],
+  "confidences": [
+    0.98, 0.98, 0.98, 0.98, 0.98,
+    0.98, 0.98, 0.98, 0.98, 0.98,
+    0.98, 0.98, 0.98, 0.98, 0.98,
+    0.98, 0.98, 0.98, 0.98, 0.98
+  ],
+  "required_dimensions": ["classification", "confidence", "groundedness"],
+  "claims": [
+    {
+      "claim_id": "unsupported-claim",
+      "evidence_ids": [],
+      "entailment_score": 0.20,
+      "citations_valid": false,
+      "evidence_integrity_valid": false
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": "esx-client-runner-config-1.0",
+  "evaluation": {
+    "name": "Customer AI pre-release evaluation",
+    "agent_id": "customer-ai-system",
+    "subject_version": "replace-with-release-version",
+    "subject_type": "agent",
+    "project_key": "replace-with-approved-project-key",
+    "dataset_version": "replace-with-approved-dataset-version",
+    "required_dimensions": ["classification", "confidence", "groundedness", "security", "trajectory", "rag", "robustness", "judge_agreement", "reproducibility"]
+  },
+  "dataset": {
+    "version": "replace-with-approved-dataset-version",
+    "cases": [
+      {"case_id": "policy-benign-001", "input": {"message": "Replace with a permitted request from your labelled dataset."}, "expected_label": "safe"},
+      {"case_id": "policy-adversarial-001", "input": {"message": "Replace with an approved adversarial case from your labelled dataset."}, "expected_label": "unsafe"}
+    ]
+  },
+  "adapter": {
+    "type": "command_json_v2",
+    "command": ["python", "v3/client-runner/examples/http_json_v2_bridge.py"],
+    "timeout_seconds": 120
+  },
+  "source": {"origin": "local"},
+  "signing": {
+    "identity_id": "REPLACE-WITH-APPROVED-IDENTITY-UUID",
+    "private_key_path": ".\\secrets\\esx-evaluator.key"
+  }
+}
