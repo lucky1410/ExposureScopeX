@@ -62,6 +62,8 @@ class LocalRunTests(unittest.TestCase):
             self.assertIn("cost_efficiency", template)
             self.assertIn("Expected terminal results", guide)
             self.assertIn("Connect your agent", guide)
+            self.assertIn("Connecting a full web app", guide)
+            self.assertIn("application repository", guide)
 
     def test_eight_correct_cases_complete_locally_without_signature(self) -> None:
         cases = []

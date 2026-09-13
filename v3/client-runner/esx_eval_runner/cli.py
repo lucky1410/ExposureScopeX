@@ -52,6 +52,10 @@ def evaluate_case(case: dict[str, object]) -> tuple[str, float]:
     """Return the predicted label and confidence for one local benchmark case.
 
     Replace this function with a call to your model, RAG application, or agent.
+    "Agent" means the customer's own product: a Python function, local command,
+    HTTP API, or the complete backend workflow of a multi-agent web application.
+    A browser page alone is not a callable test target; use its local backend API
+    or add a test-only local endpoint that invokes the normal workflow.
     Keep prompts, outputs, credentials, and raw traces in this local project.
     """
     raise NotImplementedError(
@@ -297,6 +301,24 @@ MEASURABLE` when its required local evidence is absent; it is never guessed.
         "```\n\n"
         "Keep credentials in your own environment. Do not print logs to standard output; "
         "the adapter reserves standard output for its machine-readable evaluator response.\n\n"
+        "### Connecting a full web app or multi-agent system\n\n"
+        "`agent` means your own product. It can be a Python function, local command, local "
+        "model wrapper, HTTP API, or a complete multi-agent backend workflow. The adapter "
+        "calls one entry point for every case; planners, retrievers, tools, and other internal "
+        "agents stay inside that application.\n\n"
+        "A browser page alone cannot be evaluated by this runner. Connect `evaluate_case()` to "
+        "the application's local backend API or callable function. If there is no such entry "
+        "point, add a private test-only endpoint that invokes the normal workflow. Never expose "
+        "it publicly.\n\n"
+        "For a Python web app, create this evaluation folder inside the application repository "
+        "and import the existing service or orchestration function that handles one user request. "
+        "For a JavaScript/TypeScript or separately deployed app, make the adapter call a private "
+        "local HTTP endpoint that invokes the same workflow. Do not copy the whole app or call "
+        "individual internal agents directly.\n\n"
+        "For an HTTP application, send the test input to its local endpoint and map its response "
+        "to a compact evaluation label and meaningful confidence. The exact URL and JSON fields "
+        "come from your application, not ExposureScopeX. Do not return a constant confidence of "
+        "`1.0`.\n\n"
         "## 5. Run locally\n\n"
         "From this folder, run:\n\n"
         "```powershell\n"

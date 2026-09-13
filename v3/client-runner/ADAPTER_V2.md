@@ -29,6 +29,24 @@ bounded timeout.
 The request and all case inputs remain local. The runner retains only a SHA-256
 hash of the request.
 
+## Connecting a full web application or multi-agent system
+
+The adapter does not contain an ExposureScopeX agent. It calls the customer's
+own application entry point once for each case. For a multi-agent web app, that
+entry point should invoke the normal backend workflow; its internal agents,
+retrievers, tool calls, and handoffs run as they normally would.
+
+The current protocol cannot drive a browser UI by URL alone. Connect the adapter
+to an existing local backend API, local command, or Python function. If the
+application has no callable backend entry point, add a local test-only endpoint
+that calls the normal workflow. Keep it private to the local environment.
+
+Return a compact policy decision and a meaningful confidence, not the raw model
+answer. For the starter's `safe`/`unsafe` convention, `unsafe` means the system
+correctly recognized a request that should be refused or blocked. When the
+application does not provide a confidence, define and document an honest local
+scoring method rather than returning a constant perfect value.
+
 ## Response
 
 Every response includes a label and confidence for every submitted case:
