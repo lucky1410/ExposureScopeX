@@ -129,15 +129,18 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
     if not isinstance(evaluation, dict) or not isinstance(dataset, dict) or not isinstance(adapter, dict):
         raise RunnerError("Config requires evaluation, dataset, and adapter objects")
     adapter_type = adapter.get("type")
-    if adapter_type not in {"command_json_v1", "command_json_v2", "http_json_target"}:
-        raise RunnerError("adapter.type must be command_json_v1, command_json_v2, or http_json_target")
+    if adapter_type not in {"command_json_v1", "command_json_v2", "http_json_target", "browser_journey"}:
+        raise RunnerError("adapter.type must be command_json_v1, command_json_v2, http_json_target, or browser_journey")
     if adapter_type.startswith("command_"):
         command = adapter.get("command")
         if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
             raise RunnerError("adapter.command must be a non-empty string array")
         _validate_sandbox(adapter.get("sandbox"))
-    else:
+    elif adapter_type == "http_json_target":
         _validate_http_target(adapter)
+    else:
+        from .browser import validate_browser_adapter
+        validate_browser_adapter(adapter)
     timeout = adapter.get("timeout_seconds", 60)
     if not isinstance(timeout, int) or timeout < 1 or timeout > 300:
         raise RunnerError("adapter.timeout_seconds must be an integer between 1 and 300")
@@ -170,7 +173,7 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
     unsupported = sorted(dimensions - SUPPORTED_DIMENSIONS)
     if unsupported:
         raise RunnerError("Unsupported evaluation dimensions: " + ", ".join(unsupported))
-    if adapter["type"] in {"command_json_v1", "http_json_target"} and dimensions != BASE_DIMENSIONS:
+    if adapter["type"] in {"command_json_v1", "http_json_target", "browser_journey"} and dimensions != BASE_DIMENSIONS:
         raise RunnerError("This connector supports classification and confidence only; use command_json_v2 for redacted advanced measurements")
     return evaluation, cases, adapter
 
@@ -930,6 +933,9 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
     evaluation, cases, adapter = _validate_config(config)
     if adapter["type"] == "http_json_target":
         response, duration_ms, request_sha, response_sha = _invoke_http_json_target(adapter, cases, evaluation)
+    elif adapter["type"] == "browser_journey":
+        from .browser import invoke_browser_journeys
+        response, duration_ms, request_sha, response_sha = invoke_browser_journeys(adapter, cases, evaluation)
     else:
         response, duration_ms, request_sha, response_sha = _invoke_command_adapter(adapter, cases, evaluation)
     predicted_labels, confidences = _normalise_results(cases, response)

@@ -22,6 +22,19 @@ _SIGNALS = {
     "qdrant": ("retrieval store", "Qdrant"),
     "pinecone": ("retrieval store", "Pinecone"),
     "weaviate": ("retrieval store", "Weaviate"),
+    "redis": ("retrieval store", "Redis"),
+    "pgvector": ("retrieval store", "pgvector"),
+    "tool_calls": ("tool", "LLM tool calls"),
+    "function_call": ("tool", "Function calling"),
+}
+
+_KIND_BY_CATEGORY = {
+    "agent framework": "agent_framework",
+    "RAG framework": "rag_framework",
+    "model provider": "model_provider",
+    "observability": "observability",
+    "retrieval store": "retrieval_store",
+    "tool": "tool",
 }
 
 
@@ -33,6 +46,7 @@ def discover_repository(path: str | Path, *, max_files: int = 2_000) -> dict[str
     files_scanned = 0
     frameworks: set[str] = set()
     capabilities: set[str] = set()
+    components: dict[str, dict[str, str]] = {}
     entry_points: set[str] = set()
     for candidate in root.rglob("*"):
         if files_scanned >= max_files:
@@ -67,6 +81,21 @@ def discover_repository(path: str | Path, *, max_files: int = 2_000) -> dict[str
         for token, (category, display) in _SIGNALS.items():
             if token in content:
                 capabilities.add(f"{category}: {display}")
+                component_id = f"{_KIND_BY_CATEGORY[category]}-{_slug(display)}"
+                components[component_id] = {
+                    "id": component_id,
+                    "name": display,
+                    "kind": _KIND_BY_CATEGORY[category],
+                    "confidence": "technology_signal",
+                }
+    for entry_point in entry_points:
+        component_id = f"workflow-{_slug(entry_point)}"
+        components[component_id] = {
+            "id": component_id,
+            "name": entry_point,
+            "kind": "workflow_entry_point",
+            "confidence": "repository_signal",
+        }
     return {
         "status": "completed",
         "repository": str(root),
@@ -74,5 +103,10 @@ def discover_repository(path: str | Path, *, max_files: int = 2_000) -> dict[str
         "frameworks": sorted(frameworks),
         "capabilities": sorted(capabilities),
         "entry_points": sorted(entry_points),
-        "limitations": "Discovery reports technology hints only. It does not identify every agent, execute code, inspect secrets, or send source content anywhere.",
+        "components": sorted(components.values(), key=lambda item: item["id"]),
+        "limitations": "Discovery reports technology hints only. It does not identify every agent, execute code, inspect secrets, or send source content anywhere. Customers must confirm which components are in scope.",
     }
+
+
+def _slug(value: str) -> str:
+    return "-".join(re.findall(r"[a-z0-9]+", value.lower()))[:72]

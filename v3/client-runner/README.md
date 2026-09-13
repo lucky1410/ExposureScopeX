@@ -45,6 +45,64 @@ The terminal report and HTML report never upload automatically. The HTML report
 contains only derived, redacted evaluation data, not case prompts or raw model
 responses.
 
+## Assurance workflow
+
+Use this optional local-first workflow to generate a customer-approved coverage
+map. Discovery never executes application code or calls an AI model.
+
+```powershell
+# Discover local technology and workflow hints. Source stays on this computer.
+esx-eval discover --repository C:\work\my-ai-app --out .\discovery.json
+
+# Review discovery.json and explicitly approve the relevant component IDs.
+esx-eval scope --discovery .\discovery.json --include workflow-http-route-definitions-main-py agent-framework-langgraph --out .\assurance-scope.json
+
+# Create a deterministic risk plan with an explanation for each selected area.
+esx-eval plan --scope .\assurance-scope.json --out .\risk-plan.json
+
+# Include confirmed scope and plan in the local Assurance Graph report.
+esx-eval run --config .\esx-eval.json --out .\out\evaluation.json --discovery .\discovery.json --scope .\assurance-scope.json --plan .\risk-plan.json
+```
+
+The HTML report contains an **Assurance Graph** linking confirmed components,
+local evidence, required metrics, and the reason no local result is a governed
+release decision. Missing evidence is always labelled `NOT MEASURABLE`.
+
+### Browser journeys
+
+For an application without an evaluation API, install the optional local browser
+dependency and create declarative browser-action cases. Browser journeys are
+loopback-only and must use approved test accounts; the runner never tests an
+arbitrary remote application.
+
+```powershell
+py -m pip install "exposurescopex-eval-runner[browser]"
+playwright install chromium
+```
+
+Use `adapter.type: "browser_journey"`, a loopback `base_url`, and an
+`input.journey` action list containing `goto`, `fill`, `click`, `press`,
+`expect_text`, or `expect_visible`. A passing assertion returns the configured
+`pass` label. This is deterministic journey verification, not model confidence.
+
+### Automatic local telemetry
+
+For an application already emitting OpenTelemetry JSON, run a local collector
+and point its test-environment OTLP JSON exporter at the printed loopback URL.
+Provide the printed value as `X-ESX-Telemetry-Token`.
+
+```powershell
+esx-eval telemetry --out .\out\telemetry.jsonl
+```
+
+The collector accepts `/v1/traces` only on loopback. It retains only allowlisted
+operational metadata: service, span name, selected `gen_ai` usage/tool fields,
+and opaque `esx` identifiers. Prompts, outputs, documents, tool arguments,
+credentials, and arbitrary attributes are discarded. Pass this file to
+`run --telemetry` or `report --telemetry` to show evidence coverage in the
+Assurance Graph. It does not invent advanced scores; those require the redacted
+measurement records defined in `ADAPTER_V2.md`.
+
 ## Security boundary
 
 The local setup page binds only to `127.0.0.1`. The built-in HTTP connector

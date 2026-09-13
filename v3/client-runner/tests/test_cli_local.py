@@ -19,11 +19,14 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from esx_eval_runner.cli import _starter_cases, init_command, run_command
 from esx_eval_runner.audit import append_audit_event, verify_audit_log
+from esx_eval_runner.assurance import build_assurance_graph, build_risk_plan, create_scope
+from esx_eval_runner.browser import validate_browser_adapter
 from esx_eval_runner.discovery import discover_repository
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
 from esx_eval_runner.profiles import build_cases
 from esx_eval_runner.runner import RunnerError, _adapter_command, _verify_target_attestation, build_package, canonical_json, read_json
 from esx_eval_runner.setup import create_http_plan
+from esx_eval_runner.telemetry import redact_otel_payload, telemetry_summary
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -169,6 +172,36 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(config["adapter"]["type"], "http_json_target")
             self.assertEqual(len(config["dataset"]["cases"]), 4)
             self.assertTrue((target / "README.md").is_file())
+
+    def test_discovery_scope_plan_and_assurance_graph_are_reviewable(self) -> None:
+        discovery = {
+            "repository": "C:/demo",
+            "components": [
+                {"id": "workflow-api", "name": "API workflow", "kind": "workflow_entry_point"},
+                {"id": "agent-langgraph", "name": "LangGraph", "kind": "agent_framework"},
+                {"id": "rag-qdrant", "name": "Qdrant", "kind": "retrieval_store"},
+            ],
+        }
+        scope = create_scope(discovery, ["workflow-api", "agent-langgraph", "rag-qdrant"])
+        plan = build_risk_plan(scope, "release")
+        self.assertFalse(plan["planner"]["external_ai_called"])
+        self.assertIn("rag", plan["required_dimensions"])
+        package = {"evaluation": {"agent_id": "demo", "required_dimensions": ["classification", "confidence", "rag"]}}
+        metrics = {"classification": {"measurement_status": "measured"}, "confidence": {"measurement_status": "measured"}, "rag": {"measurement_status": "not_measurable"}}
+        graph = build_assurance_graph(package, metrics, discovery=discovery, scope=scope, plan=plan, telemetry={"span_count": 4})
+        self.assertEqual(graph["summary"]["confirmed_component_count"], 3)
+        self.assertEqual(graph["summary"]["unmeasurable_metric_count"], 1)
+
+    def test_telemetry_redaction_and_browser_loopback_policy(self) -> None:
+        payload = {"resourceSpans": [{"resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "demo"}}, {"key": "gen_ai.prompt", "value": {"stringValue": "secret prompt"}}]}, "scopeSpans": [{"spans": [{"name": "tool.run", "attributes": [{"key": "gen_ai.tool.name", "value": {"stringValue": "search"}}, {"key": "input.value", "value": {"stringValue": "do not retain"}}]}]}]}]}
+        records = redact_otel_payload(payload)
+        self.assertEqual(records[0]["attributes"], {"service.name": "demo", "gen_ai.tool.name": "search"})
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "telemetry.jsonl"
+            path.write_text(json.dumps(records[0]) + "\n", encoding="utf-8")
+            self.assertEqual(telemetry_summary(path)["tool_span_count"], 1)
+        with self.assertRaisesRegex(RunnerError, "loopback"):
+            validate_browser_adapter({"base_url": "https://staging.example.test"})
 
     def test_http_target_rejects_insecure_or_unapproved_network_destinations(self) -> None:
         base = {

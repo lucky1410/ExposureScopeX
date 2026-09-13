@@ -14,11 +14,13 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .audit import append_audit_event, verify_audit_log
+from .assurance import build_assurance_graph, build_risk_plan, create_scope
 from .local_metrics import calculate_local_metrics
 from .discovery import discover_repository
 from .report_html import render_local_report
 from .runner import RunnerError, build_package, generate_keypair, read_json, sha256, sign_package
 from .setup import serve_setup
+from .telemetry import serve_collector, telemetry_summary
 
 
 _PROJECT_KEY = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
@@ -561,6 +563,12 @@ def run_command(args: argparse.Namespace) -> int:
         "duration_ms": package["execution"]["duration_ms"],
     })
     local_metrics = calculate_local_metrics(package)
+    discovery = _optional_json(getattr(args, "discovery", None))
+    scope = _optional_json(getattr(args, "scope", None))
+    plan = _optional_json(getattr(args, "plan", None))
+    telemetry_path = getattr(args, "telemetry", None)
+    telemetry = telemetry_summary(telemetry_path) if telemetry_path else None
+    assurance_graph = build_assurance_graph(package, local_metrics, discovery=discovery, scope=scope, plan=plan, telemetry=telemetry)
     report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.json")
     report = {
         "schema_version": "esx-local-evaluation-report-1.0",
@@ -573,6 +581,7 @@ def run_command(args: argparse.Namespace) -> int:
             "dataset_version": package["evaluation"]["dataset_version"],
         },
         "metrics": local_metrics,
+        "assurance_graph": assurance_graph,
         "notice": "This report was calculated locally. It is not a shared ExposureScopeX release decision.",
     }
     _write_json(report_path, report)
@@ -610,8 +619,60 @@ def discover_command(args: argparse.Namespace) -> int:
         result = discover_repository(args.repository)
     except ValueError as exc:
         raise RunnerError(str(exc)) from exc
+    if args.out:
+        _write_json(args.out, result)
     print(json.dumps(result, indent=2))
     return 0
+
+
+def scope_command(args: argparse.Namespace) -> int:
+    try:
+        scope = create_scope(read_json(args.discovery), args.include)
+    except ValueError as exc:
+        raise RunnerError(str(exc)) from exc
+    _write_json(args.out, scope)
+    print(json.dumps({"scope": str(args.out), "confirmed_components": len(scope["components"]), "status": scope["status"]}))
+    return 0
+
+
+def plan_command(args: argparse.Namespace) -> int:
+    try:
+        plan = build_risk_plan(read_json(args.scope), args.profile)
+    except ValueError as exc:
+        raise RunnerError(str(exc)) from exc
+    _write_json(args.out, plan)
+    print(json.dumps({"plan": str(args.out), "planner": plan["planner"], "required_dimensions": plan["required_dimensions"]}))
+    return 0
+
+
+def telemetry_command(args: argparse.Namespace) -> int:
+    serve_collector(args.out)
+    return 0
+
+
+def report_command(args: argparse.Namespace) -> int:
+    package = read_json(args.package)
+    metrics = calculate_local_metrics(package)
+    graph = build_assurance_graph(
+        package, metrics, discovery=_optional_json(args.discovery), scope=_optional_json(args.scope),
+        plan=_optional_json(args.plan), telemetry=telemetry_summary(args.telemetry) if args.telemetry else None,
+    )
+    report = {
+        "schema_version": "esx-local-assurance-report-1.0", "status": "completed_locally",
+        "package_id": package["package_id"], "runner_version": package["runner_version"],
+        "subject": {"agent_id": package["evaluation"]["agent_id"], "subject_version": package["evaluation"]["subject_version"], "dataset_version": package["evaluation"]["dataset_version"]},
+        "metrics": metrics, "assurance_graph": graph,
+        "notice": "This Assurance Graph was assembled locally from the specified scope and evidence. It is not a shared release decision.",
+    }
+    _write_json(args.out, report)
+    html_path = Path(args.out).with_suffix(".html")
+    html_path.write_text(render_local_report(report), encoding="utf-8")
+    print(json.dumps({"report": str(args.out), "html_report": str(html_path), "graph_summary": graph["summary"]}))
+    return 0
+
+
+def _optional_json(path: str | None) -> dict[str, object] | None:
+    return read_json(path) if path else None
 
 
 def view_command(args: argparse.Namespace) -> int:
@@ -689,6 +750,17 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--directory", help="Suggested new folder for the generated local plan")
     discover = commands.add_parser("discover", help="Scan a local repository for integration hints without exporting source")
     discover.add_argument("--repository", required=True, help="Local application repository folder")
+    discover.add_argument("--out", help="Write local discovery JSON for scope review")
+    scope = commands.add_parser("scope", help="Confirm discovered components that are authorized for evaluation")
+    scope.add_argument("--discovery", required=True, help="Local discovery JSON from esx-eval discover")
+    scope.add_argument("--include", nargs="+", required=True, help="One or more discovered component IDs approved by the customer")
+    scope.add_argument("--out", required=True, help="New local assurance-scope.json path")
+    plan = commands.add_parser("plan", help="Create a deterministic, reviewable risk-adaptive plan from confirmed scope")
+    plan.add_argument("--scope", required=True, help="Confirmed local assurance-scope.json")
+    plan.add_argument("--profile", choices=["smoke", "release", "red_team", "custom"], default="release")
+    plan.add_argument("--out", required=True, help="New local risk-plan.json path")
+    telemetry = commands.add_parser("telemetry", help="Run a loopback OTLP JSON collector that writes redacted local evidence")
+    telemetry.add_argument("--out", required=True, help="Local JSONL output path for redacted telemetry")
     run = commands.add_parser("run", help="Run locally and print results; it never uploads")
     run.add_argument("--config", required=True)
     run.add_argument("--out", required=True)
@@ -696,6 +768,17 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--sign", action="store_true", help="Opt in to signing for a later shared platform decision")
     run.add_argument("--summary-only", action="store_true", help="Do not print each case result")
     run.add_argument("--output-format", choices=["text", "json"], default="text", help="Terminal output format (default: text)")
+    run.add_argument("--discovery", help="Optional local discovery JSON to include in the Assurance Graph")
+    run.add_argument("--scope", help="Optional confirmed local scope JSON to include in the Assurance Graph")
+    run.add_argument("--plan", help="Optional reviewed local risk plan JSON to include in the Assurance Graph")
+    run.add_argument("--telemetry", help="Optional redacted local telemetry JSONL to include in the Assurance Graph")
+    report = commands.add_parser("report", help="Create a standalone local Assurance Graph report from an existing result package")
+    report.add_argument("--package", required=True, help="Local evaluation package JSON")
+    report.add_argument("--out", required=True, help="New local Assurance Graph JSON path")
+    report.add_argument("--discovery", help="Optional local discovery JSON")
+    report.add_argument("--scope", help="Optional confirmed local scope JSON")
+    report.add_argument("--plan", help="Optional reviewed local risk plan JSON")
+    report.add_argument("--telemetry", help="Optional redacted local telemetry JSONL")
     view = commands.add_parser("view", help="Open a locally generated HTML evaluation report")
     view.add_argument("--report", required=True, help="Path to evaluation.local-report.html")
     verify_audit = commands.add_parser("verify-audit", help="Verify the local audit log hash chain")
@@ -725,8 +808,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "discover":
             return discover_command(args)
+        if args.command == "scope":
+            return scope_command(args)
+        if args.command == "plan":
+            return plan_command(args)
+        if args.command == "telemetry":
+            return telemetry_command(args)
         if args.command == "run":
             return run_command(args)
+        if args.command == "report":
+            return report_command(args)
         if args.command == "view":
             return view_command(args)
         if args.command == "verify-audit":

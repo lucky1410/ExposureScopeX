@@ -1,1 +1,4 @@
 cryptography<47,>=42
+
+[browser]
+playwright<2,>=1.49
