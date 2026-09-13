@@ -366,14 +366,17 @@ input:focus,select:focus { border-color:var(--orange); box-shadow:0 0 0 2px rgba
 .clientIdentityForm { grid-template-columns:.85fr 1.25fr 2fr auto; }
 .githubIntegrationForm { grid-template-columns:.75fr 1fr 1.1fr 2fr auto; }
 .clientRunnerGuide { margin-top:28px; }
-.clientRunnerSteps { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
-.clientRunnerSteps > div { display:grid; align-content:start; gap:9px; min-height:190px; border-right:1px solid var(--line); padding:21px; }
-.clientRunnerSteps > div:last-child { border-right:0; }
+.clientRunnerSteps { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); }
+.clientRunnerSteps > div { display:grid; align-content:start; gap:9px; min-height:240px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:21px; }
+.clientRunnerSteps > div:nth-child(3n) { border-right:0; }
+.clientRunnerSteps > div:nth-last-child(-n+2) { border-bottom:0; }
 .clientRunnerSteps span { color:var(--signal); font:700 9px Consolas,monospace; letter-spacing:.1em; }
 .clientRunnerSteps strong { font:400 21px/1.05 Georgia,serif; }
 .clientRunnerSteps code { overflow:auto; border:1px solid var(--line); background:#eeece4; padding:9px; color:var(--ink); font:10px/1.45 Consolas,monospace; white-space:nowrap; }
 .clientRunnerSteps a { width:max-content; border:1px solid var(--ink); padding:9px; color:var(--ink); background:var(--lime); font:700 9px Consolas,monospace; letter-spacing:.05em; text-decoration:none; }
 .clientRunnerSteps small { color:var(--muted); font:11px/1.55 Consolas,monospace; }
+.clientRunnerBoundary { margin:0; border-top:1px solid var(--ink); padding:17px 22px; color:var(--muted); background:#eeece4; font-size:12px; line-height:1.55; }
+.clientRunnerBoundary strong { color:var(--ink); }
 .evaluatorLaunchBody > select { min-height:68px; min-width:180px; font:700 10px Consolas,monospace; letter-spacing:.04em; text-transform:uppercase; }
 .hashPicker { min-height:40px; position:relative; display:flex; align-items:center; border:1px dashed var(--ink); padding:0 12px; cursor:pointer; }
 .hashPicker input { position:absolute; width:1px; min-height:0; height:1px; opacity:0; }
