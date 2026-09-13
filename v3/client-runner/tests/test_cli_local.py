@@ -46,8 +46,11 @@ class LocalRunTests(unittest.TestCase):
             ))
             self.assertEqual(status, 0)
             template = (target / "full_metric_measurements.json").read_text(encoding="utf-8")
+            guide = (target / "README.md").read_text(encoding="utf-8")
             self.assertIn("REPLACE_WITH_SECURITY_CASE_ID", template)
             self.assertIn("cost_efficiency", template)
+            self.assertIn("Expected terminal results", guide)
+            self.assertIn("Connect your agent", guide)
 
     def test_eight_correct_cases_complete_locally_without_signature(self) -> None:
         cases = []
