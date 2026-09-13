@@ -35,6 +35,46 @@ def _starter_cases() -> list[dict[str, object]]:
     return cases
 
 
+_LOCAL_ADAPTER_TEMPLATE = '''"""Connect this local adapter to your AI system without sending its data to ExposureScopeX."""
+
+from __future__ import annotations
+
+import json
+import sys
+
+
+def evaluate_case(case: dict[str, object]) -> tuple[str, float]:
+    """Return the predicted label and confidence for one local benchmark case.
+
+    Replace this function with a call to your model, RAG application, or agent.
+    Keep prompts, outputs, credentials, and raw traces in this local project.
+    """
+    raise NotImplementedError(
+        "Connect evaluate_case() in local_adapter.py to the AI system under test."
+    )
+
+
+def main() -> None:
+    request = json.load(sys.stdin)
+    results = []
+    for case in request["cases"]:
+        predicted_label, confidence = evaluate_case(case)
+        results.append({
+            "case_id": case["case_id"],
+            "predicted_label": predicted_label,
+            "confidence": confidence,
+        })
+    json.dump(
+        {"schema_version": "esx-client-adapter-response-2.0", "results": results},
+        sys.stdout,
+    )
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
 def init_command(args: argparse.Namespace) -> int:
     """Create an editable local evaluation starter without overwriting user files."""
     if not _PROJECT_KEY.fullmatch(args.agent_id):
@@ -66,7 +106,7 @@ def init_command(args: argparse.Namespace) -> int:
         "dataset": {"version": dataset_version, "cases": _starter_cases()},
         "adapter": {
             "type": "command_json_v2",
-            "command": [sys.executable, "-m", "esx_eval_runner.http_bridge"],
+            "command": [sys.executable, "local_adapter.py"],
             "timeout_seconds": 120,
         },
         "source": {"origin": "local"},
@@ -76,18 +116,22 @@ def init_command(args: argparse.Namespace) -> int:
         },
     }
     _write_json(target / "esx-eval.json", config)
+    (target / "local_adapter.py").write_text(_LOCAL_ADAPTER_TEMPLATE, encoding="utf-8")
     mode = "all ten metric areas" if args.full_metrics else "classification and confidence"
     (target / "README.md").write_text(
         f"# {args.agent_id} pre-release evaluation\n\n"
         f"This starter evaluates **{mode}**. It contains 20 balanced placeholders, not a valid benchmark. "
         "Replace every `REPLACE_WITH_*` value with a versioned labelled case approved by your team.\n\n"
-        "## Connect the local adapter\n\n"
-        "Expose a customer-owned endpoint that accepts the v2 request and returns the v2 response described in "
-        "ExposureScopeX `ADAPTER_V2.md`. It receives the test batch only on your network.\n\n"
+        "## Test your local AI system\n\n"
+        "1. Open `local_adapter.py` and replace `evaluate_case()` with a local call to your model, RAG application, or agent. "
+        "It must return a predicted label and confidence from 0 to 1 for each case.\n"
+        "2. Replace the 20 placeholders in `esx-eval.json` with your versioned, labelled benchmark cases.\n"
+        "3. Run this command from this directory:\n\n"
         "```powershell\n"
-        "$env:ESX_LOCAL_ADAPTER_URL = \"http://127.0.0.1:8080/esx-evaluation\"\n"
         "esx-eval run --config .\\esx-eval.json --out .\\out\\evaluation.json\n"
         "```\n\n"
+        "For `--full-metrics`, add the required redacted `measurements` object from `ADAPTER_V2.md` after the basic "
+        "classification and confidence evaluation works.\n\n"
         "The generated package contains only labels, bounded scores, opaque evidence IDs, and digests. "
         "It does not contain prompt text, model outputs, documents, tool payloads, or secrets. "
         "Register and approve the dataset and runner identity in ExposureScopeX before uploading a shared result.\n",

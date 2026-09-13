@@ -19,11 +19,11 @@ standard output. See [`ADAPTER_V2.md`](ADAPTER_V2.md) and `examples/`.
 For customer workstations and CI, install a versioned release asset rather than a
 source checkout. Each release publishes a wheel, `SHA256SUMS`, and a GitHub Actions
 build-provenance attestation. The following PowerShell commands download version
-`0.4.1` and check its SHA-256 before installation. For releases that include a
+`0.4.2` and check its SHA-256 before installation. For releases that include a
 GitHub provenance attestation, run the optional final verification command:
 
 ```powershell
-$version = "0.4.1"
+$version = "0.4.2"
 $tag = "esx-eval-runner-v$version"
 $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
 $release = "https://github.com/lucky1410/ExposureScopeX/releases/download/$tag"
@@ -61,7 +61,8 @@ ExposureScopeX API key or a copied private signing key.
 ## Start a colleague evaluation
 
 Create the starter folder in one command. It includes a balanced 20-case
-dataset skeleton, adapter configuration, and a short local workflow guide:
+dataset skeleton, a directly executable `local_adapter.py`, adapter configuration,
+and a short local workflow guide:
 
 ```powershell
 esx-eval init --directory .\my-agent-evaluation --agent-id support-agent --subject-version 2.4.0
@@ -71,7 +72,10 @@ For a RAG or agent release that needs every pre-release metric area, add
 `--full-metrics` and optionally set `--subject-type rag` or
 `--subject-type multi_agent_system`. The starter deliberately contains
 placeholders: a colleague replaces them with their team-approved, versioned
-benign and adversarial cases before running the evaluation.
+benign and adversarial cases before running the evaluation. The starter does not
+pretend to evaluate a system until the colleague connects `evaluate_case()` in
+`local_adapter.py` to their model, RAG application, or agent. Its dependencies
+remain part of their own local project; the runner installs only its own dependency.
 
 ## `command_json_v2` data boundary
 

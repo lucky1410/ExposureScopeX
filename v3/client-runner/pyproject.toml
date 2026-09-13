@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "exposurescopex-eval-runner"
-version = "0.4.1"
+version = "0.4.2"
 description = "Run redacted, signed ExposureScopeX AI evaluations in a customer environment."
 readme = "README.md"
 requires-python = ">=3.11"

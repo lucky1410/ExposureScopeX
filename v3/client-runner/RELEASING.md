@@ -10,7 +10,7 @@ assets.
 1. Set the same release version in `pyproject.toml` and `esx_eval_runner/__init__.py`.
 2. Run the runner and backend evaluator tests locally.
 3. Commit the release changes and push the commit.
-4. Create and push an exact tag such as `esx-eval-runner-v0.4.1`.
+4. Create and push an exact tag such as `esx-eval-runner-v0.4.2`.
 5. Review the `Release ESX Eval Runner` GitHub Actions run and the published assets.
 6. Verify the downloaded wheel with both `SHA256SUMS` and `gh attestation verify` before announcing it.
 
