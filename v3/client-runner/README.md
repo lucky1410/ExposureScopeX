@@ -1,152 +1,125 @@
-# ExposureScopeX Client Evaluation Runner
+# ExposureScopeX Local AI Evaluation Runner
 
-`esx-eval` executes a customer-owned adapter locally or in CI and sends only a
-redacted result package to ExposureScopeX. It never uploads test inputs, model
-outputs, tool output, source code, environment variables, stderr, or signing keys.
+`esx-eval` is a **local-first pre-release evaluator** for a model, RAG
+application, agent, or multi-agent system. It runs next to the AI system being
+tested and prints results in the local terminal. A normal `run` command does
+not connect to ExposureScopeX and does not upload prompts, model outputs, source
+code, traces, environment variables, stderr, credentials, or results.
 
-Two local adapter contracts are available:
+Use the optional shared workflow only when a team wants ExposureScopeX to retain
+a governed release decision and formal report.
 
-- `command_json_v1` provides labelled classification and confidence results.
-- `command_json_v2` additionally provides the redacted metric records required
-  for grounding, security, trajectory, RAG, robustness, cross-judge agreement,
-  repeat-run reproducibility, and cost and efficiency.
+## Local-only quick start
 
-The runner sends one JSON object on standard input and expects one JSON object on
-standard output. See [`ADAPTER_V2.md`](ADAPTER_V2.md) and `examples/`.
+These steps are all a colleague needs for a real local test. No Docker,
+ExposureScopeX account, identity registration, key pair, or platform upload is
+required.
 
-## Install a verified GitHub release
+1. Install Python 3.11 or later. On Windows, confirm it is available:
 
-For customer workstations and CI, install a versioned release asset rather than a
-source checkout. Each release publishes a wheel, `SHA256SUMS`, and a GitHub Actions
-build-provenance attestation. The following PowerShell commands download version
-`0.4.2` and check its SHA-256 before installation. For releases that include a
-GitHub provenance attestation, run the optional final verification command:
+   ```powershell
+   py --version
+   ```
 
-```powershell
-$version = "0.4.2"
-$tag = "esx-eval-runner-v$version"
-$wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
-$release = "https://github.com/lucky1410/ExposureScopeX/releases/download/$tag"
+2. Download the `exposurescopex_eval_runner-<version>-py3-none-any.whl` asset
+   and `SHA256SUMS` from the [ExposureScopeX releases page](https://github.com/lucky1410/ExposureScopeX/releases).
+   Do not download `Source code (zip)` or install the entire platform.
 
-Invoke-WebRequest "$release/$wheel" -OutFile $wheel
-Invoke-WebRequest "$release/SHA256SUMS" -OutFile SHA256SUMS
-$expected = ((Get-Content SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
-$actual = (Get-FileHash $wheel -Algorithm SHA256).Hash.ToLower()
-if ($actual -ne $expected) { throw "Runner checksum verification failed. Do not install this file." }
-py -3.12 -m pip install ".\$wheel"
-```
+3. Verify and install the downloaded wheel. Replace `0.4.3` with the published
+   runner version you downloaded:
 
-Do not install a release if checksum verification fails. If the release states that
-provenance is available, also run `gh attestation verify ".\$wheel" --repo
-lucky1410/ExposureScopeX`; that command requires the GitHub CLI. Release assets
-become available after the maintainer publishes the matching Git tag; see
-[`RELEASING.md`](RELEASING.md). GitHub supports artifact attestations for public
-repositories on current plans, and for private or internal repositories on GitHub
-Enterprise Cloud.
+   ```powershell
+   $version = "0.4.3"
+   $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
+   $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
+   $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
+   if ($actual -ne $expected) { throw "Checksum verification failed. Do not install this file." }
+   py -m pip install ".\$wheel"
+   esx-eval --help
+   ```
 
-## Run a local evaluation
+4. Create an eight-case starter folder. Eight cases are enough for a local
+   functional check; choose a larger even count with `--case-count` whenever
+   your team is ready.
 
-For local/other CI use, generate a key pair, register only the returned public key
-in the AI Assurance workspace, and approve it before publishing a shared result:
+   ```powershell
+   esx-eval init --directory .\my-agent-evaluation --agent-id support-agent --subject-version 2.4.0 --case-count 8
+   Set-Location .\my-agent-evaluation
+   ```
+
+5. Open `local_adapter.py`. Replace only `evaluate_case()` with the local call
+   to the system under test. It receives one labelled test case and must return
+   a predicted label plus a confidence between `0` and `1`.
+
+   ```python
+   def evaluate_case(case: dict[str, object]) -> tuple[str, float]:
+       reply = my_local_agent(case["input"]["message"])
+       return ("unsafe" if reply.blocked else "safe", reply.confidence)
+   ```
+
+6. Replace every `REPLACE_WITH_*` value in `esx-eval.json` with your own
+   versioned, labelled cases. `expected_label` is the ground-truth answer your
+   team has decided is correct. It is not generated by ExposureScopeX.
+
+7. Run the evaluation. Results, including every case, accuracy, precision,
+   recall, F1, Brier score, and calibration error print in the terminal and a
+   local-only result package is written to `out`.
+
+   ```powershell
+   esx-eval run --config .\esx-eval.json --out .\out\evaluation.json
+   ```
+
+   Use `--summary-only` for a large dataset. The default prints every case so a
+   developer can see exactly what was correct or incorrect.
+
+## What local completion means
+
+`COMPLETED LOCALLY` means the adapter ran and the terminal metrics were
+calculated from the declared local labels. It is intentionally **not** a
+platform pass/fail decision. In particular, an 8/8 local result is successful
+local test execution, not a claim that eight examples prove release readiness.
+
+The runner allows 1 to 10,000 cases. ExposureScopeX's optional governed release
+policy requires at least 20 labelled cases and at least two ground-truth
+classes. That threshold is never applied to a local-only run.
+
+## Optional shared platform decision
+
+Only use this section when a team deliberately wants a governed platform record,
+release gate, and formal report. First add a `signing` object to `esx-eval.json`,
+create a key, and register the resulting public key with a platform administrator:
 
 ```powershell
 esx-eval keygen --private-key .\secrets\esx-evaluator.key
-esx-eval run --config .\esx-eval.json --out .\out\evaluation.json
+esx-eval run --config .\esx-eval.json --out .\out\evaluation.json --sign
 esx-eval upload --api-url https://esx.example.com --package .\out\evaluation.json --response-out .\out\result.json
 ```
 
-GitHub Actions uses short-lived OIDC tokens instead. It does not need an
-ExposureScopeX API key or a copied private signing key.
+Signing and upload are separate on purpose. An unsigned local-only package is
+rejected by `upload` with a clear explanation, rather than silently sending
+anything to ExposureScopeX. A shared release decision with fewer than 20 cases
+can correctly be `fail` because the release policy, unlike the local runner,
+requires that minimum sample size.
 
-## Start a colleague evaluation
+## Full metric evaluations
 
-Create the starter folder in one command. It includes a balanced 20-case
-dataset skeleton, a directly executable `local_adapter.py`, adapter configuration,
-and a short local workflow guide:
+The default starter evaluates classification and confidence. Add `--full-metrics`
+when the system can produce the redacted records for groundedness, security,
+trajectory, RAG, robustness, cross-judge agreement, reproducibility, and cost.
+The protocol is documented in [`ADAPTER_V2.md`](ADAPTER_V2.md). The runner keeps
+raw test data local; it only writes opaque identifiers, labels, bounded scores,
+and hashes to its local result package.
 
-```powershell
-esx-eval init --directory .\my-agent-evaluation --agent-id support-agent --subject-version 2.4.0
-```
-
-For a RAG or agent release that needs every pre-release metric area, add
-`--full-metrics` and optionally set `--subject-type rag` or
-`--subject-type multi_agent_system`. The starter deliberately contains
-placeholders: a colleague replaces them with their team-approved, versioned
-benign and adversarial cases before running the evaluation. The starter does not
-pretend to evaluate a system until the colleague connects `evaluate_case()` in
-`local_adapter.py` to their model, RAG application, or agent. Its dependencies
-remain part of their own local project; the runner installs only its own dependency.
-
-## `command_json_v2` data boundary
-
-The v2 adapter receives the same local test cases as v1 plus the requested
-evaluation dimensions. It must return ordinary classification results and may
-return a `measurements` object. ExposureScopeX accepts only the fields needed to
-calculate the published metrics:
-
-- claim, evidence, document, milestone, run, and judge identifiers;
-- booleans, bounded numeric scores, controlled verdicts, and result labels;
-- redacted trace-event metadata and a SHA-256 digest.
-
-Prompts, source documents, retrieved text, answer text, chain-of-thought,
-credentials, raw tool arguments/results, model output, and stderr are rejected
-from metric fields and remain in the customer environment. Identifiers must be
-opaque references such as `claim-014`, `doc-policy-02`, or `trace/run-431`.
-
-Use the v2 fixture only to test plumbing, not to claim a real model passed:
-
-```powershell
-python .\v3\client-runner\examples\run_full_metrics_fixture.py `
-  --identity-id <approved-identity-id> `
-  --private-key .\secrets\esx-evaluator.key `
-  --require-pass
-```
-
-Replace `<approved-identity-id>` with the **Runner identity ID** shown in the AI
-AI Assurance workspace registry. The helper loads the included synthetic fixture,
-signs it locally, submits it to `http://localhost:8001`, and prints a result URL.
-It does not store private keys, test inputs, or model outputs in ExposureScopeX.
-
-A real adapter should derive every metric record from its local labelled
-benchmark, trace store, and evidence ledger.
-
-## Full pre-release test packs
-
-The supplied full-metric fixture proves runner plumbing only. For a real
-release evaluation, copy
-[`examples/full-metrics.http-bridge.template.json`](examples/full-metrics.http-bridge.template.json),
-replace its two illustrative cases with a versioned labelled test pack, and
-configure the team-owned endpoint through an environment variable:
-
-```powershell
-$env:ESX_LOCAL_ADAPTER_URL = "http://127.0.0.1:8080/esx-evaluation"
-esx-eval run --config .\full-metrics.json --out .\out\evaluation.json
-```
-
-The endpoint receives the complete local v2 adapter request and must return the
-v2 response described in [`ADAPTER_V2.md`](ADAPTER_V2.md). This supports a
-model, RAG application, agent, or multi-agent gateway without adding an SDK or
-giving ExposureScopeX access to the customer environment. `run` remains local:
-the resulting package contains labels, bounded scores, opaque evidence IDs, and
-digests, never prompts, outputs, source documents, tool payloads, or secrets.
-
-Use all ten dimensions for a full pre-release decision. The release policy
-gates calibration with both Brier score and ECE, RAG with context precision,
-recall at K, faithfulness, and citations, and robustness with accuracy,
-consistency, and all three variation types: paraphrase, perturbation, and
-repeat. Publishing the signed redacted package with `esx-eval upload` is
-optional and is only needed for a shared ExposureScopeX result, governance
-trail, and platform-generated report.
-
-Cost and efficiency records contain only per-case usage totals: provider- or
-metered-cost in USD, tokens, requests, retries, tool calls, cache and fallback
-flags, latency, and timeout status. They never contain provider credentials,
-model output, prompts, or invoices. The policy gates cost per case, P95 latency,
-timeout rate, and fallback rate without allowing a cheaper but unsafe system to
-pass its quality or security gates.
+The included `examples/` fixture is for integration testing only. It uses
+synthetic data and must not be represented as an evaluation of a real AI system.
 
 ## Development checkout only
 
-Maintainers developing the runner itself may install it from the repository with
-`python -m pip install -e .\v3\client-runner`. This is not the recommended customer
-distribution path and does not replace release checksum or provenance verification.
+Maintainers may install from this repository with:
+
+```powershell
+py -m pip install -e .\v3\client-runner
+```
+
+That is not the recommended customer distribution path. Customers should use a
+versioned wheel and checksum from GitHub Releases.

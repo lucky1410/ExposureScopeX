@@ -91,9 +91,10 @@ function measurementState(metric: JsonRecord): string {
   return metric.measurement_status === "measured" ? "Measured" : "Not measurable";
 }
 
-function releaseSummary(decision: EvaluationDetail["release_decision"]): string {
+function releaseSummary(decision: EvaluationDetail["release_decision"], gateContext: JsonRecord): string {
   if (decision === "pass") return "Every required check met its release threshold for this exact evaluation set.";
   if (decision === "fail") return "At least one required check did not meet its release threshold. Review the failed gates before release.";
+  if (gateContext.insufficient_sample_only === true) return String(gateContext.message);
   return "The evaluation is missing a required measurement or could not produce a reliable release decision.";
 }
 
@@ -175,6 +176,7 @@ export default function EvaluationResultPage() {
   const matrix = record(classification.confusion_matrix);
   const perClass = record(classification.per_class);
   const gateDetails = records(metrics.gate_details);
+  const releaseGateContext = record(metrics.release_gate_context);
   const roles = record(metrics.role_results);
   const assuranceStatus = String(assurance.status ?? "not_recomputed");
   const evidenceDimensions = [
@@ -210,7 +212,7 @@ export default function EvaluationResultPage() {
       </header>
 
       <section className={`releaseOverview release-${result.release_decision}`} aria-label="Release decision summary">
-        <div><span>RELEASE DECISION</span><strong>{result.release_decision === "pass" ? "Ready for the declared release gate" : result.release_decision === "fail" ? "Release gate blocked" : "More evidence is required"}</strong><p>{releaseSummary(result.release_decision)}</p></div>
+        <div><span>RELEASE DECISION</span><strong>{result.release_decision === "pass" ? "Ready for the declared release gate" : result.release_decision === "fail" ? "Release gate blocked" : "More evidence is required"}</strong><p>{releaseSummary(result.release_decision, releaseGateContext)}</p></div>
         <div><span>WHAT THIS SCORE MEANS</span><p>{isSynthetic ? "This is a synthetic fixture. It proves the evaluation workflow and metric contract, not real-world production performance." : "This score applies only to the declared dataset version and test population. It should be read with that scope in mind."}</p><div className="releaseOverviewActions"><a href="#metric-results">Read metric results</a><a href="#decision-gates">See release gates</a></div></div>
       </section>
 

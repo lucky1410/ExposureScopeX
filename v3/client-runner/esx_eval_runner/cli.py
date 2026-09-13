@@ -18,10 +18,10 @@ from .runner import RunnerError, build_package, generate_keypair, read_json, sig
 _PROJECT_KEY = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 
 
-def _starter_cases() -> list[dict[str, object]]:
+def _starter_cases(case_count: int) -> list[dict[str, object]]:
     """Generate a balanced local-only dataset skeleton, never a passing benchmark."""
     cases: list[dict[str, object]] = []
-    for index in range(1, 11):
+    for index in range(1, (case_count // 2) + 1):
         cases.append({
             "case_id": f"benign-{index:03}",
             "input": {"message": f"REPLACE_WITH_BENIGN_CASE_{index:03}"},
@@ -81,6 +81,8 @@ def init_command(args: argparse.Namespace) -> int:
         raise RunnerError("--agent-id must use lowercase letters, digits, and hyphens")
     if not _PROJECT_KEY.fullmatch(args.project_key):
         raise RunnerError("--project-key must use lowercase letters, digits, and hyphens")
+    if args.case_count < 2 or args.case_count > 10_000 or args.case_count % 2:
+        raise RunnerError("--case-count must be an even number between 2 and 10,000")
     target = Path(args.directory)
     if target.exists() and any(target.iterdir()):
         raise RunnerError(f"Refusing to overwrite non-empty directory: {target}")
@@ -103,38 +105,37 @@ def init_command(args: argparse.Namespace) -> int:
             "dataset_version": dataset_version,
             "required_dimensions": required_dimensions,
         },
-        "dataset": {"version": dataset_version, "cases": _starter_cases()},
+        "dataset": {"version": dataset_version, "cases": _starter_cases(args.case_count)},
         "adapter": {
             "type": "command_json_v2",
             "command": [sys.executable, "local_adapter.py"],
             "timeout_seconds": 120,
         },
         "source": {"origin": "local"},
-        "signing": {
-            "identity_id": "REPLACE-WITH-APPROVED-IDENTITY-UUID",
-            "private_key_path": ".\\secrets\\esx-evaluator.key",
-        },
     }
     _write_json(target / "esx-eval.json", config)
     (target / "local_adapter.py").write_text(_LOCAL_ADAPTER_TEMPLATE, encoding="utf-8")
     mode = "all ten metric areas" if args.full_metrics else "classification and confidence"
     (target / "README.md").write_text(
         f"# {args.agent_id} pre-release evaluation\n\n"
-        f"This starter evaluates **{mode}**. It contains 20 balanced placeholders, not a valid benchmark. "
+        f"This starter evaluates **{mode}**. It contains {args.case_count} balanced placeholders, not a valid benchmark. "
         "Replace every `REPLACE_WITH_*` value with a versioned labelled case approved by your team.\n\n"
         "## Test your local AI system\n\n"
         "1. Open `local_adapter.py` and replace `evaluate_case()` with a local call to your model, RAG application, or agent. "
         "It must return a predicted label and confidence from 0 to 1 for each case.\n"
-        "2. Replace the 20 placeholders in `esx-eval.json` with your versioned, labelled benchmark cases.\n"
+        f"2. Replace the {args.case_count} placeholders in `esx-eval.json` with your versioned, labelled benchmark cases.\n"
         "3. Run this command from this directory:\n\n"
         "```powershell\n"
         "esx-eval run --config .\\esx-eval.json --out .\\out\\evaluation.json\n"
         "```\n\n"
+        "This is a local-only run: no result is uploaded and no identity, private key, or 20-case release gate is required. "
+        "The terminal prints every case result and the output file stays in this folder.\n\n"
         "For `--full-metrics`, add the required redacted `measurements` object from `ADAPTER_V2.md` after the basic "
         "classification and confidence evaluation works.\n\n"
         "The generated package contains only labels, bounded scores, opaque evidence IDs, and digests. "
         "It does not contain prompt text, model outputs, documents, tool payloads, or secrets. "
-        "Register and approve the dataset and runner identity in ExposureScopeX before uploading a shared result.\n",
+        "Only if you later want a governed ExposureScopeX release decision, add signing details and use `esx-eval run --sign` before upload. "
+        "That optional platform decision requires at least 20 labelled cases.\n",
         encoding="utf-8",
     )
     print(json.dumps({
@@ -144,6 +145,85 @@ def init_command(args: argparse.Namespace) -> int:
         "metric_profile": "full" if args.full_metrics else "basic",
     }))
     return 0
+
+
+def _ratio(numerator: int | float, denominator: int | float) -> float:
+    return float(numerator) / float(denominator) if denominator else 0.0
+
+
+def _local_metrics(expected: list[str], predicted: list[str], confidences: list[float]) -> dict[str, object]:
+    """Calculate local inspection metrics without contacting the ExposureScopeX API."""
+    labels = sorted(set(expected) | set(predicted))
+    per_label: dict[str, dict[str, float | int]] = {}
+    for label in labels:
+        true_positive = sum(actual == label and observed == label for actual, observed in zip(expected, predicted))
+        false_positive = sum(actual != label and observed == label for actual, observed in zip(expected, predicted))
+        false_negative = sum(actual == label and observed != label for actual, observed in zip(expected, predicted))
+        precision = _ratio(true_positive, true_positive + false_positive)
+        recall = _ratio(true_positive, true_positive + false_negative)
+        per_label[label] = {
+            "true_positive": true_positive,
+            "false_positive": false_positive,
+            "false_negative": false_negative,
+            "precision": precision,
+            "recall": recall,
+            "f1": _ratio(2 * precision * recall, precision + recall),
+        }
+    correct = [actual == observed for actual, observed in zip(expected, predicted)]
+    macro_precision = _ratio(sum(float(item["precision"]) for item in per_label.values()), len(per_label))
+    macro_recall = _ratio(sum(float(item["recall"]) for item in per_label.values()), len(per_label))
+    macro_f1 = _ratio(sum(float(item["f1"]) for item in per_label.values()), len(per_label))
+    brier_score = _ratio(sum((confidence - int(is_correct)) ** 2 for confidence, is_correct in zip(confidences, correct)), len(correct))
+    bins: dict[int, list[tuple[float, bool]]] = {}
+    for confidence, is_correct in zip(confidences, correct):
+        bins.setdefault(min(9, int(confidence * 10)), []).append((confidence, is_correct))
+    calibration_error = sum(
+        abs(_ratio(sum(confidence for confidence, _ in values), len(values)) - _ratio(sum(is_correct for _, is_correct in values), len(values)))
+        * _ratio(len(values), len(correct))
+        for values in bins.values()
+    )
+    return {
+        "case_count": len(expected),
+        "correct_count": sum(correct),
+        "accuracy": _ratio(sum(correct), len(correct)),
+        "macro_precision": macro_precision,
+        "macro_recall": macro_recall,
+        "macro_f1": macro_f1,
+        "correctness_brier_score": brier_score,
+        "expected_calibration_error": calibration_error,
+        "per_label": per_label,
+    }
+
+
+def _print_local_results(config: dict[str, object], package: dict[str, object], *, summary_only: bool) -> None:
+    """Present local results in a human-readable terminal report, never a release verdict."""
+    evaluation = package["evaluation"]
+    execution = package["execution"]
+    assert isinstance(evaluation, dict) and isinstance(execution, dict)
+    expected = evaluation["expected_labels"]
+    predicted = evaluation["predicted_labels"]
+    confidences = evaluation["confidences"]
+    assert isinstance(expected, list) and isinstance(predicted, list) and isinstance(confidences, list)
+    metrics = _local_metrics(expected, predicted, confidences)
+    print("\nESX LOCAL EVALUATION")
+    print("Status: COMPLETED LOCALLY (not uploaded; not a platform release decision)")
+    print(f"Subject: {evaluation['agent_id']} {evaluation['subject_version']}")
+    print(f"Dataset: {evaluation['dataset_version']}")
+    print(f"Cases: {metrics['case_count']} | Correct: {metrics['correct_count']} | Accuracy: {metrics['accuracy']:.3f}")
+    print(f"Macro precision: {metrics['macro_precision']:.3f} | Macro recall: {metrics['macro_recall']:.3f} | Macro F1: {metrics['macro_f1']:.3f}")
+    print(f"Brier score: {metrics['correctness_brier_score']:.3f} | Expected calibration error: {metrics['expected_calibration_error']:.3f}")
+    print(f"Duration: {execution['duration_ms']} ms | Required metrics: {', '.join(evaluation['required_dimensions'])}")
+    if metrics["case_count"] < 20:
+        print(f"Sample-size note: {metrics['case_count']} cases are valid for local testing. The 20-case minimum applies only to an optional governed ExposureScopeX release decision.")
+    if not summary_only:
+        dataset = config["dataset"]
+        assert isinstance(dataset, dict) and isinstance(dataset["cases"], list)
+        print("\nCASE RESULTS")
+        for item, actual, observed, confidence in zip(dataset["cases"], expected, predicted, confidences):
+            assert isinstance(item, dict)
+            outcome = "CORRECT" if actual == observed else "INCORRECT"
+            print(f"{item['case_id']}: {outcome} | expected={actual} | predicted={observed} | confidence={confidence:.3f}")
+    print("\nNo prompts, model outputs, source files, tool data, environment variables, or credentials were sent to ExposureScopeX.")
 
 
 def _read_secret_file(path: str | None) -> str | None:
@@ -187,12 +267,18 @@ def run_command(args: argparse.Namespace) -> int:
     oidc_token = _read_secret_file(args.github_oidc_token_file)
     package = build_package(config, github_oidc_token=oidc_token)
     signing = config.get("signing")
-    if oidc_token is None:
+    if args.sign and oidc_token is None:
         if not isinstance(signing, dict) or not isinstance(signing.get("identity_id"), str) or not isinstance(signing.get("private_key_path"), str):
-            raise RunnerError("Local and non-GitHub CI runs require signing.identity_id and signing.private_key_path")
+            raise RunnerError("--sign requires signing.identity_id and signing.private_key_path in the config")
         package = sign_package(package, identity_id=signing["identity_id"], private_key_path=signing["private_key_path"])
     _write_json(args.out, package)
-    print(json.dumps({"package": str(args.out), "package_id": package["package_id"], "signed": oidc_token is None}))
+    if args.output_format == "json":
+        print(json.dumps({"package": str(args.out), "package_id": package["package_id"], "signed": "signature" in package, "uploaded": False}))
+    else:
+        _print_local_results(config, package, summary_only=args.summary_only)
+        print(f"\nLocal result package: {args.out}")
+        if "signature" not in package:
+            print("To request a governed shared decision later, add signing settings and run again with --sign, then use esx-eval upload.")
     return 0
 
 
@@ -201,6 +287,8 @@ def upload_command(args: argparse.Namespace) -> int:
     if args.timeout_seconds < 1 or args.timeout_seconds > 300:
         raise RunnerError("upload timeout must be between 1 and 300 seconds")
     token = _read_secret_file(args.github_oidc_token_file)
+    if token is None and not isinstance(package.get("signature"), dict):
+        raise RunnerError("This is an unsigned local-only package. It was not meant to be uploaded. Add signing settings, rerun with --sign, then upload only if a shared ExposureScopeX release decision is required.")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -235,7 +323,7 @@ def upload_command(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="esx-eval", description="Run a redacted ExposureScopeX client evaluation")
+    root = argparse.ArgumentParser(prog="esx-eval", description="Run a local AI pre-release evaluation")
     commands = root.add_subparsers(dest="command", required=True)
     keygen = commands.add_parser("keygen", help="Create a local Ed25519 keypair")
     keygen.add_argument("--private-key", required=True, help="New private-key file; never upload this file")
@@ -246,11 +334,15 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--project-key", default="default", help="Approved ExposureScopeX project key")
     init.add_argument("--dataset-version", help="Version for this labelled test pack")
     init.add_argument("--subject-type", choices=["model", "rag", "agent", "multi_agent_system"], default="agent")
+    init.add_argument("--case-count", type=int, default=8, help="Even number of balanced local starter cases (2-10,000; default: 8)")
     init.add_argument("--full-metrics", action="store_true", help="Require grounding, security, trajectory, RAG, robustness, agreement, repeatability, and cost metrics")
-    run = commands.add_parser("run", help="Run a local adapter and write a redacted package")
+    run = commands.add_parser("run", help="Run locally and print results; it never uploads")
     run.add_argument("--config", required=True)
     run.add_argument("--out", required=True)
     run.add_argument("--github-oidc-token-file", help="Short-lived GitHub token file; omit for signed local runs")
+    run.add_argument("--sign", action="store_true", help="Opt in to signing for a later shared platform decision")
+    run.add_argument("--summary-only", action="store_true", help="Do not print each case result")
+    run.add_argument("--output-format", choices=["text", "json"], default="text", help="Terminal output format (default: text)")
     upload = commands.add_parser("upload", help="Send a package to ExposureScopeX")
     upload.add_argument("--api-url", required=True)
     upload.add_argument("--package", required=True)

@@ -208,6 +208,19 @@ class EvaluationTests(unittest.TestCase):
         self.assertIn("macro_f1", result["failed_gates"])
         self.assertIn("groundedness", result["missing_required_dimensions"])
 
+    def test_insufficient_sample_is_inconclusive_not_a_quality_failure(self) -> None:
+        payload = self.payload(["classification", "confidence"])
+        payload.expected_labels = payload.expected_labels[:8]
+        payload.predicted_labels = payload.predicted_labels[:8]
+        payload.confidences = payload.confidences[:8]
+
+        result = evaluate(payload)
+
+        self.assertEqual(result["release_decision"], "inconclusive")
+        self.assertEqual(result["failed_gates"], ["minimum_sample_size"])
+        self.assertTrue(result["release_gate_context"]["insufficient_sample_only"])
+        self.assertIn("Local-only runs are not subject", result["release_gate_context"]["message"])
+
     def test_empty_optional_inputs_are_not_scored_as_perfect(self) -> None:
         payload = self.payload(["classification", "confidence", "groundedness", "rag", "robustness"])
         payload.rag = RagGrade(

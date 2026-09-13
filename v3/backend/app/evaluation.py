@@ -1287,9 +1287,10 @@ def evaluate(payload: EvaluationRequest) -> dict:
     )
     failed_gates = [gate["name"] for gate in required_gates if gate["passed"] is False]
     unavailable_gates = [gate["name"] for gate in required_gates if gate["passed"] is None]
-    if failed_gates:
+    insufficient_sample_only = failed_gates == ["minimum_sample_size"]
+    if failed_gates and not insufficient_sample_only:
         release_decision: EvaluationVerdict = "fail"
-    elif missing_required or unavailable_gates:
+    elif missing_required or unavailable_gates or insufficient_sample_only:
         release_decision = "inconclusive"
     else:
         release_decision = "pass"
@@ -1383,6 +1384,18 @@ def evaluate(payload: EvaluationRequest) -> dict:
         "gate_details": required_gates,
         "missing_required_dimensions": missing_required,
         "failed_gates": failed_gates,
+        "release_gate_context": {
+            "scope": "governed_shared_release_decision",
+            "minimum_sample_size": policy.minimum_sample_size,
+            "submitted_sample_size": classification["sample_size"],
+            "insufficient_sample_only": insufficient_sample_only,
+            "message": (
+                "The measured results met their available thresholds, but this governed shared release decision needs at least "
+                f"{policy.minimum_sample_size} labelled cases. Local-only runs are not subject to this gate."
+                if insufficient_sample_only
+                else "This decision applies to the governed shared-release policy, not to a local-only runner execution."
+            ),
+        },
         "release_decision": release_decision,
         "limitations": [
             "Metrics are valid only for the declared labelled dataset and policy versions.",
