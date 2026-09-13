@@ -12,6 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .local_metrics import calculate_local_metrics
 from .runner import RunnerError, build_package, generate_keypair, read_json, sign_package
 
 
@@ -240,6 +241,10 @@ Examples of the information to fill:
 
 The generated adapter reads this file automatically during a full-metric run.
 It stops safely until every placeholder has been replaced.
+
+The runner calculates every listed advanced metric locally and writes the
+results to `out/evaluation.local-report.json`. A metric is reported as `NOT
+MEASURABLE` when its required local evidence is absent; it is never guessed.
 '''
     return (
         f"# Local evaluation guide: {args.agent_id}\n\n"
@@ -263,6 +268,7 @@ It stops safely until every placeholder has been replaced.
         f"- `esx-eval.json`: {args.case_count} labelled test-case placeholder(s), evaluation ID, and adapter settings.\n"
         "- `local_adapter.py`: the one file you connect to your local model, RAG application, or agent.\n"
         "- `out/evaluation.json`: created after a run; a local result package that stays on this machine.\n\n"
+        "- `out/evaluation.local-report.json`: the derived local metrics report.\n\n"
         "## 3. Fill the benchmark\n\n"
         "Open `esx-eval.json` and replace every `REPLACE_WITH_*` message. For each case, "
         "the `input` is what the AI receives and `expected_label` is the team-approved "
@@ -308,6 +314,9 @@ It stops safely until every placeholder has been replaced.
         "Cases: 8 | Correct: 7 | Accuracy: 0.875\n"
         "Macro precision: 0.875 | Macro recall: 0.875 | Macro F1: 0.875\n"
         "Brier score: 0.024400 | Expected calibration error: 0.070000\n"
+        "Grounding: supported claims: 0.900 | valid citations: 1.000 | verified evidence: 1.000\n"
+        "Security: attack outcome accuracy: 0.950 | detection rate: 0.900 | false detection rate: 0.050\n"
+        "...\n"
         "\n"
         "CASE RESULTS\n"
         "private-data-001: CORRECT | expected=unsafe | predicted=unsafe | confidence=0.980\n"
@@ -390,55 +399,40 @@ def init_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _ratio(numerator: int | float, denominator: int | float) -> float:
-    return float(numerator) / float(denominator) if denominator else 0.0
+def _metric_line(title: str, metrics: dict[str, object], fields: list[tuple[str, str]]) -> None:
+    """Print measured fields or explain why the local adapter could not measure them."""
+    if metrics["measurement_status"] != "measured":
+        print(f"{title}: NOT MEASURABLE - {metrics['reason']}")
+        return
+    values = []
+    for key, label in fields:
+        value = metrics.get(key)
+        if isinstance(value, float):
+            values.append(f"{label}: {value:.3f}")
+        else:
+            values.append(f"{label}: {value}")
+    print(f"{title}: " + " | ".join(values))
 
 
-def _local_metrics(expected: list[str], predicted: list[str], confidences: list[float]) -> dict[str, object]:
-    """Calculate local inspection metrics without contacting the ExposureScopeX API."""
-    labels = sorted(set(expected) | set(predicted))
-    per_label: dict[str, dict[str, float | int]] = {}
-    for label in labels:
-        true_positive = sum(actual == label and observed == label for actual, observed in zip(expected, predicted))
-        false_positive = sum(actual != label and observed == label for actual, observed in zip(expected, predicted))
-        false_negative = sum(actual == label and observed != label for actual, observed in zip(expected, predicted))
-        precision = _ratio(true_positive, true_positive + false_positive)
-        recall = _ratio(true_positive, true_positive + false_negative)
-        per_label[label] = {
-            "true_positive": true_positive,
-            "false_positive": false_positive,
-            "false_negative": false_negative,
-            "precision": precision,
-            "recall": recall,
-            "f1": _ratio(2 * precision * recall, precision + recall),
-        }
-    correct = [actual == observed for actual, observed in zip(expected, predicted)]
-    macro_precision = _ratio(sum(float(item["precision"]) for item in per_label.values()), len(per_label))
-    macro_recall = _ratio(sum(float(item["recall"]) for item in per_label.values()), len(per_label))
-    macro_f1 = _ratio(sum(float(item["f1"]) for item in per_label.values()), len(per_label))
-    brier_score = _ratio(sum((confidence - int(is_correct)) ** 2 for confidence, is_correct in zip(confidences, correct)), len(correct))
-    bins: dict[int, list[tuple[float, bool]]] = {}
-    for confidence, is_correct in zip(confidences, correct):
-        bins.setdefault(min(9, int(confidence * 10)), []).append((confidence, is_correct))
-    calibration_error = sum(
-        abs(_ratio(sum(confidence for confidence, _ in values), len(values)) - _ratio(sum(is_correct for _, is_correct in values), len(values)))
-        * _ratio(len(values), len(correct))
-        for values in bins.values()
-    )
-    return {
-        "case_count": len(expected),
-        "correct_count": sum(correct),
-        "accuracy": _ratio(sum(correct), len(correct)),
-        "macro_precision": macro_precision,
-        "macro_recall": macro_recall,
-        "macro_f1": macro_f1,
-        "correctness_brier_score": brier_score,
-        "expected_calibration_error": calibration_error,
-        "per_label": per_label,
+def _print_advanced_metrics(metrics: dict[str, dict[str, object]], dimensions: list[str]) -> None:
+    print("\nADVANCED LOCAL RESULTS")
+    labels = {
+        "groundedness": ("Grounding", [("supported_claim_rate", "supported claims"), ("citation_validity_rate", "valid citations"), ("evidence_integrity_rate", "verified evidence")]),
+        "security": ("Security", [("attack_outcome_accuracy", "attack outcome accuracy"), ("detection_rate", "detection rate"), ("false_detection_rate", "false detection rate"), ("evidence_coverage", "evidence coverage")]),
+        "trajectory": ("Trajectory and tool policy", [("score", "trajectory score"), ("milestone_coverage", "milestone coverage"), ("action_efficiency", "action efficiency"), ("policy_compliant", "policy compliant")]),
+        "rag": ("RAG", [("context_precision", "context precision"), ("recall_at_k", "recall@K"), ("mean_reciprocal_rank", "MRR"), ("faithfulness", "faithfulness"), ("citation_validity", "citation validity")]),
+        "robustness": ("Robustness", [("accuracy", "variation accuracy"), ("consistency", "consistency"), ("variation_coverage", "variation coverage"), ("worst_confidence_drop", "worst confidence drop")]),
+        "judge_agreement": ("Cross-model judge agreement", [("pairwise_agreement", "pairwise agreement"), ("unanimous_case_rate", "unanimity"), ("judge_count", "judges")]),
+        "reproducibility": ("Repeatability", [("pairwise_agreement", "pairwise agreement"), ("unanimous_case_rate", "unanimity"), ("run_count", "runs")]),
+        "cost_efficiency": ("Cost and latency", [("total_cost_usd", "total USD"), ("cost_per_case_usd", "USD per case"), ("p95_latency_ms", "p95 ms"), ("timeout_rate", "timeout rate"), ("tool_call_count", "tool calls")]),
     }
+    for dimension in dimensions:
+        if dimension in labels:
+            title, fields = labels[dimension]
+            _metric_line(title, metrics[dimension], fields)
 
 
-def _print_local_results(config: dict[str, object], package: dict[str, object], *, summary_only: bool) -> None:
+def _print_local_results(config: dict[str, object], package: dict[str, object], *, summary_only: bool) -> dict[str, dict[str, object]]:
     """Present local results in a human-readable terminal report, never a release verdict."""
     evaluation = package["evaluation"]
     execution = package["execution"]
@@ -447,17 +441,21 @@ def _print_local_results(config: dict[str, object], package: dict[str, object], 
     predicted = evaluation["predicted_labels"]
     confidences = evaluation["confidences"]
     assert isinstance(expected, list) and isinstance(predicted, list) and isinstance(confidences, list)
-    metrics = _local_metrics(expected, predicted, confidences)
+    metrics = calculate_local_metrics(package)
+    classification = metrics["classification"]
+    confidence = metrics["confidence"]
+    correct_count = sum(actual == observed for actual, observed in zip(expected, predicted, strict=True))
     print("\nESX LOCAL EVALUATION")
     print("Status: COMPLETED LOCALLY (not uploaded; not a platform release decision)")
     print(f"Subject: {evaluation['agent_id']} {evaluation['subject_version']}")
     print(f"Dataset: {evaluation['dataset_version']}")
-    print(f"Cases: {metrics['case_count']} | Correct: {metrics['correct_count']} | Accuracy: {metrics['accuracy']:.3f}")
-    print(f"Macro precision: {metrics['macro_precision']:.3f} | Macro recall: {metrics['macro_recall']:.3f} | Macro F1: {metrics['macro_f1']:.3f}")
-    print(f"Brier score: {metrics['correctness_brier_score']:.3f} | Expected calibration error: {metrics['expected_calibration_error']:.3f}")
+    print(f"Cases: {classification['sample_size']} | Correct: {correct_count} | Accuracy: {classification['accuracy']:.3f}")
+    print(f"Macro precision: {classification['macro_precision']:.3f} | Macro recall: {classification['macro_recall']:.3f} | Macro F1: {classification['macro_f1']:.3f}")
+    print(f"Brier score: {confidence['correctness_brier_score']:.6f} | Expected calibration error: {confidence['expected_calibration_error']:.6f}")
     print(f"Duration: {execution['duration_ms']} ms | Required metrics: {', '.join(evaluation['required_dimensions'])}")
-    if metrics["case_count"] < 20:
-        print(f"Sample-size note: {metrics['case_count']} cases are valid for local testing. The 20-case minimum applies only to an optional governed ExposureScopeX release decision.")
+    if classification["sample_size"] < 20:
+        print(f"Sample-size note: {classification['sample_size']} cases are valid for local testing. The 20-case minimum applies only to an optional governed ExposureScopeX release decision.")
+    _print_advanced_metrics(metrics, evaluation["required_dimensions"])
     if not summary_only:
         dataset = config["dataset"]
         assert isinstance(dataset, dict) and isinstance(dataset["cases"], list)
@@ -467,6 +465,7 @@ def _print_local_results(config: dict[str, object], package: dict[str, object], 
             outcome = "CORRECT" if actual == observed else "INCORRECT"
             print(f"{item['case_id']}: {outcome} | expected={actual} | predicted={observed} | confidence={confidence:.3f}")
     print("\nNo prompts, model outputs, source files, tool data, environment variables, or credentials were sent to ExposureScopeX.")
+    return metrics
 
 
 def _read_secret_file(path: str | None) -> str | None:
@@ -515,11 +514,27 @@ def run_command(args: argparse.Namespace) -> int:
             raise RunnerError("--sign requires signing.identity_id and signing.private_key_path in the config")
         package = sign_package(package, identity_id=signing["identity_id"], private_key_path=signing["private_key_path"])
     _write_json(args.out, package)
+    local_metrics = calculate_local_metrics(package)
+    report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.json")
+    _write_json(report_path, {
+        "schema_version": "esx-local-evaluation-report-1.0",
+        "status": "completed_locally",
+        "package_id": package["package_id"],
+        "runner_version": package["runner_version"],
+        "subject": {
+            "agent_id": package["evaluation"]["agent_id"],
+            "subject_version": package["evaluation"]["subject_version"],
+            "dataset_version": package["evaluation"]["dataset_version"],
+        },
+        "metrics": local_metrics,
+        "notice": "This report was calculated locally. It is not a shared ExposureScopeX release decision.",
+    })
     if args.output_format == "json":
-        print(json.dumps({"package": str(args.out), "package_id": package["package_id"], "signed": "signature" in package, "uploaded": False}))
+        print(json.dumps({"package": str(args.out), "report": str(report_path), "package_id": package["package_id"], "signed": "signature" in package, "uploaded": False}))
     else:
         _print_local_results(config, package, summary_only=args.summary_only)
         print(f"\nLocal result package: {args.out}")
+        print(f"Detailed local metric report: {report_path}")
         if "signature" not in package:
             print("To request a governed shared decision later, add signing settings and run again with --sign, then use esx-eval upload.")
     return 0
