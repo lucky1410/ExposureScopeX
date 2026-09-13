@@ -8,12 +8,16 @@ import os
 from pathlib import Path
 import re
 import sys
+import webbrowser
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .local_metrics import calculate_local_metrics
+from .discovery import discover_repository
+from .report_html import render_local_report
 from .runner import RunnerError, build_package, generate_keypair, read_json, sign_package
+from .setup import serve_setup
 
 
 _PROJECT_KEY = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
@@ -538,7 +542,7 @@ def run_command(args: argparse.Namespace) -> int:
     _write_json(args.out, package)
     local_metrics = calculate_local_metrics(package)
     report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.json")
-    _write_json(report_path, {
+    report = {
         "schema_version": "esx-local-evaluation-report-1.0",
         "status": "completed_locally",
         "package_id": package["package_id"],
@@ -550,15 +554,38 @@ def run_command(args: argparse.Namespace) -> int:
         },
         "metrics": local_metrics,
         "notice": "This report was calculated locally. It is not a shared ExposureScopeX release decision.",
-    })
+    }
+    _write_json(report_path, report)
+    html_report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.html")
+    html_report_path.parent.mkdir(parents=True, exist_ok=True)
+    html_report_path.write_text(render_local_report(report), encoding="utf-8")
     if args.output_format == "json":
-        print(json.dumps({"package": str(args.out), "report": str(report_path), "package_id": package["package_id"], "signed": "signature" in package, "uploaded": False}))
+        print(json.dumps({"package": str(args.out), "report": str(report_path), "html_report": str(html_report_path), "package_id": package["package_id"], "signed": "signature" in package, "uploaded": False}))
     else:
         _print_local_results(config, package, summary_only=args.summary_only)
         print(f"\nLocal result package: {args.out}")
         print(f"Detailed local metric report: {report_path}")
+        print(f"Readable local HTML report: {html_report_path}")
         if "signature" not in package:
             print("To request a governed shared decision later, add signing settings and run again with --sign, then use esx-eval upload.")
+    return 0
+
+
+def discover_command(args: argparse.Namespace) -> int:
+    try:
+        result = discover_repository(args.repository)
+    except ValueError as exc:
+        raise RunnerError(str(exc)) from exc
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def view_command(args: argparse.Namespace) -> int:
+    report = Path(args.report).resolve()
+    if not report.is_file():
+        raise RunnerError(f"Local HTML report was not found: {report}")
+    webbrowser.open(report.as_uri())
+    print(f"Opened local report: {report}")
     return 0
 
 
@@ -616,6 +643,10 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--subject-type", choices=["model", "rag", "agent", "multi_agent_system"], default="agent")
     init.add_argument("--case-count", type=int, default=1, help="Number of local starter cases (1-10,000; default: 1)")
     init.add_argument("--full-metrics", action="store_true", help="Require grounding, security, trajectory, RAG, robustness, agreement, repeatability, and cost metrics")
+    setup = commands.add_parser("setup", help="Open a local page to connect an HTTP app and generate a reviewable test plan")
+    setup.add_argument("--directory", help="Suggested new folder for the generated local plan")
+    discover = commands.add_parser("discover", help="Scan a local repository for integration hints without exporting source")
+    discover.add_argument("--repository", required=True, help="Local application repository folder")
     run = commands.add_parser("run", help="Run locally and print results; it never uploads")
     run.add_argument("--config", required=True)
     run.add_argument("--out", required=True)
@@ -623,6 +654,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--sign", action="store_true", help="Opt in to signing for a later shared platform decision")
     run.add_argument("--summary-only", action="store_true", help="Do not print each case result")
     run.add_argument("--output-format", choices=["text", "json"], default="text", help="Terminal output format (default: text)")
+    view = commands.add_parser("view", help="Open a locally generated HTML evaluation report")
+    view.add_argument("--report", required=True, help="Path to evaluation.local-report.html")
     upload = commands.add_parser("upload", help="Send a package to ExposureScopeX")
     upload.add_argument("--api-url", required=True)
     upload.add_argument("--package", required=True)
@@ -643,8 +676,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "init":
             return init_command(args)
+        if args.command == "setup":
+            serve_setup(args.directory)
+            return 0
+        if args.command == "discover":
+            return discover_command(args)
         if args.command == "run":
             return run_command(args)
+        if args.command == "view":
+            return view_command(args)
         if args.command == "upload":
             return upload_command(args)
         if args.command == "github-oidc-token":

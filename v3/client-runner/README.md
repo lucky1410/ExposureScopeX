@@ -9,6 +9,42 @@ code, traces, environment variables, stderr, credentials, or results.
 Use the optional shared workflow only when a team wants ExposureScopeX to retain
 a governed release decision and formal report.
 
+## Recommended experience: test an application workflow
+
+For a normal AI web application, use the local setup page rather than writing
+an adapter. It generates an editable, versioned test plan for one real
+user-facing HTTP workflow. That workflow can orchestrate any number of
+internal agents, tools, retrievers, and models; the runner does not require a
+separate call for every internal agent.
+
+```powershell
+esx-eval setup --directory .\my-application-evaluation
+```
+
+The page opens only on `127.0.0.1`. It can optionally scan a local repository
+for framework, API-route, and observability hints without exporting source
+content. Then choose a `smoke`, `release`, or `red_team` baseline plan, enter
+the application's local HTTP endpoint and response fields, and create the
+plan. Every generated case remains editable in `esx-eval.json`; teams can add
+their own product, domain, and organization-policy cases.
+
+The built-in connector posts `{"message": "..."}` to the configured endpoint
+and reads a decision label plus numeric confidence from configured JSON paths.
+It accepts loopback URLs by default. A non-local staging endpoint requires the
+explicit `allow_remote` choice in the setup page or generated config.
+
+Run the generated plan and open its self-contained local report:
+
+```powershell
+Set-Location .\my-application-evaluation
+esx-eval run --config .\esx-eval.json --out .\out\evaluation.json
+esx-eval view --report .\out\evaluation.local-report.html
+```
+
+The terminal report and HTML report never upload automatically. The HTML report
+contains only derived, redacted evaluation data, not case prompts or raw model
+responses.
+
 ## Local-only quick start
 
 These steps are all a colleague needs for a real local test. No Docker,
@@ -38,9 +74,12 @@ required.
    esx-eval --help
    ```
 
-4. Create a one-case smoke-test starter folder. It proves the local connection
-   works; choose a larger `--case-count` whenever your team is ready to measure
-   quality across representative cases and classes.
+4. Prefer `esx-eval setup --directory .\my-application-evaluation` for a
+   standard HTTP application. Use the adapter starter below only when the
+   application has no suitable HTTP endpoint or needs advanced local telemetry.
+   It creates a one-case smoke-test folder; choose a larger `--case-count`
+   whenever your team is ready to measure quality across representative cases
+   and classes.
 
    ```powershell
    esx-eval init --directory .\my-agent-evaluation --agent-id support-agent --subject-version 2.4.0
@@ -170,10 +209,11 @@ they do not evaluate the real application.
    Use `--summary-only` for a large dataset. The default prints every case so a
    developer can see exactly what was correct or incorrect.
 
-   The detailed local report is `out/evaluation.local-report.json`. It contains
-   the confusion matrix and each calculated result. Any advanced metric without
-   the evidence needed to calculate it is labelled `not_measurable`; the runner
-   never substitutes a guessed score.
+   The detailed local reports are `out/evaluation.local-report.json` and
+   `out/evaluation.local-report.html`. They contain the confusion matrix and
+   each calculated result. Any advanced metric without the evidence needed to
+   calculate it is labelled `not_measurable`; the runner never substitutes a
+   guessed score.
 
 ## What local completion means
 

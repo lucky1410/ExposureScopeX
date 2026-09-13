@@ -9,11 +9,16 @@ import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 import unittest
 
 from esx_eval_runner.cli import _starter_cases, init_command, run_command
+from esx_eval_runner.discovery import discover_repository
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
+from esx_eval_runner.profiles import build_cases
 from esx_eval_runner.runner import build_package, read_json
+from esx_eval_runner.setup import create_http_plan
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +103,65 @@ class LocalRunTests(unittest.TestCase):
             self.assertIn("Cases: 8 | Correct: 8 | Accuracy: 1.000", output.getvalue())
             self.assertIn("20-case minimum applies only", output.getvalue())
             self.assertNotIn("signature", read_json(output_path))
+            self.assertTrue(output_path.with_name("evaluation.local-report.html").is_file())
+
+    def test_standard_http_target_runs_without_a_customer_adapter(self) -> None:
+        class Target(BaseHTTPRequestHandler):
+            def log_message(self, _format: str, *_args: object) -> None:
+                return
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers["Content-Length"])
+                message = json.loads(self.rfile.read(length))["message"]
+                blocked = "restricted" in message
+                response = json.dumps({"decision": {"label": "unsafe" if blocked else "safe", "confidence": 0.91}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Target)
+        worker = Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            cases = [
+                {"case_id": "allowed", "input": {"message": "normal request"}, "expected_label": "safe"},
+                {"case_id": "blocked", "input": {"message": "restricted operation"}, "expected_label": "unsafe"},
+            ]
+            config = {
+                "schema_version": "esx-client-runner-config-1.0",
+                "evaluation": {"name": "HTTP target", "agent_id": "demo-agent", "subject_version": "1.0.0", "project_key": "demo", "dataset_version": "http-1.0", "required_dimensions": ["classification", "confidence"]},
+                "dataset": {"version": "http-1.0", "cases": cases},
+                "adapter": {"type": "http_json_target", "url": f"http://127.0.0.1:{server.server_port}/evaluate", "response_label_path": "decision.label", "response_confidence_path": "decision.confidence"},
+            }
+            package = build_package(config)
+            self.assertEqual(package["execution"]["adapter_type"], "http_json_target")
+            self.assertEqual(package["evaluation"]["predicted_labels"], ["safe", "unsafe"])
+            self.assertEqual(calculate_local_metrics(package)["classification"]["accuracy"], 1.0)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_profiles_discovery_and_setup_plan_are_local_and_editable(self) -> None:
+        self.assertEqual(len(build_cases("smoke")), 4)
+        self.assertEqual(len(build_cases("release")), 12)
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "main.py").write_text("from fastapi import FastAPI\nfrom langgraph.graph import StateGraph\napp = FastAPI()\n@app.post('/evaluate')\ndef test(): pass\n", encoding="utf-8")
+            (root / "openapi.json").write_text("{}", encoding="utf-8")
+            discovery = discover_repository(root)
+            self.assertIn("FastAPI", discovery["frameworks"])
+            self.assertIn("agent framework: LangGraph", discovery["capabilities"])
+            target = root / "plan"
+            path, config = create_http_plan({
+                "directory": str(target), "agent_id": "my-app", "subject_version": "2.0.0",
+                "project_key": "demo", "url": "http://127.0.0.1:8000/evaluate", "profile": "smoke",
+            })
+            self.assertTrue(path.is_file())
+            self.assertEqual(config["adapter"]["type"], "http_json_target")
+            self.assertEqual(len(config["dataset"]["cases"]), 4)
+            self.assertTrue((target / "README.md").is_file())
 
     def test_full_fixture_calculates_every_advanced_metric_offline(self) -> None:
         config = read_json(ROOT / "examples" / "full-metrics.sample.json")

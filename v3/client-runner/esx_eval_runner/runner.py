@@ -11,6 +11,9 @@ import re
 import subprocess
 import time
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from cryptography.hazmat.primitives import serialization
@@ -115,11 +118,15 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
     adapter = config.get("adapter")
     if not isinstance(evaluation, dict) or not isinstance(dataset, dict) or not isinstance(adapter, dict):
         raise RunnerError("Config requires evaluation, dataset, and adapter objects")
-    if adapter.get("type") not in {"command_json_v1", "command_json_v2"}:
-        raise RunnerError("adapter.type must be command_json_v1 or command_json_v2")
-    command = adapter.get("command")
-    if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
-        raise RunnerError("adapter.command must be a non-empty string array")
+    adapter_type = adapter.get("type")
+    if adapter_type not in {"command_json_v1", "command_json_v2", "http_json_target"}:
+        raise RunnerError("adapter.type must be command_json_v1, command_json_v2, or http_json_target")
+    if adapter_type.startswith("command_"):
+        command = adapter.get("command")
+        if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
+            raise RunnerError("adapter.command must be a non-empty string array")
+    else:
+        _validate_http_target(adapter)
     timeout = adapter.get("timeout_seconds", 60)
     if not isinstance(timeout, int) or timeout < 1 or timeout > 300:
         raise RunnerError("adapter.timeout_seconds must be an integer between 1 and 300")
@@ -152,9 +159,31 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
     unsupported = sorted(dimensions - SUPPORTED_DIMENSIONS)
     if unsupported:
         raise RunnerError("Unsupported evaluation dimensions: " + ", ".join(unsupported))
-    if adapter["type"] == "command_json_v1" and dimensions != BASE_DIMENSIONS:
-        raise RunnerError("command_json_v1 supports classification and confidence only; use command_json_v2")
+    if adapter["type"] in {"command_json_v1", "http_json_target"} and dimensions != BASE_DIMENSIONS:
+        raise RunnerError("This connector supports classification and confidence only; use command_json_v2 for redacted advanced measurements")
     return evaluation, cases, adapter
+
+
+def _validate_http_target(adapter: dict[str, Any]) -> None:
+    url = adapter.get("url")
+    parsed = urlparse(url) if isinstance(url, str) else None
+    if not parsed or parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RunnerError("http_json_target.url must be an http or https URL")
+    loopback = parsed.hostname.lower() in {"localhost", "127.0.0.1", "::1"}
+    if not loopback and adapter.get("allow_remote") is not True:
+        raise RunnerError("http_json_target only permits loopback URLs by default; set allow_remote to true for an approved staging target")
+    if adapter.get("request_mode", "message") not in {"message", "input"}:
+        raise RunnerError("http_json_target.request_mode must be message or input")
+    for name in ("response_label_path", "response_confidence_path"):
+        value = adapter.get(name)
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", value):
+            raise RunnerError(f"http_json_target.{name} must be a dotted JSON object path")
+    headers = adapter.get("headers_from_env", {})
+    if not isinstance(headers, dict) or not all(
+        isinstance(header, str) and header and isinstance(env_name, str) and re.fullmatch(r"[A-Z_][A-Z0-9_]*", env_name)
+        for header, env_name in headers.items()
+    ):
+        raise RunnerError("http_json_target.headers_from_env must map header names to uppercase environment-variable names")
 
 
 def _invoke_command_adapter(
@@ -207,6 +236,63 @@ def _invoke_command_adapter(
     if not isinstance(response, dict) or response.get("schema_version") != expected_schema:
         raise RunnerError(f"Local adapter response schema_version must be {expected_schema}")
     return response, duration_ms, sha256(request), hashlib.sha256(completed.stdout).hexdigest()
+
+
+def _read_json_path(value: object, path: str) -> object:
+    current = value
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise RunnerError(f"HTTP target response is missing the configured field: {path}")
+        current = current[part]
+    return current
+
+
+def _invoke_http_json_target(
+    adapter: dict[str, Any], cases: list[dict[str, Any]], evaluation: dict[str, Any]
+) -> tuple[dict[str, Any], int, str, str]:
+    """Call a customer-owned JSON endpoint once per case without retaining responses."""
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    for header, env_name in adapter.get("headers_from_env", {}).items():
+        import os
+        secret = os.environ.get(env_name)
+        if not secret:
+            raise RunnerError(f"The HTTP target requires environment variable {env_name}")
+        headers[header] = secret
+    results = []
+    response_hash = hashlib.sha256()
+    request_summary = []
+    started = time.monotonic()
+    for case in cases:
+        input_data = case["input"]
+        if adapter.get("request_mode", "message") == "message":
+            message = input_data.get("message") if isinstance(input_data, dict) else None
+            if not isinstance(message, str):
+                raise RunnerError("http_json_target request_mode=message requires every case input.message to be a string")
+            body: dict[str, Any] = {"message": message}
+        else:
+            body = {"input": input_data}
+        request_summary.append({"case_id": case["case_id"], "body_sha256": sha256(body)})
+        try:
+            request = Request(adapter["url"], data=canonical_json(body), headers=headers, method="POST")
+            with urlopen(request, timeout=adapter.get("timeout_seconds", 60)) as raw_response:
+                response_bytes = raw_response.read(1_048_577)
+        except HTTPError as exc:
+            raise RunnerError(f"HTTP target returned status {exc.code}; its body remains local") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise RunnerError("HTTP target could not be reached") from exc
+        if len(response_bytes) > 1_048_576:
+            raise RunnerError("HTTP target response exceeded 1 MB")
+        response_hash.update(response_bytes)
+        try:
+            payload = json.loads(response_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RunnerError("HTTP target did not return a JSON object") from exc
+        label = _read_json_path(payload, adapter["response_label_path"])
+        confidence = _read_json_path(payload, adapter["response_confidence_path"])
+        results.append({"case_id": case["case_id"], "predicted_label": label, "confidence": confidence})
+    response = {"schema_version": ADAPTER_RESPONSE_SCHEMA_VERSION_V2, "results": results, "measurements": {}}
+    duration_ms = round((time.monotonic() - started) * 1000)
+    return response, duration_ms, sha256(request_summary), response_hash.hexdigest()
 
 
 def _normalise_results(cases: list[dict[str, Any]], response: dict[str, Any]) -> tuple[list[str], list[float]]:
@@ -574,7 +660,7 @@ def _normalise_measurements(
     adapter_type: str,
     required_dimensions: list[str],
 ) -> dict[str, Any]:
-    if adapter_type == "command_json_v1":
+    if adapter_type in {"command_json_v1", "http_json_target"}:
         return {}
     raw = response.get("measurements", {})
     if not isinstance(raw, dict):
@@ -637,7 +723,10 @@ def _github_source(token: str) -> dict[str, Any]:
 
 def build_package(config: dict[str, Any], *, github_oidc_token: str | None = None) -> dict[str, Any]:
     evaluation, cases, adapter = _validate_config(config)
-    response, duration_ms, request_sha, response_sha = _invoke_command_adapter(adapter, cases, evaluation)
+    if adapter["type"] == "http_json_target":
+        response, duration_ms, request_sha, response_sha = _invoke_http_json_target(adapter, cases, evaluation)
+    else:
+        response, duration_ms, request_sha, response_sha = _invoke_command_adapter(adapter, cases, evaluation)
     predicted_labels, confidences = _normalise_results(cases, response)
     measurements = _normalise_measurements(
         response,
