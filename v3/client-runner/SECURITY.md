@@ -5,6 +5,7 @@
 - Local setup UI binds to `127.0.0.1` and requires an unpredictable per-run request token.
 - HTTP evaluation defaults to loopback-only targets.
 - Remote targets require explicit staging approval, HTTPS, and mutual TLS.
+- Remote targets must also return a nonce-bound Ed25519 attestation confirming test-tenant, synthetic-data, action-disablement, and least-privilege capabilities before cases are sent.
 - Redirects, URL credentials, and URL query strings are rejected.
 - HTTP evaluation traffic has case-count and pacing limits and an evaluation-mode header.
 - Optional custom-adapter containers run without network or host mounts, with a read-only filesystem, a non-root user, dropped capabilities, and resource limits.
@@ -16,6 +17,7 @@
 
 - Use a dedicated test tenant, test identities, least-privilege credentials, and synthetic test data.
 - Configure the target to reject production actions from the evaluation identity.
+- Host a signed target-attestation endpoint beside every approved staging target and protect its signing key in the organization's secret manager.
 - Inject connector secrets from the organization's approved secret manager into environment variables at runtime.
 - Store audit-tail hashes in a separate approved audit system for tamper-evident retention.
 - Allow only approved staging endpoints and certificate authorities through enterprise egress controls.

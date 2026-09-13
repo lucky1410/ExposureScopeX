@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from contextlib import redirect_stdout
 import io
 import json
@@ -13,12 +14,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 import unittest
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+
 from esx_eval_runner.cli import _starter_cases, init_command, run_command
-from esx_eval_runner.audit import verify_audit_log
+from esx_eval_runner.audit import append_audit_event, verify_audit_log
 from esx_eval_runner.discovery import discover_repository
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
 from esx_eval_runner.profiles import build_cases
-from esx_eval_runner.runner import RunnerError, _adapter_command, build_package, read_json
+from esx_eval_runner.runner import RunnerError, _adapter_command, _verify_target_attestation, build_package, canonical_json, read_json
 from esx_eval_runner.setup import create_http_plan
 
 
@@ -191,6 +195,47 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("--cap-drop", command)
         self.assertIn("no-new-privileges", command)
         self.assertNotIn("--volume", command)
+
+    def test_signed_staging_attestation_confirms_test_tenant_before_cases(self) -> None:
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        public_key = base64.b64encode(private_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode("ascii")
+
+        class Response:
+            def __init__(self, payload: dict[str, object]) -> None:
+                self.payload = json.dumps(payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self, _size: int) -> bytes:
+                return self.payload
+
+        class Opener:
+            def open(self, request, timeout: int):  # type: ignore[no-untyped-def]
+                payload = {
+                    "schema_version": "esx-test-target-attestation-1.0",
+                    "nonce": request.headers["X-esx-evaluation-nonce"],
+                    "target_environment": "staging",
+                    "test_tenant_id": "tenant-test-01",
+                    "capabilities": ["test_tenant", "synthetic_data", "production_actions_disabled", "least_privilege_identity"],
+                }
+                payload["signature"] = {"algorithm": "ed25519", "value": base64.b64encode(private_key.sign(canonical_json(payload))).decode("ascii")}
+                return Response(payload)
+
+        adapter = {"target_attestation": {"url": "https://staging.example.test/evaluation-attestation", "public_key": public_key, "required_capabilities": ["test_tenant", "synthetic_data", "production_actions_disabled", "least_privilege_identity"]}, "timeout_seconds": 30}
+        self.assertEqual(len(_verify_target_attestation(adapter, Opener())), 64)
+
+    def test_audit_chain_detects_tampering(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "evaluation.audit.jsonl"
+            append_audit_event(path, "evaluation_started", {"config_sha256": "a" * 64})
+            append_audit_event(path, "evaluation_completed", {"package_sha256": "b" * 64})
+            path.write_text(path.read_text(encoding="utf-8").replace("evaluation_completed", "evaluation_altered"), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid hash"):
+                verify_audit_log(path)
 
     def test_full_fixture_calculates_every_advanced_metric_offline(self) -> None:
         config = read_json(ROOT / "examples" / "full-metrics.sample.json")

@@ -53,6 +53,19 @@ def create_http_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
 
 def _plan_readme(config: dict[str, Any]) -> str:
     adapter = config["adapter"]
+    staging_note = ""
+    if adapter["target_environment"] == "staging":
+        staging_note = '''
+
+## Required staging security configuration
+
+This plan cannot run against a remote target until the `adapter` configuration
+also includes mTLS `client_certificate_path` and `client_private_key_path`, plus
+a signed `target_attestation`. The attestation endpoint must be on the same
+HTTPS host and prove that this is a synthetic-data test tenant with production
+actions disabled. See the runner's `README.md` Security boundary section before
+adding those values. Do not downgrade this target to plain HTTP.
+'''
     return f'''# Local pre-release evaluation
 
 This folder was generated locally by `esx-eval setup`. It evaluates a customer-owned HTTP application without uploading prompts, responses, source code, credentials, or results.
@@ -74,7 +87,7 @@ The terminal and HTML report are private and local. A successful smoke plan prov
 ## Advanced assurance metrics
 
 Grounding, RAG, tool/trajectory, security detection, robustness, repeatability, judge agreement, and provider cost metrics require redacted telemetry from the application. Use the advanced `command_json_v2` adapter only when those local measurements are available. Missing evidence is reported as `NOT MEASURABLE`, never invented.
-'''
+{staging_note}'''
 
 
 def serve_setup(default_directory: str | None = None) -> None:

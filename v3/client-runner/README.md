@@ -78,6 +78,33 @@ secrets. Its hash chain detects accidental or partial modification; it is not
 immutable against an attacker who can rewrite the whole local log. Preserve its
 tail hash in an approved external audit system for a tamper-evident anchor.
 
+### Approved staging targets
+
+A remote target is intentionally more strict than a loopback development run.
+It must use mTLS and expose an HTTPS attestation endpoint on the same host. The
+endpoint receives `X-ESX-Evaluation-Nonce` and returns this signed payload:
+
+```json
+{
+  "schema_version": "esx-test-target-attestation-1.0",
+  "nonce": "the request header value",
+  "target_environment": "staging",
+  "test_tenant_id": "opaque-test-tenant-id",
+  "capabilities": [
+    "test_tenant",
+    "synthetic_data",
+    "production_actions_disabled",
+    "least_privilege_identity"
+  ],
+  "signature": {"algorithm": "ed25519", "value": "base64-signature"}
+}
+```
+
+Sign the object without `signature` using the target's Ed25519 key. Configure
+the corresponding public key and mTLS file paths in `esx-eval.json`. The runner
+rejects the run before submitting cases if this proof is missing, stale/replayed
+through the nonce check, malformed, or invalidly signed.
+
 ## Local-only quick start
 
 These steps are all a colleague needs for a real local test. No Docker,

@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 from uuid import uuid4
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
@@ -191,6 +192,7 @@ def _validate_http_target(adapter: dict[str, Any]) -> None:
     elif adapter.get("allow_remote") is not True or environment != "staging":
         raise RunnerError("A non-local target requires allow_remote=true and target_environment=staging; production targets are not supported")
     _validate_tls_config(adapter.get("tls"), required=not loopback)
+    _validate_target_attestation(adapter, required=not loopback)
     if adapter.get("request_mode", "message") not in {"message", "input"}:
         raise RunnerError("http_json_target.request_mode must be message or input")
     for name in ("response_label_path", "response_confidence_path"):
@@ -278,6 +280,81 @@ def _validate_tls_config(value: object, *, required: bool) -> None:
     ca_path = value.get("ca_certificate_path")
     if ca_path is not None and (not isinstance(ca_path, str) or not ca_path or not Path(ca_path).is_file()):
         raise RunnerError("http_json_target.tls.ca_certificate_path must name an existing local file")
+
+
+def _validate_target_attestation(adapter: dict[str, Any], *, required: bool) -> None:
+    value = adapter.get("target_attestation")
+    if value is None:
+        if required:
+            raise RunnerError("Approved staging targets require a signed target_attestation")
+        return
+    if not isinstance(value, dict):
+        raise RunnerError("http_json_target.target_attestation must be an object")
+    allowed = {"url", "public_key", "required_capabilities"}
+    if unknown := sorted(set(value) - allowed):
+        raise RunnerError("http_json_target.target_attestation has unsupported fields: " + ", ".join(unknown))
+    target = urlparse(adapter["url"])
+    attestation_url = value.get("url")
+    parsed = urlparse(attestation_url) if isinstance(attestation_url, str) else None
+    if not parsed or parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise RunnerError("target_attestation.url must be an HTTPS URL without credentials, query string, or fragment")
+    if (parsed.hostname, parsed.port or 443) != (target.hostname, target.port or 443):
+        raise RunnerError("target_attestation.url must use the same host and port as the configured staging target")
+    public_key = value.get("public_key")
+    if not isinstance(public_key, str) or len(_base64(public_key, "target attestation public key")) != 32:
+        raise RunnerError("target_attestation.public_key must be a base64 Ed25519 public key")
+    capabilities = value.get("required_capabilities")
+    allowed_capabilities = {"test_tenant", "synthetic_data", "production_actions_disabled", "least_privilege_identity"}
+    if not isinstance(capabilities, list) or set(capabilities) != allowed_capabilities or not all(isinstance(item, str) for item in capabilities):
+        raise RunnerError("target_attestation.required_capabilities must require test_tenant, synthetic_data, production_actions_disabled, and least_privilege_identity")
+
+
+def _verify_target_attestation(adapter: dict[str, Any], opener: Any) -> str | None:
+    definition = adapter.get("target_attestation")
+    if not isinstance(definition, dict):
+        return None
+    nonce = str(uuid4())
+    request = Request(definition["url"], headers={"Accept": "application/json", "X-ESX-Evaluation-Nonce": nonce}, method="GET")
+    try:
+        with opener.open(request, timeout=adapter.get("timeout_seconds", 60)) as response:
+            raw = response.read(65_537)
+    except HTTPError as exc:
+        raise RunnerError(f"Staging target attestation returned status {exc.code}") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise RunnerError("Staging target attestation could not be reached") from exc
+    if len(raw) > 65_536:
+        raise RunnerError("Staging target attestation exceeded 64 KB")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RunnerError("Staging target attestation did not return JSON") from exc
+    if not isinstance(payload, dict):
+        raise RunnerError("Staging target attestation must be a JSON object")
+    signature = payload.pop("signature", None)
+    expected = {
+        "schema_version": "esx-test-target-attestation-1.0",
+        "nonce": nonce,
+        "target_environment": "staging",
+    }
+    if any(payload.get(key) != value for key, value in expected.items()):
+        raise RunnerError("Staging target attestation did not match this evaluation request")
+    if not isinstance(payload.get("test_tenant_id"), str):
+        raise RunnerError("Staging target attestation must include an opaque test_tenant_id")
+    _safe_reference(payload["test_tenant_id"], "target attestation test_tenant_id")
+    capabilities = payload.get("capabilities")
+    if not isinstance(capabilities, list) or not all(isinstance(item, str) for item in capabilities):
+        raise RunnerError("Staging target attestation must include capabilities")
+    required = set(definition["required_capabilities"])
+    if not required.issubset(capabilities):
+        raise RunnerError("Staging target attestation does not confirm every required safety capability")
+    if not isinstance(signature, dict) or signature.get("algorithm") != "ed25519" or not isinstance(signature.get("value"), str):
+        raise RunnerError("Staging target attestation must contain an Ed25519 signature")
+    try:
+        public_key = ed25519.Ed25519PublicKey.from_public_bytes(_base64(definition["public_key"], "target attestation public key"))
+        public_key.verify(_base64(signature["value"], "target attestation signature"), canonical_json(payload))
+    except (ValueError, InvalidSignature, RunnerError) as exc:
+        raise RunnerError("Staging target attestation signature is invalid") from exc
+    return sha256(payload)
 
 
 def _http_opener(adapter: dict[str, Any]):
@@ -385,6 +462,7 @@ def _invoke_http_json_target(
     request_summary = []
     started = time.monotonic()
     opener = _http_opener(adapter)
+    attestation_sha256 = _verify_target_attestation(adapter, opener)
     for index, case in enumerate(cases):
         input_data = case["input"]
         if adapter.get("request_mode", "message") == "message":
@@ -417,6 +495,8 @@ def _invoke_http_json_target(
             time.sleep(adapter.get("minimum_delay_ms", 100) / 1000)
     response = {"schema_version": ADAPTER_RESPONSE_SCHEMA_VERSION_V2, "results": results, "measurements": {}}
     duration_ms = round((time.monotonic() - started) * 1000)
+    if attestation_sha256:
+        request_summary.insert(0, {"target_attestation_sha256": attestation_sha256})
     return response, duration_ms, sha256(request_summary), response_hash.hexdigest()
 
 
