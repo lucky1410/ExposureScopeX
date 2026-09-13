@@ -9,12 +9,13 @@ import ipaddress
 import json
 from pathlib import Path
 import re
+import ssl
 import subprocess
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 from uuid import uuid4
 
 from cryptography.hazmat.primitives import serialization
@@ -133,6 +134,7 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
         command = adapter.get("command")
         if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
             raise RunnerError("adapter.command must be a non-empty string array")
+        _validate_sandbox(adapter.get("sandbox"))
     else:
         _validate_http_target(adapter)
     timeout = adapter.get("timeout_seconds", 60)
@@ -188,6 +190,7 @@ def _validate_http_target(adapter: dict[str, Any]) -> None:
         raise RunnerError("Non-local HTTP targets must use HTTPS")
     elif adapter.get("allow_remote") is not True or environment != "staging":
         raise RunnerError("A non-local target requires allow_remote=true and target_environment=staging; production targets are not supported")
+    _validate_tls_config(adapter.get("tls"), required=not loopback)
     if adapter.get("request_mode", "message") not in {"message", "input"}:
         raise RunnerError("http_json_target.request_mode must be message or input")
     for name in ("response_label_path", "response_confidence_path"):
@@ -217,6 +220,85 @@ def _is_loopback_host(hostname: str) -> bool:
         return False
 
 
+def _validate_sandbox(value: object) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise RunnerError("adapter.sandbox must be an object")
+    allowed = {"mode", "image", "memory_mb", "cpu_limit", "pids_limit"}
+    if unknown := sorted(set(value) - allowed):
+        raise RunnerError("adapter.sandbox has unsupported fields: " + ", ".join(unknown))
+    if value.get("mode") != "container":
+        raise RunnerError("adapter.sandbox.mode must be container")
+    image = value.get("image")
+    if not isinstance(image, str) or not re.fullmatch(r"[^@\s]+@sha256:[a-f0-9]{64}", image):
+        raise RunnerError("adapter.sandbox.image must be a digest-pinned container image")
+    memory_mb = value.get("memory_mb", 512)
+    if not isinstance(memory_mb, int) or memory_mb < 64 or memory_mb > 4096:
+        raise RunnerError("adapter.sandbox.memory_mb must be an integer between 64 and 4096")
+    cpu_limit = value.get("cpu_limit", 1.0)
+    if not isinstance(cpu_limit, (int, float)) or isinstance(cpu_limit, bool) or cpu_limit <= 0 or cpu_limit > 4:
+        raise RunnerError("adapter.sandbox.cpu_limit must be a number above 0 and at most 4")
+    pids_limit = value.get("pids_limit", 64)
+    if not isinstance(pids_limit, int) or pids_limit < 16 or pids_limit > 512:
+        raise RunnerError("adapter.sandbox.pids_limit must be an integer between 16 and 512")
+
+
+def _adapter_command(adapter: dict[str, Any]) -> list[str]:
+    sandbox = adapter.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return adapter["command"]
+    return [
+        "docker", "run", "--rm", "--network", "none", "--read-only",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+        "--pids-limit", str(sandbox.get("pids_limit", 64)),
+        "--memory", f"{sandbox.get('memory_mb', 512)}m",
+        "--cpus", str(sandbox.get("cpu_limit", 1.0)),
+        "--user", "65532:65532", "-i", sandbox["image"], *adapter["command"],
+    ]
+
+
+def _validate_tls_config(value: object, *, required: bool) -> None:
+    if value is None:
+        if required:
+            raise RunnerError("Approved staging targets require a mutual-TLS configuration")
+        return
+    if not isinstance(value, dict):
+        raise RunnerError("http_json_target.tls must be an object")
+    allowed = {"client_certificate_path", "client_private_key_path", "private_key_password_env", "ca_certificate_path"}
+    if unknown := sorted(set(value) - allowed):
+        raise RunnerError("http_json_target.tls has unsupported fields: " + ", ".join(unknown))
+    for field in ("client_certificate_path", "client_private_key_path"):
+        path = value.get(field)
+        if not isinstance(path, str) or not path or not Path(path).is_file():
+            raise RunnerError(f"http_json_target.tls.{field} must name an existing local file")
+    password_env = value.get("private_key_password_env")
+    if password_env is not None and (not isinstance(password_env, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", password_env)):
+        raise RunnerError("http_json_target.tls.private_key_password_env must be an uppercase environment-variable name")
+    ca_path = value.get("ca_certificate_path")
+    if ca_path is not None and (not isinstance(ca_path, str) or not ca_path or not Path(ca_path).is_file()):
+        raise RunnerError("http_json_target.tls.ca_certificate_path must name an existing local file")
+
+
+def _http_opener(adapter: dict[str, Any]):
+    tls = adapter.get("tls")
+    if not isinstance(tls, dict):
+        return build_opener(_NoRedirect())
+    context = ssl.create_default_context(cafile=tls.get("ca_certificate_path"))
+    password_env = tls.get("private_key_password_env")
+    password = None
+    if password_env:
+        import os
+        password = os.environ.get(password_env)
+        if not password:
+            raise RunnerError(f"The mutual-TLS key requires environment variable {password_env}")
+    try:
+        context.load_cert_chain(tls["client_certificate_path"], tls["client_private_key_path"], password=password)
+    except (OSError, ssl.SSLError) as exc:
+        raise RunnerError("Could not load the mutual-TLS certificate or private key") from exc
+    return build_opener(_NoRedirect(), HTTPSHandler(context=context))
+
+
 def _invoke_command_adapter(
     adapter: dict[str, Any],
     cases: list[dict[str, Any]],
@@ -239,7 +321,7 @@ def _invoke_command_adapter(
     started = time.monotonic()
     try:
         completed = subprocess.run(
-            adapter["command"],
+            _adapter_command(adapter),
             input=request_bytes,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -248,7 +330,8 @@ def _invoke_command_adapter(
             shell=False,
         )
     except FileNotFoundError as exc:
-        raise RunnerError(f"Local adapter executable was not found: {adapter['command'][0]}") from exc
+        executable = "Docker" if isinstance(adapter.get("sandbox"), dict) else adapter["command"][0]
+        raise RunnerError(f"Local adapter executable was not found: {executable}") from exc
     except subprocess.TimeoutExpired as exc:
         raise RunnerError("Local adapter exceeded its configured timeout") from exc
     duration_ms = round((time.monotonic() - started) * 1000)
@@ -301,7 +384,7 @@ def _invoke_http_json_target(
     response_hash = hashlib.sha256()
     request_summary = []
     started = time.monotonic()
-    opener = build_opener(_NoRedirect())
+    opener = _http_opener(adapter)
     for index, case in enumerate(cases):
         input_data = case["input"]
         if adapter.get("request_mode", "message") == "message":
@@ -794,6 +877,7 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
         "runner_version": __version__,
         "execution": {
             "adapter_type": adapter["type"],
+            "sandbox_mode": adapter.get("sandbox", {}).get("mode", "none") if isinstance(adapter.get("sandbox"), dict) else "none",
             "case_count": len(cases),
             "duration_ms": duration_ms,
             "request_sha256": request_sha,

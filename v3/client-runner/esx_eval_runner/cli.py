@@ -13,10 +13,11 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .audit import append_audit_event, verify_audit_log
 from .local_metrics import calculate_local_metrics
 from .discovery import discover_repository
 from .report_html import render_local_report
-from .runner import RunnerError, build_package, generate_keypair, read_json, sign_package
+from .runner import RunnerError, build_package, generate_keypair, read_json, sha256, sign_package
 from .setup import serve_setup
 
 
@@ -533,13 +534,32 @@ def github_oidc_token(audience: str) -> str:
 def run_command(args: argparse.Namespace) -> int:
     config = read_json(args.config)
     oidc_token = _read_secret_file(args.github_oidc_token_file)
-    package = build_package(config, github_oidc_token=oidc_token)
+    audit_path = _audit_path(args.out, config)
+    adapter = config.get("adapter", {})
+    adapter_type = adapter.get("type") if isinstance(adapter, dict) else "unknown"
+    target_environment = adapter.get("target_environment", "local") if isinstance(adapter, dict) else "unknown"
+    append_audit_event(audit_path, "evaluation_started", {
+        "config_sha256": sha256(config),
+        "adapter_type": adapter_type,
+        "target_environment": target_environment,
+    })
+    try:
+        package = build_package(config, github_oidc_token=oidc_token)
+    except RunnerError:
+        append_audit_event(audit_path, "evaluation_failed", {"config_sha256": sha256(config), "failure_category": "runner_error"})
+        raise
     signing = config.get("signing")
     if args.sign and oidc_token is None:
         if not isinstance(signing, dict) or not isinstance(signing.get("identity_id"), str) or not isinstance(signing.get("private_key_path"), str):
             raise RunnerError("--sign requires signing.identity_id and signing.private_key_path in the config")
         package = sign_package(package, identity_id=signing["identity_id"], private_key_path=signing["private_key_path"])
     _write_json(args.out, package)
+    audit_entry = append_audit_event(audit_path, "evaluation_completed", {
+        "package_id": package["package_id"],
+        "package_sha256": sha256(package),
+        "signed": "signature" in package,
+        "duration_ms": package["execution"]["duration_ms"],
+    })
     local_metrics = calculate_local_metrics(package)
     report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.json")
     report = {
@@ -560,15 +580,29 @@ def run_command(args: argparse.Namespace) -> int:
     html_report_path.parent.mkdir(parents=True, exist_ok=True)
     html_report_path.write_text(render_local_report(report), encoding="utf-8")
     if args.output_format == "json":
-        print(json.dumps({"package": str(args.out), "report": str(report_path), "html_report": str(html_report_path), "package_id": package["package_id"], "signed": "signature" in package, "uploaded": False}))
+        print(json.dumps({"package": str(args.out), "report": str(report_path), "html_report": str(html_report_path), "audit_log": str(audit_path), "audit_tail_sha256": audit_entry["entry_sha256"], "package_id": package["package_id"], "signed": "signature" in package, "uploaded": False}))
     else:
         _print_local_results(config, package, summary_only=args.summary_only)
         print(f"\nLocal result package: {args.out}")
         print(f"Detailed local metric report: {report_path}")
         print(f"Readable local HTML report: {html_report_path}")
+        print(f"Local audit log: {audit_path}")
         if "signature" not in package:
             print("To request a governed shared decision later, add signing settings and run again with --sign, then use esx-eval upload.")
     return 0
+
+
+def _audit_path(output_path: str | Path, config: dict[str, object]) -> Path:
+    security = config.get("security", {})
+    if not isinstance(security, dict):
+        raise RunnerError("security must be an object when supplied")
+    configured = security.get("audit_log_path")
+    if configured is not None:
+        if not isinstance(configured, str) or not configured:
+            raise RunnerError("security.audit_log_path must be a non-empty local path")
+        return Path(configured)
+    output = Path(output_path)
+    return output.with_name(output.stem + ".audit.jsonl")
 
 
 def discover_command(args: argparse.Namespace) -> int:
@@ -586,6 +620,14 @@ def view_command(args: argparse.Namespace) -> int:
         raise RunnerError(f"Local HTML report was not found: {report}")
     webbrowser.open(report.as_uri())
     print(f"Opened local report: {report}")
+    return 0
+
+
+def verify_audit_command(args: argparse.Namespace) -> int:
+    try:
+        print(json.dumps(verify_audit_log(args.audit_log), indent=2))
+    except ValueError as exc:
+        raise RunnerError(str(exc)) from exc
     return 0
 
 
@@ -656,6 +698,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--output-format", choices=["text", "json"], default="text", help="Terminal output format (default: text)")
     view = commands.add_parser("view", help="Open a locally generated HTML evaluation report")
     view.add_argument("--report", required=True, help="Path to evaluation.local-report.html")
+    verify_audit = commands.add_parser("verify-audit", help="Verify the local audit log hash chain")
+    verify_audit.add_argument("--audit-log", required=True)
     upload = commands.add_parser("upload", help="Send a package to ExposureScopeX")
     upload.add_argument("--api-url", required=True)
     upload.add_argument("--package", required=True)
@@ -685,6 +729,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_command(args)
         if args.command == "view":
             return view_command(args)
+        if args.command == "verify-audit":
+            return verify_audit_command(args)
         if args.command == "upload":
             return upload_command(args)
         if args.command == "github-oidc-token":

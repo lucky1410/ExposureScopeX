@@ -14,10 +14,11 @@ from threading import Thread
 import unittest
 
 from esx_eval_runner.cli import _starter_cases, init_command, run_command
+from esx_eval_runner.audit import verify_audit_log
 from esx_eval_runner.discovery import discover_repository
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
 from esx_eval_runner.profiles import build_cases
-from esx_eval_runner.runner import RunnerError, build_package, read_json
+from esx_eval_runner.runner import RunnerError, _adapter_command, build_package, read_json
 from esx_eval_runner.setup import create_http_plan
 
 
@@ -104,6 +105,8 @@ class LocalRunTests(unittest.TestCase):
             self.assertIn("20-case minimum applies only", output.getvalue())
             self.assertNotIn("signature", read_json(output_path))
             self.assertTrue(output_path.with_name("evaluation.local-report.html").is_file())
+            audit = verify_audit_log(output_path.with_name("evaluation.audit.jsonl"))
+            self.assertEqual(audit["record_count"], 2)
 
     def test_standard_http_target_runs_without_a_customer_adapter(self) -> None:
         class Target(BaseHTTPRequestHandler):
@@ -175,6 +178,19 @@ class LocalRunTests(unittest.TestCase):
         unapproved = {**base, "adapter": {"type": "http_json_target", "url": "https://staging.example.test/evaluate", "response_label_path": "label", "response_confidence_path": "confidence", "target_environment": "staging"}}
         with self.assertRaisesRegex(RunnerError, "requires allow_remote"):
             build_package(unapproved)
+        no_mtls = {**base, "adapter": {"type": "http_json_target", "url": "https://staging.example.test/evaluate", "response_label_path": "label", "response_confidence_path": "confidence", "allow_remote": True, "target_environment": "staging"}}
+        with self.assertRaisesRegex(RunnerError, "mutual-TLS"):
+            build_package(no_mtls)
+
+    def test_container_sandbox_has_no_network_or_host_mounts(self) -> None:
+        command = _adapter_command({
+            "command": ["python", "/runner/adapter.py"],
+            "sandbox": {"mode": "container", "image": "registry.example.test/esx-adapter@sha256:" + "a" * 64},
+        })
+        self.assertEqual(command[:6], ["docker", "run", "--rm", "--network", "none", "--read-only"])
+        self.assertIn("--cap-drop", command)
+        self.assertIn("no-new-privileges", command)
+        self.assertNotIn("--volume", command)
 
     def test_full_fixture_calculates_every_advanced_metric_offline(self) -> None:
         config = read_json(ROOT / "examples" / "full-metrics.sample.json")

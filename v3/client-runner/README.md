@@ -49,8 +49,9 @@ responses.
 
 The local setup page binds only to `127.0.0.1`. The built-in HTTP connector
 accepts loopback targets only by default. A remote target must be explicitly
-marked as `staging` and use HTTPS; plain remote HTTP, URL credentials, query
-secrets, and redirects are rejected. Requests are identified with an
+marked as `staging`, use HTTPS, and present a mutual-TLS client certificate;
+plain remote HTTP, URL credentials, query secrets, and redirects are rejected.
+Requests are identified with an
 `X-ESX-Evaluation-Mode: local-pre-release` header, are limited to 500 cases by
 default, and pause briefly between cases.
 
@@ -58,7 +59,24 @@ This is a secure-by-default baseline, not a sandbox. A run can still invoke a
 real workflow and its tools. Use a dedicated test tenant, least-privilege test
 credentials, safe test data, and an endpoint that rejects production actions.
 Do not configure production systems as staging. Command adapters are trusted
-local code and run with the invoking user's OS permissions.
+local code and run with the invoking user's OS permissions unless they use the
+optional container sandbox. A sandboxed adapter uses a digest-pinned image with
+no network, no host mounts, a read-only filesystem, dropped Linux capabilities,
+a non-root user, and CPU, memory, and process limits. It is intended for
+offline adapters; it cannot call a local HTTP application because its network
+is intentionally disabled.
+
+Every run also appends redacted lifecycle metadata and hashes to a local audit
+chain beside its output. Verify the chain with:
+
+```powershell
+esx-eval verify-audit --audit-log .\out\evaluation.audit.jsonl
+```
+
+The audit log intentionally contains no prompts, responses, source files, or
+secrets. Its hash chain detects accidental or partial modification; it is not
+immutable against an attacker who can rewrite the whole local log. Preserve its
+tail hash in an approved external audit system for a tamper-evident anchor.
 
 ## Local-only quick start
 

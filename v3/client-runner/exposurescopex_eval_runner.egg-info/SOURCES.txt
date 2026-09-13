@@ -1,6 +1,7 @@
 README.md
 pyproject.toml
 esx_eval_runner/__init__.py
+esx_eval_runner/audit.py
 esx_eval_runner/cli.py
 esx_eval_runner/discovery.py
 esx_eval_runner/http_bridge.py
