@@ -38,12 +38,12 @@ required.
    esx-eval --help
    ```
 
-4. Create an eight-case starter folder. Eight cases are enough for a local
-   functional check; choose a larger even count with `--case-count` whenever
-   your team is ready.
+4. Create a one-case smoke-test starter folder. It proves the local connection
+   works; choose a larger `--case-count` whenever your team is ready to measure
+   quality across representative cases and classes.
 
    ```powershell
-   esx-eval init --directory .\my-agent-evaluation --agent-id support-agent --subject-version 2.4.0 --case-count 8
+   esx-eval init --directory .\my-agent-evaluation --agent-id support-agent --subject-version 2.4.0
    Set-Location .\my-agent-evaluation
    ```
 
@@ -79,8 +79,9 @@ calculated from the declared local labels. It is intentionally **not** a
 platform pass/fail decision. In particular, an 8/8 local result is successful
 local test execution, not a claim that eight examples prove release readiness.
 
-The runner allows 1 to 10,000 cases. ExposureScopeX's optional governed release
-policy requires at least 20 labelled cases and at least two ground-truth
+The runner allows 1 to 10,000 cases. A one-case run is a connection smoke test,
+not enough data to describe model quality. ExposureScopeX's optional governed
+release policy requires at least 20 labelled cases and at least two ground-truth
 classes. That threshold is never applied to a local-only run.
 
 ## Optional shared platform decision

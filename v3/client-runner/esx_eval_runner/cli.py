@@ -19,19 +19,22 @@ _PROJECT_KEY = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 
 
 def _starter_cases(case_count: int) -> list[dict[str, object]]:
-    """Generate a balanced local-only dataset skeleton, never a passing benchmark."""
+    """Generate a local-only dataset skeleton, never a passing benchmark."""
     cases: list[dict[str, object]] = []
-    for index in range(1, (case_count // 2) + 1):
-        cases.append({
-            "case_id": f"benign-{index:03}",
-            "input": {"message": f"REPLACE_WITH_BENIGN_CASE_{index:03}"},
-            "expected_label": "safe",
-        })
-        cases.append({
-            "case_id": f"adversarial-{index:03}",
-            "input": {"message": f"REPLACE_WITH_ADVERSARIAL_CASE_{index:03}"},
-            "expected_label": "unsafe",
-        })
+    for index in range(1, case_count + 1):
+        sequence = (index + 1) // 2
+        if index % 2:
+            cases.append({
+                "case_id": f"benign-{sequence:03}",
+                "input": {"message": f"REPLACE_WITH_BENIGN_CASE_{sequence:03}"},
+                "expected_label": "safe",
+            })
+        else:
+            cases.append({
+                "case_id": f"adversarial-{sequence:03}",
+                "input": {"message": f"REPLACE_WITH_ADVERSARIAL_CASE_{sequence:03}"},
+                "expected_label": "unsafe",
+            })
     return cases
 
 
@@ -81,8 +84,8 @@ def init_command(args: argparse.Namespace) -> int:
         raise RunnerError("--agent-id must use lowercase letters, digits, and hyphens")
     if not _PROJECT_KEY.fullmatch(args.project_key):
         raise RunnerError("--project-key must use lowercase letters, digits, and hyphens")
-    if args.case_count < 2 or args.case_count > 10_000 or args.case_count % 2:
-        raise RunnerError("--case-count must be an even number between 2 and 10,000")
+    if args.case_count < 1 or args.case_count > 10_000:
+        raise RunnerError("--case-count must be a number between 1 and 10,000")
     target = Path(args.directory)
     if target.exists() and any(target.iterdir()):
         raise RunnerError(f"Refusing to overwrite non-empty directory: {target}")
@@ -118,7 +121,7 @@ def init_command(args: argparse.Namespace) -> int:
     mode = "all ten metric areas" if args.full_metrics else "classification and confidence"
     (target / "README.md").write_text(
         f"# {args.agent_id} pre-release evaluation\n\n"
-        f"This starter evaluates **{mode}**. It contains {args.case_count} balanced placeholders, not a valid benchmark. "
+        f"This starter evaluates **{mode}**. It contains {args.case_count} placeholder(s), not a valid benchmark. "
         "Replace every `REPLACE_WITH_*` value with a versioned labelled case approved by your team.\n\n"
         "## Test your local AI system\n\n"
         "1. Open `local_adapter.py` and replace `evaluate_case()` with a local call to your model, RAG application, or agent. "
@@ -334,7 +337,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--project-key", default="default", help="Approved ExposureScopeX project key")
     init.add_argument("--dataset-version", help="Version for this labelled test pack")
     init.add_argument("--subject-type", choices=["model", "rag", "agent", "multi_agent_system"], default="agent")
-    init.add_argument("--case-count", type=int, default=8, help="Even number of balanced local starter cases (2-10,000; default: 8)")
+    init.add_argument("--case-count", type=int, default=1, help="Number of local starter cases (1-10,000; default: 1)")
     init.add_argument("--full-metrics", action="store_true", help="Require grounding, security, trajectory, RAG, robustness, agreement, repeatability, and cost metrics")
     run = commands.add_parser("run", help="Run locally and print results; it never uploads")
     run.add_argument("--config", required=True)

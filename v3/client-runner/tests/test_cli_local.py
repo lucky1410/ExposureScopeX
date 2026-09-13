@@ -11,7 +11,7 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 
-from esx_eval_runner.cli import run_command
+from esx_eval_runner.cli import _starter_cases, run_command
 from esx_eval_runner.runner import read_json
 
 
@@ -29,6 +29,13 @@ ADAPTER_COMMAND = [
 
 
 class LocalRunTests(unittest.TestCase):
+    def test_default_starter_shape_can_contain_one_case(self) -> None:
+        self.assertEqual(_starter_cases(1), [{
+            "case_id": "benign-001",
+            "input": {"message": "REPLACE_WITH_BENIGN_CASE_001"},
+            "expected_label": "safe",
+        }])
+
     def test_eight_correct_cases_complete_locally_without_signature(self) -> None:
         cases = []
         for index in range(1, 5):
