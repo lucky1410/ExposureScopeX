@@ -43,6 +43,7 @@ _LOCAL_ADAPTER_TEMPLATE = '''"""Connect this local adapter to your AI system wit
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 
 
@@ -57,6 +58,29 @@ def evaluate_case(case: dict[str, object]) -> tuple[str, float]:
     )
 
 
+def collect_requested_measurements(request: dict[str, object]) -> dict[str, object]:
+    """Load local full-metric records only when this test requests them.
+
+    Fill full_metric_measurements.json with redacted metadata from the local
+    trace store, evidence ledger, RAG pipeline, and provider telemetry. Never
+    put prompts, responses, documents, tool payloads, or credentials in it.
+    """
+    required = set(request["evaluation"]["required_dimensions"])
+    if required <= {"classification", "confidence"}:
+        return {}
+    path = Path("full_metric_measurements.json")
+    if not path.exists():
+        raise NotImplementedError(
+            "Fill full_metric_measurements.json before running a full-metric evaluation."
+        )
+    measurements = json.loads(path.read_text(encoding="utf-8"))
+    if "REPLACE_WITH_" in json.dumps(measurements):
+        raise NotImplementedError(
+            "Replace every REPLACE_WITH_* value in full_metric_measurements.json with local measured metadata."
+        )
+    return measurements
+
+
 def main() -> None:
     request = json.load(sys.stdin)
     results = []
@@ -67,14 +91,124 @@ def main() -> None:
             "predicted_label": predicted_label,
             "confidence": confidence,
         })
-    json.dump(
-        {"schema_version": "esx-client-adapter-response-2.0", "results": results},
-        sys.stdout,
-    )
+    response = {"schema_version": "esx-client-adapter-response-2.0", "results": results}
+    measurements = collect_requested_measurements(request)
+    if measurements:
+        response["measurements"] = measurements
+    json.dump(response, sys.stdout)
 
 
 if __name__ == "__main__":
     main()
+'''
+
+
+_FULL_METRIC_MEASUREMENTS_TEMPLATE = '''{
+  "claims": [
+    {
+      "claim_id": "REPLACE_WITH_CLAIM_ID",
+      "evidence_ids": ["REPLACE_WITH_EVIDENCE_ID"],
+      "entailment_score": 0.0,
+      "citations_valid": false,
+      "evidence_integrity_valid": false
+    }
+  ],
+  "security": {
+    "cases": [
+      {
+        "case_id": "REPLACE_WITH_SECURITY_CASE_ID",
+        "expected_attack_success": false,
+        "observed_attack_success": false,
+        "expected_detection": true,
+        "observed_detection": false,
+        "evidence_ids": ["REPLACE_WITH_SECURITY_EVIDENCE_ID"],
+        "evidence_integrity_valid": false
+      }
+    ]
+  },
+  "trajectory": {
+    "required_milestones": ["REPLACE_WITH_REQUIRED_MILESTONE"],
+    "observed_milestones": ["REPLACE_WITH_OBSERVED_MILESTONE"],
+    "action_count": 0,
+    "redundant_actions": 0,
+    "policy_violations": [],
+    "scope_violations": [],
+    "tool_misuse_events": []
+  },
+  "rag": {
+    "relevant_document_ids": ["REPLACE_WITH_RELEVANT_DOCUMENT_ID"],
+    "retrieved_document_ids": ["REPLACE_WITH_RETRIEVED_DOCUMENT_ID"],
+    "cited_document_ids": ["REPLACE_WITH_CITED_DOCUMENT_ID"],
+    "answer_claims": [
+      {
+        "claim_id": "REPLACE_WITH_RAG_CLAIM_ID",
+        "evidence_ids": ["REPLACE_WITH_RAG_EVIDENCE_ID"],
+        "entailment_score": 0.0,
+        "citations_valid": false,
+        "evidence_integrity_valid": false
+      }
+    ],
+    "k": 1
+  },
+  "robustness": {
+    "baseline_correct": false,
+    "baseline_confidence": 0.0,
+    "baseline_label": "REPLACE_WITH_BASELINE_LABEL",
+    "perturbations": [
+      {
+        "case_id": "REPLACE_WITH_PARAPHRASE_CASE_ID",
+        "correct": false,
+        "confidence": 0.0,
+        "predicted_label": "REPLACE_WITH_PARAPHRASE_LABEL",
+        "variation_type": "paraphrase"
+      },
+      {
+        "case_id": "REPLACE_WITH_PERTURBATION_CASE_ID",
+        "correct": false,
+        "confidence": 0.0,
+        "predicted_label": "REPLACE_WITH_PERTURBATION_LABEL",
+        "variation_type": "perturbation"
+      },
+      {
+        "case_id": "REPLACE_WITH_REPEAT_CASE_ID",
+        "correct": false,
+        "confidence": 0.0,
+        "predicted_label": "REPLACE_WITH_REPEAT_LABEL",
+        "variation_type": "repeat"
+      }
+    ]
+  },
+  "judge_agreement": {
+    "decisions": [
+      {"case_id": "REPLACE_WITH_JUDGE_CASE_ID", "judge_id": "REPLACE_WITH_JUDGE_A", "verdict": "inconclusive", "confidence": 0.0},
+      {"case_id": "REPLACE_WITH_JUDGE_CASE_ID", "judge_id": "REPLACE_WITH_JUDGE_B", "verdict": "inconclusive", "confidence": 0.0}
+    ]
+  },
+  "reproducibility": {
+    "decisions": [
+      {"case_id": "REPLACE_WITH_REPEATABILITY_CASE_ID", "run_id": "REPLACE_WITH_RUN_A", "verdict": "inconclusive"},
+      {"case_id": "REPLACE_WITH_REPEATABILITY_CASE_ID", "run_id": "REPLACE_WITH_RUN_B", "verdict": "inconclusive"}
+    ]
+  },
+  "cost_efficiency": {
+    "cost_source": "metered",
+    "observations": [
+      {
+        "case_id": "REPLACE_WITH_COST_CASE_ID",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "request_count": 1,
+        "retry_count": 0,
+        "tool_call_count": 0,
+        "cache_hit": false,
+        "fallback_used": false,
+        "cost_usd": 0.0,
+        "latency_ms": 0,
+        "timed_out": false
+      }
+    ]
+  }
+}
 '''
 
 
@@ -118,7 +252,17 @@ def init_command(args: argparse.Namespace) -> int:
     }
     _write_json(target / "esx-eval.json", config)
     (target / "local_adapter.py").write_text(_LOCAL_ADAPTER_TEMPLATE, encoding="utf-8")
+    if args.full_metrics:
+        (target / "full_metric_measurements.json").write_text(
+            _FULL_METRIC_MEASUREMENTS_TEMPLATE, encoding="utf-8"
+        )
     mode = "all ten metric areas" if args.full_metrics else "classification and confidence"
+    full_metric_instructions = (
+        "For `--full-metrics`, fill `full_metric_measurements.json` with local redacted metadata after the basic "
+        "classification and confidence evaluation works. The generated file lists every required metric area and rejects "
+        "unreplaced placeholders.\n\n"
+        if args.full_metrics else ""
+    )
     (target / "README.md").write_text(
         f"# {args.agent_id} pre-release evaluation\n\n"
         f"This starter evaluates **{mode}**. It contains {args.case_count} placeholder(s), not a valid benchmark. "
@@ -133,8 +277,7 @@ def init_command(args: argparse.Namespace) -> int:
         "```\n\n"
         "This is a local-only run: no result is uploaded and no identity, private key, or 20-case release gate is required. "
         "The terminal prints every case result and the output file stays in this folder.\n\n"
-        "For `--full-metrics`, add the required redacted `measurements` object from `ADAPTER_V2.md` after the basic "
-        "classification and confidence evaluation works.\n\n"
+        f"{full_metric_instructions}"
         "The generated package contains only labels, bounded scores, opaque evidence IDs, and digests. "
         "It does not contain prompt text, model outputs, documents, tool payloads, or secrets. "
         "Only if you later want a governed ExposureScopeX release decision, add signing details and use `esx-eval run --sign` before upload. "

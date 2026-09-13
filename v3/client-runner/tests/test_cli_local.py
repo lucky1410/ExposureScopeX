@@ -11,7 +11,7 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 
-from esx_eval_runner.cli import _starter_cases, run_command
+from esx_eval_runner.cli import _starter_cases, init_command, run_command
 from esx_eval_runner.runner import read_json
 
 
@@ -35,6 +35,19 @@ class LocalRunTests(unittest.TestCase):
             "input": {"message": "REPLACE_WITH_BENIGN_CASE_001"},
             "expected_label": "safe",
         }])
+
+    def test_full_metric_starter_generates_a_fill_in_template(self) -> None:
+        with TemporaryDirectory() as directory:
+            target = Path(directory) / "starter"
+            status = init_command(argparse.Namespace(
+                directory=str(target), agent_id="demo-agent", subject_version="1.0.0",
+                project_key="demo", dataset_version=None, subject_type="agent",
+                case_count=1, full_metrics=True,
+            ))
+            self.assertEqual(status, 0)
+            template = (target / "full_metric_measurements.json").read_text(encoding="utf-8")
+            self.assertIn("REPLACE_WITH_SECURITY_CASE_ID", template)
+            self.assertIn("cost_efficiency", template)
 
     def test_eight_correct_cases_complete_locally_without_signature(self) -> None:
         cases = []
