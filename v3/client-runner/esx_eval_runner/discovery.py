@@ -1,53 +1,45 @@
-"""Bounded local repository discovery that never exports source content."""
+"""Evidence-tiered local repository discovery that never exports source content."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 from typing import Any
 
 
 _IGNORED = {".git", ".next", "node_modules", ".venv", "venv", "dist", "build", "coverage", "__pycache__"}
-_TEXT_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".yaml", ".yml", ".toml", ".md"}
+_SOURCE_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx"}
+_MANIFEST_NAMES = {"package.json", "pyproject.toml", "requirements.txt", "requirements-dev.txt"}
 _SIGNALS = {
-    "langchain": ("agent framework", "LangChain"),
-    "langgraph": ("agent framework", "LangGraph"),
-    "crewai": ("agent framework", "CrewAI"),
-    "llama_index": ("RAG framework", "LlamaIndex"),
-    "openai": ("model provider", "OpenAI-compatible client"),
-    "anthropic": ("model provider", "Anthropic client"),
-    "ollama": ("model provider", "Ollama"),
-    "opentelemetry": ("observability", "OpenTelemetry"),
-    "chromadb": ("retrieval store", "Chroma"),
-    "qdrant": ("retrieval store", "Qdrant"),
-    "pinecone": ("retrieval store", "Pinecone"),
-    "weaviate": ("retrieval store", "Weaviate"),
-    "redis": ("retrieval store", "Redis"),
-    "pgvector": ("retrieval store", "pgvector"),
-    "tool_calls": ("tool", "LLM tool calls"),
-    "function_call": ("tool", "Function calling"),
+    "langchain": ("agent framework", "LangChain", "agent_framework"),
+    "langgraph": ("agent framework", "LangGraph", "agent_framework"),
+    "crewai": ("agent framework", "CrewAI", "agent_framework"),
+    "llama_index": ("RAG framework", "LlamaIndex", "rag_framework"),
+    "openai": ("model provider", "OpenAI-compatible client", "model_provider"),
+    "anthropic": ("model provider", "Anthropic client", "model_provider"),
+    "ollama": ("model provider", "Ollama", "model_provider"),
+    "opentelemetry": ("observability", "OpenTelemetry", "observability"),
+    "chromadb": ("retrieval store", "Chroma", "retrieval_store"),
+    "qdrant": ("retrieval store", "Qdrant", "retrieval_store"),
+    "pinecone": ("retrieval store", "Pinecone", "retrieval_store"),
+    "weaviate": ("retrieval store", "Weaviate", "retrieval_store"),
+    "redis": ("retrieval store", "Redis", "retrieval_store"),
+    "pgvector": ("retrieval store", "pgvector", "retrieval_store"),
 }
-
-_KIND_BY_CATEGORY = {
-    "agent framework": "agent_framework",
-    "RAG framework": "rag_framework",
-    "model provider": "model_provider",
-    "observability": "observability",
-    "retrieval store": "retrieval_store",
-    "tool": "tool",
-}
+_APP_FRAMEWORKS = {"fastapi": "FastAPI", "flask": "Flask", "express": "Express", "next": "Next.js"}
+_EVIDENCE_RANK = {"source_import": 1, "declared_dependency": 2, "installed_package": 3}
 
 
 def discover_repository(path: str | Path, *, max_files: int = 2_000) -> dict[str, Any]:
-    """Identify integration hints locally without returning any source text."""
+    """Report code/dependency evidence, never unverified documentation mentions."""
     root = Path(path).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"Repository folder does not exist: {root}")
     files_scanned = 0
     frameworks: set[str] = set()
-    capabilities: set[str] = set()
-    components: dict[str, dict[str, str]] = {}
     entry_points: set[str] = set()
+    components: dict[str, dict[str, str]] = {}
     for candidate in root.rglob("*"):
         if files_scanned >= max_files:
             break
@@ -57,55 +49,93 @@ def discover_repository(path: str | Path, *, max_files: int = 2_000) -> dict[str
         name = candidate.name.lower()
         if name in {"openapi.json", "openapi.yaml", "openapi.yml"}:
             entry_points.add(f"OpenAPI description: {relative}")
-        if name == "package.json":
-            frameworks.add("Node.js application")
-        if name in {"next.config.js", "next.config.mjs", "next.config.ts"} or relative.startswith("app/api/"):
-            frameworks.add("Next.js")
-        if name in {"pyproject.toml", "requirements.txt", "requirements-dev.txt"}:
-            frameworks.add("Python application")
-        if candidate.suffix.lower() not in _TEXT_SUFFIXES:
+        if name not in _MANIFEST_NAMES and candidate.suffix.lower() not in _SOURCE_SUFFIXES:
             continue
         files_scanned += 1
         try:
-            content = candidate.read_text(encoding="utf-8", errors="ignore")[:131_072].lower()
+            content = candidate.read_text(encoding="utf-8", errors="ignore")[:131_072]
         except OSError:
             continue
-        if "fastapi" in content:
-            frameworks.add("FastAPI")
-        if "flask" in content:
-            frameworks.add("Flask")
-        if "express" in content:
-            frameworks.add("Express")
-        if re.search(r"@(app|router)\.(get|post|put|delete|patch)\(", content) or re.search(r"\b(app|router)\.(get|post|put|delete|patch)\(", content):
+        dependencies = _manifest_dependencies(name, content)
+        for package, display in _APP_FRAMEWORKS.items():
+            if package in dependencies or _source_import(content, package):
+                frameworks.add(display)
+        if name in {"pyproject.toml", "requirements.txt", "requirements-dev.txt"}:
+            frameworks.add("Python project")
+        if name == "package.json":
+            frameworks.add("Node.js project")
+        if candidate.suffix.lower() in _SOURCE_SUFFIXES and _has_http_route(content):
             entry_points.add(f"HTTP route definitions: {relative}")
-        for token, (category, display) in _SIGNALS.items():
-            if token in content:
-                capabilities.add(f"{category}: {display}")
-                component_id = f"{_KIND_BY_CATEGORY[category]}-{_slug(display)}"
-                components[component_id] = {
-                    "id": component_id,
-                    "name": display,
-                    "kind": _KIND_BY_CATEGORY[category],
-                    "confidence": "technology_signal",
-                }
+        for package, (category, display, kind) in _SIGNALS.items():
+            evidence = _evidence_for(root, name, content, package, dependencies)
+            if evidence is not None:
+                _record_component(components, f"{kind}-{_slug(display)}", display, kind, category, evidence, relative)
     for entry_point in entry_points:
-        component_id = f"workflow-{_slug(entry_point)}"
-        components[component_id] = {
-            "id": component_id,
-            "name": entry_point,
-            "kind": "workflow_entry_point",
-            "confidence": "repository_signal",
-        }
+        _record_component(components, f"workflow-{_slug(entry_point)}", entry_point, "workflow_entry_point", "workflow entry point", "source_route" if "route definitions" in entry_point else "api_description", entry_point.split(": ", 1)[-1])
+    component_list = sorted(components.values(), key=lambda item: item["id"])
+    capabilities = [f"{item['category']}: {item['name']} ({item['verification_status']})" for item in component_list if item["kind"] != "workflow_entry_point"]
     return {
-        "status": "completed",
-        "repository": str(root),
-        "files_scanned": files_scanned,
-        "frameworks": sorted(frameworks),
-        "capabilities": sorted(capabilities),
-        "entry_points": sorted(entry_points),
-        "components": sorted(components.values(), key=lambda item: item["id"]),
-        "limitations": "Discovery reports technology hints only. It does not identify every agent, execute code, inspect secrets, or send source content anywhere. Customers must confirm which components are in scope.",
+        "status": "completed", "repository": str(root), "files_scanned": files_scanned,
+        "frameworks": sorted(frameworks), "capabilities": capabilities,
+        "entry_points": sorted(entry_points), "components": component_list,
+        "limitations": "Documentation, backlog, comments, and plain text mentions are excluded. Installed packages, declared dependencies, and source imports are different evidence levels; discovery does not execute code or prove runtime behavior. Customers must confirm scope.",
     }
+
+
+def _manifest_dependencies(name: str, content: str) -> set[str]:
+    """Read declared package names from common manifests without resolving installs."""
+    if name == "package.json":
+        try:
+            package = json.loads(content)
+        except json.JSONDecodeError:
+            return set()
+        result: set[str] = set()
+        for key in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
+            values = package.get(key, {}) if isinstance(package, dict) else {}
+            if isinstance(values, dict):
+                result.update(str(item).lower().replace("-", "_") for item in values)
+        return result
+    if name.startswith("requirements"):
+        return {match.group(1).lower().replace("-", "_") for line in content.splitlines() if not line.lstrip().startswith("#") for match in [re.match(r"\s*([A-Za-z0-9_.-]+)", line)] if match}
+    if name == "pyproject.toml":
+        return {match.group(1).lower().replace("-", "_") for match in re.finditer(r"(?m)^\s*[\"']?([A-Za-z0-9_.-]+)[\"']?\s*(?:[<>=!~]|$)", content)}
+    return set()
+
+
+def _source_import(content: str, package: str) -> bool:
+    escaped = re.escape(package)
+    python_pattern = rf"(?m)^\s*(?:from|import)\s+{escaped}(?:[.\s]|$)"
+    javascript_pattern = rf"(?m)(?:from\s+[\"']{escaped}(?:[/\"'])|require\(\s*[\"']{escaped}(?:[/\"']))"
+    return bool(re.search(python_pattern, content, flags=re.IGNORECASE) or re.search(javascript_pattern, content, flags=re.IGNORECASE))
+
+
+def _has_http_route(content: str) -> bool:
+    return bool(re.search(r"(?m)^\s*@(?:app|router)\.(?:get|post|put|delete|patch)\(", content) or re.search(r"(?m)\b(?:app|router)\.(?:get|post|put|delete|patch)\(", content))
+
+
+def _evidence_for(root: Path, name: str, content: str, package: str, dependencies: set[str]) -> str | None:
+    if _installed_package(root, package):
+        return "installed_package"
+    if package in dependencies:
+        return "declared_dependency"
+    if name not in _MANIFEST_NAMES and _source_import(content, package):
+        return "source_import"
+    return None
+
+
+def _installed_package(root: Path, package: str) -> bool:
+    """Check common local package locations without importing or executing anything."""
+    package_path = package.replace("_", "-")
+    if (root / "node_modules" / package_path / "package.json").is_file():
+        return True
+    return any((environment / part / "site-packages" / package).exists() for environment in (root / ".venv", root / "venv") for part in ("Lib", "lib"))
+
+
+def _record_component(components: dict[str, dict[str, str]], component_id: str, name: str, kind: str, category: str, evidence: str, evidence_path: str) -> None:
+    existing = components.get(component_id)
+    if existing and _EVIDENCE_RANK.get(existing["verification_status"], 0) >= _EVIDENCE_RANK.get(evidence, 0):
+        return
+    components[component_id] = {"id": component_id, "name": name, "kind": kind, "category": category, "verification_status": evidence, "evidence_path": evidence_path}
 
 
 def _slug(value: str) -> str:

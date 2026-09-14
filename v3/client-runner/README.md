@@ -29,6 +29,12 @@ then chooses a local JSON API or a loopback browser journey, reviews a
 Every generated case remains editable in `esx-eval.json`; teams can add their
 own product, domain, and organization-policy cases.
 
+Discovery does not treat architecture documents, backlog items, comments, or
+plain text as implemented technology. Each finding identifies whether it came
+from an installed local package, a declared dependency, or a source import.
+Those are static evidence levels, not proof that a capability executes at
+runtime; the customer still confirms the evaluation scope.
+
 The generated folder contains `esx-eval.json`, `discovery.json`,
 `assurance-scope.json`, `risk-plan.json`, and a local `README.md`. A normal
 `run` automatically includes the confirmed scope and plan in the Assurance

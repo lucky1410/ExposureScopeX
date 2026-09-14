@@ -28,6 +28,8 @@ def create_scope(discovery: dict[str, Any], selected_ids: list[str]) -> dict[str
             "name": component.get("name", component_id),
             "kind": component.get("kind", "unknown"),
             "source": "customer_confirmed_discovery",
+            "verification_status": component.get("verification_status", "customer_declared"),
+            "evidence_path": component.get("evidence_path", "not_recorded"),
         })
     return {
         "schema_version": "esx-assurance-scope-1.0",
@@ -86,7 +88,8 @@ def build_assurance_graph(
         if not isinstance(component, dict):
             continue
         component_id = "component:" + str(component.get("id", "unknown"))
-        nodes.append({"id": component_id, "kind": str(component.get("kind", "unknown")), "label": str(component.get("name", component_id)), "status": "in_scope"})
+        evidence = str(component.get("verification_status", "customer_declared")).replace("_", " ")
+        nodes.append({"id": component_id, "kind": str(component.get("kind", "unknown")), "label": f"{component.get('name', component_id)} [{evidence}]", "status": "in_scope"})
         edges.append({"from": subject_id, "to": component_id, "kind": "contains"})
     required_dimensions = list(evaluation["required_dimensions"])
     for dimension in (plan or {}).get("required_dimensions", []):

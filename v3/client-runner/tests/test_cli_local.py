@@ -162,7 +162,7 @@ class LocalRunTests(unittest.TestCase):
             (root / "openapi.json").write_text("{}", encoding="utf-8")
             discovery = discover_repository(root)
             self.assertIn("FastAPI", discovery["frameworks"])
-            self.assertIn("agent framework: LangGraph", discovery["capabilities"])
+            self.assertTrue(any(item.startswith("agent framework: LangGraph") for item in discovery["capabilities"]))
             target = root / "plan"
             path, config = create_http_plan({
                 "directory": str(target), "agent_id": "my-app", "subject_version": "2.0.0",
@@ -253,6 +253,19 @@ class LocalRunTests(unittest.TestCase):
         graph = build_assurance_graph(package, metrics, discovery=discovery, scope=scope, plan=plan, telemetry={"span_count": 4})
         self.assertEqual(graph["summary"]["confirmed_component_count"], 3)
         self.assertEqual(graph["summary"]["unmeasurable_metric_count"], 6)
+
+    def test_discovery_excludes_backlog_mentions_and_labels_real_evidence(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "ARCHITECTURE.md").write_text("Future backlog: evaluate LangChain and Qdrant.", encoding="utf-8")
+            (root / "main.py").write_text("from langgraph.graph import StateGraph\n", encoding="utf-8")
+            (root / "requirements.txt").write_text("openai>=1.0\n", encoding="utf-8")
+            discovery = discover_repository(root)
+            by_id = {item["id"]: item for item in discovery["components"]}
+            self.assertNotIn("agent_framework-langchain", by_id)
+            self.assertNotIn("retrieval_store-qdrant", by_id)
+            self.assertEqual(by_id["agent_framework-langgraph"]["verification_status"], "source_import")
+            self.assertEqual(by_id["model_provider-openai-compatible-client"]["verification_status"], "declared_dependency")
 
     def test_telemetry_redaction_and_browser_loopback_policy(self) -> None:
         payload = {"resourceSpans": [{"resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "demo"}}, {"key": "gen_ai.prompt", "value": {"stringValue": "secret prompt"}}]}, "scopeSpans": [{"spans": [{"name": "tool.run", "attributes": [{"key": "gen_ai.tool.name", "value": {"stringValue": "search"}}, {"key": "input.value", "value": {"stringValue": "do not retain"}}]}]}]}]}
