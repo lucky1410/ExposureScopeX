@@ -25,7 +25,7 @@ from esx_eval_runner.discovery import discover_repository
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
 from esx_eval_runner.profiles import build_cases
 from esx_eval_runner.runner import RunnerError, _adapter_command, _verify_target_attestation, build_package, canonical_json, read_json
-from esx_eval_runner.setup import create_guided_plan, create_http_plan
+from esx_eval_runner.setup import _guided_setup_html_with_evidence, create_guided_plan, create_http_plan
 from esx_eval_runner.telemetry import redact_otel_payload, telemetry_summary
 
 
@@ -197,6 +197,14 @@ class LocalRunTests(unittest.TestCase):
             self.assertTrue((target / "assurance-scope.json").is_file())
             self.assertTrue((target / "risk-plan.json").is_file())
             self.assertIn("automatically uses", (target / "README.md").read_text(encoding="utf-8"))
+
+    def test_guided_setup_explains_response_mapping_and_plan_fields(self) -> None:
+        page = _guided_setup_html_with_evidence("test-token", None)
+        self.assertIn("LABEL RESPONSE PATH", page)
+        self.assertIn("Where the outcome label is located", page)
+        self.assertIn("CONFIDENCE RESPONSE PATH", page)
+        self.assertIn("Existing non-empty folders are never overwritten", page)
+        self.assertIn("esx-help", page)
 
     def test_guided_browser_setup_requires_loopback_and_a_visible_assertion(self) -> None:
         with TemporaryDirectory() as directory:

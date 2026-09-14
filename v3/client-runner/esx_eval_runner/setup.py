@@ -20,6 +20,25 @@ from .runner import CONFIG_SCHEMA_VERSION, _is_loopback_host
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 
+_SETUP_FIELD_HELP = {
+    "APPLICATION REPOSITORY": "Optional local folder to inspect. The scan only reports supported source and dependency evidence; documentation and backlog mentions are not treated as installed frameworks.",
+    "CONNECTION METHOD": "Choose how the runner reaches one approved user workflow. Use an existing JSON API when available. Choose a local browser journey only when the application has no usable API.",
+    "LOCAL API URL": "The exact local endpoint that receives one evaluation request per case. Example: http://127.0.0.1:8000/evaluate. This is your application endpoint, not an ExposureScopeX endpoint.",
+    "LOCAL WEB APP URL": "The local web application URL used for an approved browser journey. Example: http://127.0.0.1:3000. Browser testing stays on this computer.",
+    "APPLICATION ID": "A short lowercase name for the application being tested, such as support-agent. It is used only to label local reports.",
+    "VERSION UNDER TEST": "The build, release, or commit version you are evaluating, such as 1.4.0 or 2026.09.14-rc1.",
+    "PROJECT KEY": "A short lowercase grouping name for this evaluation, such as payments or staging. It keeps local reports organized.",
+    "LABEL RESPONSE PATH": "Where the outcome label is located in your API JSON response. For {\"decision\": {\"label\": \"safe\"}}, enter decision.label. The value must match the expected labels in the generated cases, such as safe or unsafe.",
+    "CONFIDENCE RESPONSE PATH": "Where a numeric confidence value from 0 to 1 appears in your API JSON response. For {\"decision\": {\"confidence\": 0.91}}, enter decision.confidence. Leave it empty only when your application does not provide confidence.",
+    "START PATH": "The page route to open after the local web-app URL. Use / for the home page or /chat for a chat screen.",
+    "EXPECTED VISIBLE TEXT": "Text that must be visible after the approved browser journey finishes, such as Welcome or Request blocked. This is the browser journey's observable pass condition.",
+    "This is an approved staging API": "Select only for a designated test tenant that has approved controls. Do not use production credentials, customer data, or unrestricted tools during evaluation.",
+    "EVALUATION PROFILE": "A starting test pack. Smoke verifies a connection and basic boundaries; Release adds broader checks; Adversarial exercises authorized safety boundaries; Custom creates one editable starter case.",
+    "OPTIONAL EXTRA CASES": "Optional product-specific cases in JSON. Each case supplies an input and expected label. Leave this blank to begin with the selected profile; you can edit generated cases later.",
+    "NEW EMPTY FOLDER": "The location for this plan and its local report files. Existing non-empty folders are never overwritten; the runner creates a sibling ending in -2, -3, and so on.",
+    "I reviewed the selected scope": "Required confirmation that only approved components and a safe test target are in scope. Missing evidence is shown as NOT MEASURABLE instead of receiving an invented score.",
+}
+
 
 def create_http_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     """Backward-compatible entry point for an editable HTTP plan."""
@@ -260,10 +279,17 @@ def _guided_setup_html(token: str, default_directory: str | None) -> str:
 
 
 def _guided_setup_html_with_evidence(token: str, default_directory: str | None) -> str:
-    """Label every displayed discovery item with the scanner evidence level."""
+    """Label discovery evidence and explain each setup field in context."""
     page = _guided_setup_html(token, default_directory)
     host_label = {"windows": "WINDOWS", "macos": "MACOS", "linux": "LINUX"}[_host_os()]
-    return page.replace("LOCAL-ONLY | NO ACCOUNT | NO UPLOAD", f"LOCAL-ONLY | HOST: {host_label} | NO ACCOUNT | NO UPLOAD").replace("item.name+' ('+item.kind+')'", "item.name+' ('+item.kind+'; '+(item.verification_status||'customer declared')+')'")
+    tooltip_style = """<style>.esx-help{display:inline-grid;place-items:center;width:16px;height:16px;margin-left:5px;border:1px solid #507765;border-radius:50%;background:#f0f5ed;color:#19312e;font:700 11px/1 ui-monospace,monospace;cursor:help;position:relative;vertical-align:middle}.esx-help:hover::after,.esx-help:focus::after{content:attr(data-tooltip);display:block;position:absolute;z-index:10;left:0;top:22px;width:300px;padding:10px;border:1px solid #19312e;background:#fffdf7;color:#182726;font:13px/1.35 Georgia,serif;box-shadow:3px 3px #19312e;text-transform:none}.esx-help:focus{outline:2px solid #ef633d;outline-offset:2px}</style>"""
+    tooltip_script = f"""<script>(() => {{const help={json.dumps(_SETUP_FIELD_HELP)};for(const label of document.querySelectorAll('label')){{const original=label.textContent.trim();const key=Object.keys(help).find(candidate=>original.startsWith(candidate));if(!key)continue;label.title=help[key];const badge=document.createElement('span');badge.className='esx-help';badge.tabIndex=0;badge.textContent='?';badge.dataset.tooltip=help[key];badge.setAttribute('aria-label',help[key]);label.append(' ',badge);}}}})();</script>"""
+    return (
+        page.replace("LOCAL-ONLY | NO ACCOUNT | NO UPLOAD", f"LOCAL-ONLY | HOST: {host_label} | NO ACCOUNT | NO UPLOAD")
+        .replace("item.name+' ('+item.kind+')'", "item.name+' ('+item.kind+'; '+(item.verification_status||'customer declared')+')'")
+        .replace("</head>", tooltip_style + "</head>")
+        .replace("</body>", tooltip_script + "</body>")
+    )
 
 
 def _setup_html(token: str, default_directory: str | None) -> str:
