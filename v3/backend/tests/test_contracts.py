@@ -17,17 +17,18 @@ class ContractTests(unittest.TestCase):
     def test_light_plan_is_ordered_and_bounded(self) -> None:
         plan = compile_plan("light", "https://example.test")
         self.assertEqual(plan["version"], PLAN_VERSION)
-        self.assertEqual([stage["position"] for stage in plan["stages"]], list(range(7)))
+        self.assertEqual([stage["position"] for stage in plan["stages"]], list(range(8)))
         self.assertEqual(
             [stage["adapter"] for stage in plan["stages"]],
             [
-                "scope_preflight", "http_profile", "tls_service_discovery",
+                "scope_preflight", "subdomain_enumeration", "http_profile", "tls_service_discovery",
                 "authenticated_crawl", "security_headers", "nuclei_baseline",
                 "evidence_validation",
             ],
         )
         self.assertTrue(all(stage["timeout_seconds"] > 0 for stage in plan["stages"]))
-        self.assertTrue(all(stage["required"] for stage in plan["stages"]))
+        self.assertFalse(plan["stages"][1]["required"])
+        self.assertTrue(all(stage["required"] for stage in plan["stages"] if stage["adapter"] != "subdomain_enumeration"))
 
     def test_medium_and_aggressive_are_complete_bounded_pipelines(self) -> None:
         medium = compile_plan("medium", "https://example.test")

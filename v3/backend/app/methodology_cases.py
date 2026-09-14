@@ -16,6 +16,7 @@ class MethodologyCase:
 
 CASES = (
     MethodologyCase("ESX-SCOPE-001", "scope_authorization", "scope_preflight", frozenset({"light", "medium", "aggressive"}), "Authorization and target scope preflight"),
+    MethodologyCase("ESX-SUBDOMAIN-001", "attack_surface", "subdomain_enumeration", frozenset({"light"}), "Passive certificate-transparency subdomain inventory"),
     MethodologyCase("ESX-HTTP-001", "attack_surface", "http_profile", frozenset({"light", "medium", "aggressive"}), "HTTP reachability and response profile"),
     MethodologyCase("ESX-SERVICE-001", "service_tls_http_configuration", "tls_service_discovery", frozenset({"light", "medium", "aggressive"}), "Service and TLS discovery"),
     MethodologyCase("ESX-CRAWL-001", "attack_surface", "authenticated_crawl", frozenset({"light", "medium", "aggressive"}), "Same-origin route and authenticated-state inventory"),

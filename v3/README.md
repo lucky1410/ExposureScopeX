@@ -69,7 +69,7 @@ coverage, and reporting contracts.
 
 | Profile | Purpose | Validation depth |
 | --- | --- | --- |
-| Light | Rapid exposure baseline | Observable configuration, attack-surface and metadata checks; no security payload submission |
+| Light | Rapid exposure baseline | Observable configuration, attack-surface and metadata checks, plus a bounded passive certificate-transparency inventory of descendants of the exact authorized hostname; no security payload submission |
 | Medium | Expanded non-destructive application assessment | Light plus GET-only route/form/parameter inventory, session-cookie review, and published API-contract review |
 | Aggressive | Broad non-destructive assessment | Medium plus expanded approved-surface coverage and route-level policy consistency review |
 
@@ -81,6 +81,11 @@ payload-based, state-transition, or business-logic validation. Promotion
 requires labelled benchmark results and complete methodology coverage. Nuclei
 remains restricted to signed, non-intrusive templates; Aggressive means maximum
 approved safe depth, not exploitation.
+
+Light subdomain inventory is evidence from public certificate-transparency records
+only. Discovered names are not resolved, requested, crawled, or scanned, and the
+report identifies an unavailable public source rather than treating it as an empty
+inventory. This inventory never expands the assessment's authorized target scope.
 
 ## Product boundary
 

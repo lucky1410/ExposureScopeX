@@ -1,12 +1,21 @@
 import unittest
 
 from app.light_adapters import (
+    _certificate_transparency_names,
     _has_primary_nonvisual_evidence,
     _screenshot_failure_blocks_finding,
 )
 
 
 class LightAdapterEvidencePolicyTests(unittest.TestCase):
+    def test_passive_ct_inventory_keeps_only_bounded_descendant_names(self) -> None:
+        names = _certificate_transparency_names([
+            {"name_value": "api.example.test\n*.example.test\nexample.test"},
+            {"name_value": "ADMIN.example.test\napi.example.test"},
+            {"name_value": "outside.test\nnot-a-host!.example.test"},
+        ], "example.test", 1)
+        self.assertEqual(names, ["admin.example.test"])
+
     def test_request_response_evidence_is_self_sufficient(self) -> None:
         evidence = {
             "requires_screenshot": True,

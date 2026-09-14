@@ -17,19 +17,22 @@ recorded terminal state.
 | Order | Stage | Required outcome |
 |---:|---|---|
 | 1 | Authorization and scope preflight | Normalize the target, enforce allowlist and authorization, reject credentials embedded in URLs, and persist the immutable plan. |
-| 2 | Reachability and HTTP profiling | Resolve the authorized target, record redirects, status, server metadata, technologies, and raw request/response evidence. |
-| 3 | Passive discovery | Collect same-origin routes from approved passive sources with bounded result counts. |
-| 4 | Safe crawling | Crawl same-origin public or authenticated routes with logout, reset, setup, delete, and other mutation routes excluded. |
-| 5 | Service discovery | Perform bounded host and service identification appropriate to the target type. |
-| 6 | TLS and security configuration | Validate TLS posture, response headers, cookie flags, exposed metadata, and common configuration weaknesses. |
-| 7 | Nuclei baseline | Run the approved non-intrusive Light template policy to completion and preserve template-set identity, exclusions, statistics, output, and errors. |
-| 8 | Browser evidence | Capture original Playwright screenshots of relevant pages and authenticated state where credentials were explicitly supplied. |
-| 9 | Finding normalization | Parse successful output immediately, deduplicate findings, retain severity and confidence rationale, and link every finding to source evidence. |
-| 10 | Evidence integrity gate | Verify source artifact and screenshot hashes, timestamps, target association, and finding traceability. |
-| 11 | Report generation | Produce DOCX, PDF, and an evidence bundle for complete, partial, failed, and cancelled runs. |
+| 2 | Passive subdomain inventory | Optionally collect bounded certificate-transparency records for descendants of the exact authorized hostname. Do not resolve, request, crawl, or scan those names; do not expand authorization scope. |
+| 3 | Reachability and HTTP profiling | Resolve the authorized target, record redirects, status, server metadata, technologies, and raw request/response evidence. |
+| 4 | Passive discovery | Collect same-origin routes from approved passive sources with bounded result counts. |
+| 5 | Safe crawling | Crawl same-origin public or authenticated routes with logout, reset, setup, delete, and other mutation routes excluded. |
+| 6 | Service discovery | Perform bounded host and service identification appropriate to the target type. |
+| 7 | TLS and security configuration | Validate TLS posture, response headers, cookie flags, exposed metadata, and common configuration weaknesses. |
+| 8 | Nuclei baseline | Run the approved non-intrusive Light template policy to completion and preserve template-set identity, exclusions, statistics, output, and errors. |
+| 9 | Browser evidence | Capture original Playwright screenshots of relevant pages and authenticated state where credentials were explicitly supplied. |
+| 10 | Finding normalization | Parse successful output immediately, deduplicate findings, retain severity and confidence rationale, and link every finding to source evidence. |
+| 11 | Evidence integrity gate | Verify source artifact and screenshot hashes, timestamps, target association, and finding traceability. |
+| 12 | Report generation | Produce DOCX, PDF, and an evidence bundle for complete, partial, failed, and cancelled runs. |
 
 Light must not perform exploitation, attack simulation, credential attacks,
 destructive requests, persistence, data extraction, or unbounded active probing.
+Certificate-transparency data is passive, incomplete external evidence. An unavailable
+source must be reported as unavailable, never as proof that no subdomains exist.
 
 ## 2. Completion Semantics
 

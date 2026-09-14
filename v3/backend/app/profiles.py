@@ -1,10 +1,11 @@
 from typing import Final
 
-PLAN_VERSION: Final = "2026.09.11.5"
+PLAN_VERSION: Final = "2026.09.14.1"
 
 PROFILES: Final = {
     "light": [
         {"adapter": "scope_preflight", "timeout_seconds": 30, "required": True},
+        {"adapter": "subdomain_enumeration", "timeout_seconds": 90, "required": False},
         {"adapter": "http_profile", "timeout_seconds": 60, "required": True},
         {"adapter": "tls_service_discovery", "timeout_seconds": 150, "required": True},
         {"adapter": "authenticated_crawl", "timeout_seconds": 300, "required": True},

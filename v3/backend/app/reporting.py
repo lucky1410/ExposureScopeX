@@ -165,7 +165,7 @@ def _profile_methodology_text(profile: str) -> str:
         "execution of a pinned, inventoried, signed, non-intrusive Nuclei template profile; and post-execution evidence validation"
     )
     additions = {
-        "light": "; bounded configuration and exposure checks only",
+        "light": "; bounded configuration and exposure checks, including a passive certificate-transparency inventory of descendants of the exact authorized hostname only",
         "medium": "; GET-only application route, form, parameter, and client-resource inventory; authenticated session-cookie control review; and published API-contract review",
         "aggressive": "; GET-only application route, form, parameter, and client-resource inventory; authenticated session-cookie control review; published API-contract review; and route-level HTTP policy consistency review across the expanded approved surface",
     }
@@ -188,6 +188,8 @@ def _testing_methodology_appendix(context: dict) -> str:
         "Nuclei runs the pinned, inventoried non-intrusive template set. Its output is normalized into candidates and must satisfy independent evidence validation before being marked confirmed.",
         "Evidence validation verifies artifact hashes and applies deterministic response checks or safe replay. It does not submit forms, payloads, API operations, or state-changing requests.",
     ]
+    if "subdomain_enumeration" in stages:
+        methods.append("Passive subdomain inventory queries certificate-transparency records for descendants of the exact target hostname. It does not resolve, reach, crawl, or scan discovered names, and an unavailable public source is reported as unavailable rather than a clean inventory.")
     if "application_surface_inventory" in stages:
         methods.append("Application surface inventory records discovered same-origin routes, forms, parameters, and client resources without submitting form data.")
     if "authenticated_session_review" in stages:

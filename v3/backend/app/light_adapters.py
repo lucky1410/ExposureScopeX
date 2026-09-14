@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import signal
 import socket
 import ssl
@@ -15,8 +16,8 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from uuid import UUID
-from urllib.error import HTTPError
-from urllib.parse import urljoin, urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .artifact_store import artifact_path, persist_bytes, persist_json
@@ -45,6 +46,7 @@ PROFILE_POLICY = {
         "nmap": ["-p", "80,443,3000,3001,8000,8001,8080,8443"],
         "nmap_label": "fixed-common-web-ports",
         "nmap_host_timeout": "120s",
+        "subdomain_limit": 100,
         "crawl_depth": 2, "crawl_urls": 20, "screenshots": 12, "surface_urls": 0,
         "nuclei_urls": 1, "rate": 20, "concurrency": 5, "bulk": 5,
     },
@@ -155,6 +157,67 @@ def fetch_url(url: str) -> dict:
         }
 
 
+def _certificate_transparency_names(payload: object, hostname: str, limit: int) -> list[str]:
+    """Return only descendant FQDNs from a crt.sh response, without probing them."""
+    if not isinstance(payload, list):
+        raise ValueError("Certificate-transparency response was not a JSON array")
+    hostname = hostname.lower().rstrip(".")
+    discovered: set[str] = set()
+    for record in payload:
+        if not isinstance(record, dict):
+            continue
+        names = str(record.get("name_value") or "").splitlines()
+        for raw_name in names:
+            name = raw_name.strip().lower().rstrip(".")
+            if (
+                name.startswith("*.")
+                or name == hostname
+                or not name.endswith("." + hostname)
+                or len(name) > 253
+                or not all(label and len(label) <= 63 and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in name.split("."))
+            ):
+                continue
+            discovered.add(name)
+    return sorted(discovered)[:limit]
+
+
+def _passive_certificate_transparency(hostname: str, limit: int) -> dict:
+    """Fetch a bounded CT inventory from a fixed public source without host validation."""
+    try:
+        ipaddress.ip_address(hostname)
+        return {"status": "not_applicable", "reason": "The target is an IP address, not a domain name.", "subdomains": []}
+    except ValueError:
+        pass
+    if "." not in hostname:
+        return {"status": "not_applicable", "reason": "The target is not a fully-qualified domain name.", "subdomains": []}
+    query = urlencode({"q": f"%.{hostname}", "output": "json"})
+    url = f"https://crt.sh/?{query}"
+    request = Request(url, headers={"Accept": "application/json", "User-Agent": "ExposureScopeX/3.0 passive-subdomain-inventory"}, method="GET")
+    try:
+        with build_opener().open(request, timeout=45) as response:
+            content = response.read(2_097_153)
+    except HTTPError as exc:
+        return {"status": "unavailable", "reason": f"Certificate-transparency source returned HTTP {exc.code}.", "subdomains": [], "source": "crt.sh"}
+    except (URLError, TimeoutError, OSError) as exc:
+        return {"status": "unavailable", "reason": f"Certificate-transparency source could not be reached: {type(exc).__name__}.", "subdomains": [], "source": "crt.sh"}
+    if len(content) > 2_097_152:
+        return {"status": "unavailable", "reason": "Certificate-transparency response exceeded the 2 MB safety limit.", "subdomains": [], "source": "crt.sh"}
+    try:
+        records = json.loads(content.decode("utf-8"))
+        subdomains = _certificate_transparency_names(records, hostname, limit)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        return {"status": "unavailable", "reason": f"Certificate-transparency response could not be parsed: {type(exc).__name__}.", "subdomains": [], "source": "crt.sh"}
+    return {
+        "status": "completed",
+        "source": "crt.sh",
+        "query": url,
+        "subdomains": subdomains,
+        "discovered_count": len(subdomains),
+        "limit": limit,
+        "limitations": "Passive certificate-transparency records only. Names were not resolved, reached, crawled, or scanned.",
+    }
+
+
 async def run_command(stage: dict, command: list[str], cwd: Path) -> tuple[int, str]:
     from .runner import ScanCancellationRequested, scan_cancel_requested
     process = await asyncio.create_subprocess_exec(
@@ -260,6 +323,37 @@ async def scope_preflight(stage: dict) -> dict:
     payload = {"target": stage["target"], "scheme": parsed.scheme, "hostname": parsed.hostname, "port": parsed.port, "resolved_addresses": addresses, "scope_status": "authorized", "scope": scope, "observed_at": utcnow().isoformat()}
     await persist_json(stage, payload, kind="scope_manifest", name="scope-preflight.json")
     return {"command": "scope-policy validate [AUTHORIZED_TARGET]", "transcript": json.dumps(payload, indent=2)}
+
+
+async def subdomain_enumeration(stage: dict) -> dict:
+    """Record a passive CT-only descendant inventory for the exact target hostname."""
+    mode, policy = profile_policy(stage)
+    if mode != "light":
+        raise RuntimeError("Passive subdomain enumeration is currently available only in the light profile")
+    hostname = str(urlsplit(stage["target"]).hostname or "").lower()
+    result = await asyncio.to_thread(_passive_certificate_transparency, hostname, int(policy["subdomain_limit"]))
+    result.update({
+        "target_hostname": hostname,
+        "mode": mode,
+        "observed_at": utcnow().isoformat(),
+        "safety_policy": "passive CT only; no DNS resolution, HTTP requests, crawling, or port scanning of discovered names",
+    })
+    await persist_json(
+        stage,
+        redact_object(result),
+        kind="passive_subdomain_inventory",
+        name="passive-subdomains.json",
+        metadata={"source": "crt.sh", "target_hostname": hostname, "mode": mode, "active_validation": False},
+    )
+    transcript = (
+        f"Passive certificate-transparency subdomain inventory for {hostname}\n"
+        f"Status: {result['status']}\n"
+        f"Discovered descendants: {len(result['subdomains'])}\n"
+        "No discovered name was resolved, reached, crawled, or scanned."
+    )
+    if result.get("reason"):
+        transcript += f"\nReason: {result['reason']}"
+    return {"command": "passive-ct-enumeration --source crt.sh --descendants-only", "transcript": transcript}
 
 
 async def http_profile(stage: dict) -> dict:
@@ -833,6 +927,7 @@ async def evidence_validation(stage: dict) -> dict:
 
 ADAPTERS = {
     "scope_preflight": scope_preflight,
+    "subdomain_enumeration": subdomain_enumeration,
     "http_profile": http_profile,
     "tls_service_discovery": tls_service_discovery,
     "authenticated_crawl": authenticated_crawl,
