@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: exposurescopex-eval-runner
-Version: 0.5.0
+Version: 0.5.1
 Summary: Run local-first ExposureScopeX AI pre-release evaluations in a customer environment.
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
@@ -27,38 +27,60 @@ user-facing HTTP workflow. That workflow can orchestrate any number of
 internal agents, tools, retrievers, and models; the runner does not require a
 separate call for every internal agent.
 
-```powershell
-esx-eval setup --directory .\my-application-evaluation
+```text
+esx-eval setup --directory ./my-application-evaluation
 ```
 
-The page opens only on `127.0.0.1`. It can optionally scan a local repository
-for framework, API-route, and observability hints without exporting source
-content. Then choose a `smoke`, `release`, or `red_team` baseline plan, enter
-the application's local HTTP endpoint and response fields, and create the
-plan. Every generated case remains editable in `esx-eval.json`; teams can add
-their own product, domain, and organization-policy cases.
+The page opens only on `127.0.0.1`. It can scan a local repository for
+framework, API-route, tool, retrieval, and observability hints without
+exporting source content. The customer explicitly selects what is in scope,
+then chooses a local JSON API or a loopback browser journey, reviews a
+`smoke`, `release`, `red_team`, or custom baseline, and creates the plan.
+Every generated case remains editable in `esx-eval.json`; teams can add their
+own product, domain, and organization-policy cases.
 
-The built-in connector posts `{"message": "..."}` to the configured endpoint
-and reads a decision label plus numeric confidence from configured JSON paths.
-It accepts loopback URLs by default. A non-local staging endpoint requires the
-explicit `allow_remote` choice in the setup page or generated config.
+Discovery does not treat architecture documents, backlog items, comments, or
+plain text as implemented technology. Each finding identifies whether it came
+from an installed local package, a declared dependency, or a source import.
+Those are static evidence levels, not proof that a capability executes at
+runtime; the customer still confirms the evaluation scope.
+
+The generated folder contains `esx-eval.json`, `discovery.json`,
+`assurance-scope.json`, `risk-plan.json`, and a local `README.md`. A normal
+`run` automatically includes the confirmed scope and plan in the Assurance
+Graph. Planned advanced checks are clearly shown as `NOT MEASURABLE` until
+compatible redacted local evidence is available; the runner never invents a
+score.
+
+For the normal zero-adapter path, enter a loopback API URL and select **Test
+local connection**. The setup page sends one fixed harmless JSON request,
+shows a value-redacted response structure, and suggests the outcome and
+confidence fields for the customer to confirm. Users do not need to understand
+or type JSON paths such as `decision.label`. The endpoint must accept a POST
+body shaped like `{"message": "..."}` and return a text outcome plus a numeric
+confidence between `0` and `1`.
+
+The automatic connection check accepts loopback URLs only. A non-local staging
+target remains an advanced, managed configuration: it requires HTTPS, mTLS,
+and a signed test-tenant attestation before any evaluation request is sent.
 
 Run the generated plan and open its self-contained local report:
 
-```powershell
-Set-Location .\my-application-evaluation
-esx-eval run --config .\esx-eval.json --out .\out\evaluation.json
-esx-eval view --report .\out\evaluation.local-report.html
+```text
+cd ./my-application-evaluation
+esx-eval run --config ./esx-eval.json --out ./out/evaluation.json
+esx-eval view --report ./out/evaluation.local-report.html
 ```
 
 The terminal report and HTML report never upload automatically. The HTML report
 contains only derived, redacted evaluation data, not case prompts or raw model
 responses.
 
-## Assurance workflow
+## Advanced assurance workflow
 
-Use this optional local-first workflow to generate a customer-approved coverage
-map. Discovery never executes application code or calls an AI model.
+Use these optional commands when a team prefers the individual local workflow
+steps. Discovery never executes application code or calls an AI model. Most
+users should use `esx-eval setup` instead.
 
 ```powershell
 # Discover local technology and workflow hints. Source stays on this computer.
@@ -179,6 +201,15 @@ These steps are all a colleague needs for a real local test. No Docker,
 ExposureScopeX account, identity registration, key pair, or platform upload is
 required.
 
+Before starting, they need a local test copy of their application, an approved
+test identity if the application requires login, and its local API URL. They do
+not need an ExposureScopeX account, an adapter file, a GitHub integration, or
+production data.
+
+The commands below use Windows PowerShell. On macOS or Linux, use `python3`
+instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
+`.\` paths.
+
 1. Install Python 3.11 or later. On Windows, confirm it is available:
 
    ```powershell
@@ -189,11 +220,10 @@ required.
    and `SHA256SUMS` from the [ExposureScopeX releases page](https://github.com/lucky1410/ExposureScopeX/releases).
    Do not download `Source code (zip)` or install the entire platform.
 
-3. Verify and install the downloaded wheel. Replace `0.4.3` with the published
-   runner version you downloaded:
+3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.4.3"
+   $version = "0.5.1"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -202,35 +232,56 @@ required.
    esx-eval --help
    ```
 
-4. Prefer `esx-eval setup --directory .\my-application-evaluation` for a
-   standard HTTP application. Use the adapter starter below only when the
-   application has no suitable HTTP endpoint or needs advanced local telemetry.
-   It creates a one-case smoke-test folder; choose a larger `--case-count`
-   whenever your team is ready to measure quality across representative cases
-   and classes.
+   On macOS or Linux, the equivalent install command is:
+
+   ```bash
+   python3 -m pip install ./exposurescopex_eval_runner-0.5.1-py3-none-any.whl
+   ```
+
+4. Start a local test copy of the AI application. It needs one endpoint that
+   accepts `POST {"message": "..."}` and returns JSON with a text outcome and
+   numeric confidence. Do not use production credentials, customer data, or a
+   production endpoint.
 
    ```powershell
-   esx-eval init --directory .\my-agent-evaluation --agent-id support-agent --subject-version 2.4.0
-   Set-Location .\my-agent-evaluation
+   # Example only: use the actual URL of the application being tested.
+   # http://127.0.0.1:8000/evaluate
    ```
 
-5. Open `local_adapter.py`. Replace only `evaluate_case()` with the local call
-   to the system under test. It receives one labelled test case and must return
-   a predicted label plus a confidence between `0` and `1`.
+5. Start the guided local setup. It opens a page on a random `127.0.0.1` port.
 
-   ```python
-   def evaluate_case(case: dict[str, object]) -> tuple[str, float]:
-       reply = my_local_agent(case["input"]["message"])
-       return ("unsafe" if reply.blocked else "safe", reply.confidence)
+   ```powershell
+   esx-eval setup --directory .\my-application-evaluation
    ```
 
-   If the starter was created with `--full-metrics`, it also contains
-   `full_metric_measurements.json`. Fill its named placeholders from local
-   trace, evidence, RAG, security-test, repeat-run, and usage records. The
-   adapter reads that file locally and rejects it until every placeholder is
-   replaced.
+6. In the page, enter the local API URL and click **Test local connection**.
+   Confirm the suggested outcome and confidence fields, choose an evaluation
+   profile, review the scope, and click **Create local evaluation**. The page
+   shows only a value-redacted response structure; it does not retain the API
+   response. You do not need to create an adapter or type JSON paths.
 
-### Connecting a full web application or multi-agent system
+7. Run the generated plan and open the local report:
+
+   ```powershell
+   Set-Location .\my-application-evaluation
+   esx-eval run --config .\esx-eval.json --out .\out\evaluation.json
+   esx-eval view --report .\out\evaluation.local-report.html
+   ```
+
+   The terminal shows each case and the calculated metrics. The HTML report,
+   prompts, results, and source content remain on the local computer unless
+   the team later chooses the separate signed-upload workflow.
+
+### Advanced fallback: unsupported application contracts
+
+Use this only when the application cannot expose the normal local JSON
+endpoint, or when it needs advanced locally collected telemetry. Create a
+one-case adapter starter, then follow the integration examples below:
+
+```powershell
+esx-eval init --directory .\my-agent-evaluation --agent-id support-agent --subject-version 2.4.0
+Set-Location .\my-agent-evaluation
+```
 
 The system under test is the colleague's own product, not an agent supplied by
 ExposureScopeX. It can be a Python function, local command, local model
@@ -321,11 +372,12 @@ application's local traces, retrieval records, tool telemetry, and provider
 usage for that run. Manually filled example values only prove the integration;
 they do not evaluate the real application.
 
-6. Replace every `REPLACE_WITH_*` value in `esx-eval.json` with your own
+After creating an adapter starter, replace every `REPLACE_WITH_*` value in
+`esx-eval.json` with your own
    versioned, labelled cases. `expected_label` is the ground-truth answer your
    team has decided is correct. It is not generated by ExposureScopeX.
 
-7. Run the evaluation. Results, including every case, accuracy, precision,
+Run the advanced evaluation. Results, including every case, accuracy, precision,
    recall, F1, Brier score, calibration error, and every requested advanced
    metric print in the terminal. The runner writes a local-only result package
    and detailed derived report to `out`.
