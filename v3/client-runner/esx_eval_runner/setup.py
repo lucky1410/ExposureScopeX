@@ -10,7 +10,9 @@ import re
 import secrets
 import webbrowser
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .assurance import build_risk_plan, create_scope
 from .discovery import discover_repository
@@ -38,6 +40,15 @@ _SETUP_FIELD_HELP = {
     "NEW EMPTY FOLDER": "The location for this plan and its local report files. Existing non-empty folders are never overwritten; the runner creates a sibling ending in -2, -3, and so on.",
     "I reviewed the selected scope": "Required confirmation that only approved components and a safe test target are in scope. Missing evidence is shown as NOT MEASURABLE instead of receiving an invented score.",
 }
+
+_PROBE_MESSAGE = "ESX local connection check. Return your normal JSON response without performing actions."
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    """A setup probe must not follow a local endpoint to another destination."""
+
+    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+        return None
 
 
 def create_http_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
@@ -210,9 +221,120 @@ playwright install chromium
 {staging_note}'''
 
 
+def _probe_local_http_target(url: object) -> dict[str, Any]:
+    """Send one fixed, local-only probe and return a value-redacted response shape."""
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("Enter a local API URL before testing the connection")
+    parsed = urlparse(url.strip())
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Enter an http or https API URL without credentials, query parameters, or a fragment")
+    if not _is_loopback_host(parsed.hostname):
+        raise ValueError("Zero-adapter connection testing is limited to a loopback URL. Approved staging targets require the managed mTLS and signed-attestation configuration.")
+    request = Request(
+        url.strip(),
+        data=json.dumps({"message": _PROBE_MESSAGE}, separators=(",", ":")).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "ExposureScopeX-Eval-Runner/setup",
+            "X-ESX-Evaluation-Mode": "local-connection-check",
+        },
+        method="POST",
+    )
+    try:
+        with build_opener(_NoRedirect()).open(request, timeout=10) as response:
+            response_bytes = response.read(1_048_577)
+    except HTTPError as exc:
+        raise ValueError(f"The local API returned HTTP {exc.code}. It must accept a JSON POST body with a message field.") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise ValueError("The local API could not be reached. Start the application and check the URL.") from exc
+    if len(response_bytes) > 1_048_576:
+        raise ValueError("The local API response exceeded 1 MB")
+    try:
+        response = json.loads(response_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("The local API did not return a JSON object") from exc
+    if not isinstance(response, dict):
+        raise ValueError("The local API must return a JSON object")
+    fields = _response_fields(response)
+    label_candidates = _rank_response_candidates(fields, kind="label")
+    confidence_candidates = _rank_response_candidates(fields, kind="confidence")
+    return {
+        "url": url.strip(),
+        "request": {"message": "<fixed local connection check>"},
+        "response_shape": _redacted_response_shape(response),
+        "fields": [{"path": item["path"], "type": item["type"]} for item in fields],
+        "label_candidates": label_candidates,
+        "confidence_candidates": confidence_candidates,
+    }
+
+
+def _response_fields(value: object, prefix: str = "") -> list[dict[str, Any]]:
+    """List dotted object paths without retaining response values."""
+    if isinstance(value, dict):
+        fields: list[dict[str, Any]] = []
+        for key, child in value.items():
+            if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                continue
+            child_prefix = f"{prefix}.{key}" if prefix else key
+            fields.extend(_response_fields(child, child_prefix))
+        return fields
+    if not prefix:
+        return []
+    value_type = "boolean" if isinstance(value, bool) else "number" if isinstance(value, (int, float)) else "string" if isinstance(value, str) else "array" if isinstance(value, list) else "null"
+    return [{"path": prefix, "type": value_type, "value": value}]
+
+
+def _redacted_response_shape(value: object) -> object:
+    """Keep JSON keys and types for mapping while withholding all response content."""
+    if isinstance(value, dict):
+        return {key: _redacted_response_shape(child) for key, child in value.items() if isinstance(key, str)}
+    if isinstance(value, list):
+        return ["<array items redacted>"]
+    if isinstance(value, bool):
+        return "<boolean>"
+    if isinstance(value, (int, float)):
+        return "<number>"
+    if value is None:
+        return "<null>"
+    return "<string>"
+
+
+def _rank_response_candidates(fields: list[dict[str, Any]], *, kind: str) -> list[dict[str, str]]:
+    """Suggest likely mappings while requiring the customer to confirm them."""
+    ranked: list[tuple[int, str, str]] = []
+    for field in fields:
+        path = field["path"]
+        value = field["value"]
+        name = path.rsplit(".", 1)[-1].lower()
+        if kind == "label":
+            if field["type"] != "string":
+                continue
+            score = 0
+            if name in {"label", "decision", "outcome", "verdict", "result", "status"}:
+                score += 10
+            if str(value).lower() in {"safe", "unsafe", "allow", "allowed", "block", "blocked", "pass", "fail"}:
+                score += 20
+        else:
+            if field["type"] != "number" or not 0 <= float(value) <= 1:
+                continue
+            score = 10 if any(word in name for word in ("confidence", "probability", "score")) else 1
+        if score:
+            ranked.append((score, path, field["type"]))
+    return [{"path": path, "type": value_type} for _score, path, value_type in sorted(ranked, key=lambda item: (-item[0], item[1]))]
+
+
 def serve_setup(default_directory: str | None = None) -> None:
     """Serve one local page on loopback until the user presses Ctrl+C."""
     token = secrets.token_urlsafe(24)
+    verified_connections: dict[str, dict[str, Any]] = {}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, _format: str, *_args: object) -> None:
@@ -230,7 +352,7 @@ def serve_setup(default_directory: str | None = None) -> None:
             if self.path != "/":
                 self.send_error(404)
                 return
-            body = _guided_setup_html(token, default_directory).encode("utf-8")
+            body = _guided_setup_html_with_evidence(token, default_directory).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -252,7 +374,22 @@ def serve_setup(default_directory: str | None = None) -> None:
                 if self.path == "/api/discover":
                     self._json(200, discover_repository(values.get("repository", "")))
                     return
+                if self.path == "/api/test-connection":
+                    probe = _probe_local_http_target(values.get("url"))
+                    verified_connections[probe["url"]] = probe
+                    self._json(200, probe)
+                    return
                 if self.path == "/api/create-plan":
+                    if values.get("connection_type", "http") == "http":
+                        probe = verified_connections.get(values.get("url", ""))
+                        if probe is None:
+                            raise ValueError("Test the local API connection and confirm its suggested response fields before creating a plan")
+                        label_path = values.get("response_label_path")
+                        confidence_path = values.get("response_confidence_path")
+                        labels = {item["path"] for item in probe["label_candidates"]}
+                        confidences = {item["path"] for item in probe["confidence_candidates"]}
+                        if label_path not in labels or confidence_path not in confidences:
+                            raise ValueError("Choose the label and confidence fields from the tested local API response")
                     path, config = create_guided_plan(values)
                     self._json(201, {"config": str(path), "cases": len(config["dataset"]["cases"]), "profile": config["plan"]["profile"], "files": ["esx-eval.json", "discovery.json", "assurance-scope.json", "risk-plan.json", "README.md"], "planned_dimensions": config["assurance"]["planned_dimensions"]})
                     return
@@ -282,8 +419,22 @@ def _guided_setup_html_with_evidence(token: str, default_directory: str | None) 
     """Label discovery evidence and explain each setup field in context."""
     page = _guided_setup_html(token, default_directory)
     host_label = {"windows": "WINDOWS", "macos": "MACOS", "linux": "LINUX"}[_host_os()]
-    tooltip_style = """<style>.esx-help{display:inline-grid;place-items:center;width:16px;height:16px;margin-left:5px;border:1px solid #507765;border-radius:50%;background:#f0f5ed;color:#19312e;font:700 11px/1 ui-monospace,monospace;cursor:help;position:relative;vertical-align:middle}.esx-help:hover::after,.esx-help:focus::after{content:attr(data-tooltip);display:block;position:absolute;z-index:10;left:0;top:22px;width:300px;padding:10px;border:1px solid #19312e;background:#fffdf7;color:#182726;font:13px/1.35 Georgia,serif;box-shadow:3px 3px #19312e;text-transform:none}.esx-help:focus{outline:2px solid #ef633d;outline-offset:2px}</style>"""
-    tooltip_script = f"""<script>(() => {{const help={json.dumps(_SETUP_FIELD_HELP)};for(const label of document.querySelectorAll('label')){{const original=label.textContent.trim();const key=Object.keys(help).find(candidate=>original.startsWith(candidate));if(!key)continue;label.title=help[key];const badge=document.createElement('span');badge.className='esx-help';badge.tabIndex=0;badge.textContent='?';badge.dataset.tooltip=help[key];badge.setAttribute('aria-label',help[key]);label.append(' ',badge);}}}})();</script>"""
+    tooltip_style = """<style>.esx-help{display:inline-grid;place-items:center;width:16px;height:16px;margin-left:5px;border:1px solid #507765;border-radius:50%;background:#f0f5ed;color:#19312e;font:700 11px/1 ui-monospace,monospace;cursor:help;position:relative;vertical-align:middle}.esx-help:hover::after,.esx-help:focus::after{content:attr(data-tooltip);display:block;position:absolute;z-index:10;left:0;top:22px;width:300px;padding:10px;border:1px solid #19312e;background:#fffdf7;color:#182726;font:13px/1.35 Georgia,serif;box-shadow:3px 3px #19312e;text-transform:none}.esx-help:focus{outline:2px solid #ef633d;outline-offset:2px}.zero-adapter{margin:14px 0}.zero-adapter h3{margin:0 0 6px;font-size:16px}.zero-adapter select{margin:4px 0 12px}.zero-adapter pre{margin:12px 0;background:#f7faf5;color:#182726;border:1px solid #b8c7bf}.zero-status{font:14px/1.4 Georgia,serif}</style>"""
+    tooltip_script = f"""<script>(() => {{
+const help={json.dumps(_SETUP_FIELD_HELP)};
+for(const label of document.querySelectorAll('label')){{const original=label.textContent.trim();const key=Object.keys(help).find(candidate=>original.startsWith(candidate));if(!key)continue;label.title=help[key];const badge=document.createElement('span');badge.className='esx-help';badge.tabIndex=0;badge.textContent='?';badge.dataset.tooltip=help[key];badge.setAttribute('aria-label',help[key]);label.append(' ',badge);}}
+const httpFields=document.getElementById('http_fields'), remoteCheck=document.getElementById('remote_check'), urlInput=document.getElementById('url');
+const mapping=document.createElement('div');mapping.className='note zero-adapter';mapping.id='zero_adapter_mapping';
+const heading=document.createElement('h3');heading.textContent='Test your connection - no adapter required';
+const copy=document.createElement('p');copy.textContent='Enter a loopback API URL, then test it. We send one fixed harmless request, keep no response content, and show only the response structure so you can confirm the suggested fields.';
+const testButton=document.createElement('button');testButton.type='button';testButton.className='secondary';testButton.textContent='TEST LOCAL CONNECTION';
+const status=document.createElement('div');status.className='zero-status';status.id='connection_probe_result';status.textContent='Test the local API before creating a plan.';
+mapping.append(heading,copy,testButton,status);httpFields.before(mapping);httpFields.classList.add('hidden');remoteCheck.classList.add('hidden');remoteCheck.querySelector('input').checked=false;
+function renderChoice(title,inputId,candidates,emptyText){{const input=document.getElementById(inputId);const label=document.createElement('label');label.textContent=title;status.append(label);if(!candidates.length){{input.value='';const note=document.createElement('p');note.textContent=emptyText;status.append(note);return;}}const select=document.createElement('select');for(const candidate of candidates){{const option=document.createElement('option');option.value=candidate.path;option.textContent=candidate.path+' ('+candidate.type+')';select.append(option);}}input.value=select.value;select.addEventListener('change',()=>input.value=select.value);status.append(select);}}
+async function testConnection(){{status.textContent='Testing the local API with one fixed request...';try{{const probe=await post('/api/test-connection',{{url:urlInput.value}});status.replaceChildren();const success=document.createElement('strong');success.textContent='Connection confirmed. Choose the suggested fields below.';status.append(success);renderChoice('OUTCOME FIELD', 'label_path', probe.label_candidates, 'No likely text outcome field was found. This endpoint needs a response that includes a label such as safe, unsafe, allow, block, pass, or fail.');renderChoice('CONFIDENCE FIELD', 'confidence_path', probe.confidence_candidates, 'No numeric 0-1 confidence field was found. This endpoint needs one for the current confidence metrics.');const shapeLabel=document.createElement('p');shapeLabel.textContent='Value-redacted response structure:';const shape=document.createElement('pre');shape.textContent=JSON.stringify(probe.response_shape,null,2);status.append(shapeLabel,shape);}}catch(error){{status.textContent='Could not confirm connection: '+error.message;}}}}
+testButton.addEventListener('click',testConnection);urlInput.addEventListener('input',()=>{{status.textContent='URL changed. Test this local API again before creating a plan.';}});
+document.getElementById('connection_type').addEventListener('change',()=>{{const browser=document.getElementById('connection_type').value==='browser';mapping.classList.toggle('hidden',browser);if(!browser){{httpFields.classList.add('hidden');remoteCheck.classList.add('hidden');}}}});
+}})();</script>"""
     return (
         page.replace("LOCAL-ONLY | NO ACCOUNT | NO UPLOAD", f"LOCAL-ONLY | HOST: {host_label} | NO ACCOUNT | NO UPLOAD")
         .replace("item.name+' ('+item.kind+')'", "item.name+' ('+item.kind+'; '+(item.verification_status||'customer declared')+')'")

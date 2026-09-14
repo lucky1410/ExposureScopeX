@@ -42,10 +42,17 @@ Graph. Planned advanced checks are clearly shown as `NOT MEASURABLE` until
 compatible redacted local evidence is available; the runner never invents a
 score.
 
-The built-in connector posts `{"message": "..."}` to the configured endpoint
-and reads a decision label plus numeric confidence from configured JSON paths.
-It accepts loopback URLs by default. A non-local staging endpoint requires the
-explicit `allow_remote` choice in the setup page or generated config.
+For the normal zero-adapter path, enter a loopback API URL and select **Test
+local connection**. The setup page sends one fixed harmless JSON request,
+shows a value-redacted response structure, and suggests the outcome and
+confidence fields for the customer to confirm. Users do not need to understand
+or type JSON paths such as `decision.label`. The endpoint must accept a POST
+body shaped like `{"message": "..."}` and return a text outcome plus a numeric
+confidence between `0` and `1`.
+
+The automatic connection check accepts loopback URLs only. A non-local staging
+target remains an advanced, managed configuration: it requires HTTPS, mTLS,
+and a signed test-tenant attestation before any evaluation request is sent.
 
 Run the generated plan and open its self-contained local report:
 

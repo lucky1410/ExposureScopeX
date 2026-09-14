@@ -25,7 +25,7 @@ from esx_eval_runner.discovery import discover_repository
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
 from esx_eval_runner.profiles import build_cases
 from esx_eval_runner.runner import RunnerError, _adapter_command, _verify_target_attestation, build_package, canonical_json, read_json
-from esx_eval_runner.setup import _guided_setup_html_with_evidence, create_guided_plan, create_http_plan
+from esx_eval_runner.setup import _guided_setup_html_with_evidence, _probe_local_http_target, create_guided_plan, create_http_plan
 from esx_eval_runner.telemetry import redact_otel_payload, telemetry_summary
 
 
@@ -153,6 +153,36 @@ class LocalRunTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_zero_adapter_probe_suggests_redacted_response_fields(self) -> None:
+        test_case = self
+
+        class Target(BaseHTTPRequestHandler):
+            def log_message(self, _format: str, *_args: object) -> None:
+                return
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers["Content-Length"])
+                test_case.assertIn("message", json.loads(self.rfile.read(length)))
+                response = json.dumps({"decision": {"label": "safe", "confidence": 0.91}, "private_answer": "do-not-display"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Target)
+        worker = Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            probe = _probe_local_http_target(f"http://127.0.0.1:{server.server_port}/evaluate")
+            self.assertEqual(probe["label_candidates"][0]["path"], "decision.label")
+            self.assertEqual(probe["confidence_candidates"][0]["path"], "decision.confidence")
+            self.assertEqual(probe["response_shape"]["decision"]["label"], "<string>")
+            self.assertNotIn("do-not-display", json.dumps(probe))
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_profiles_discovery_and_setup_plan_are_local_and_editable(self) -> None:
         self.assertEqual(len(build_cases("smoke")), 4)
         self.assertEqual(len(build_cases("release")), 12)
@@ -205,6 +235,8 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("CONFIDENCE RESPONSE PATH", page)
         self.assertIn("Existing non-empty folders are never overwritten", page)
         self.assertIn("esx-help", page)
+        self.assertIn("TEST LOCAL CONNECTION", page)
+        self.assertIn("/api/test-connection", page)
 
     def test_guided_browser_setup_requires_loopback_and_a_visible_assertion(self) -> None:
         with TemporaryDirectory() as directory:
