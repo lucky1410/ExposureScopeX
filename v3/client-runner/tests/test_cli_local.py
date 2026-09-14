@@ -25,7 +25,7 @@ from esx_eval_runner.discovery import discover_repository
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
 from esx_eval_runner.profiles import build_cases
 from esx_eval_runner.runner import RunnerError, _adapter_command, _verify_target_attestation, build_package, canonical_json, read_json
-from esx_eval_runner.setup import create_http_plan
+from esx_eval_runner.setup import create_guided_plan, create_http_plan
 from esx_eval_runner.telemetry import redact_otel_payload, telemetry_summary
 
 
@@ -173,6 +173,68 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(len(config["dataset"]["cases"]), 4)
             self.assertTrue((target / "README.md").is_file())
 
+    def test_guided_setup_creates_confirmed_scope_and_auto_report_artifacts(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            discovery = {
+                "repository": str(root),
+                "components": [
+                    {"id": "workflow-api", "name": "API workflow", "kind": "workflow_entry_point"},
+                    {"id": "agent-langgraph", "name": "LangGraph", "kind": "agent_framework"},
+                ],
+            }
+            target = root / "guided"
+            path, config = create_guided_plan({
+                "directory": str(target), "agent_id": "my-app", "subject_version": "2.0.0",
+                "project_key": "demo", "url": "http://127.0.0.1:8000/evaluate",
+                "profile": "release", "connection_type": "http", "discovery": discovery,
+                "selected_component_ids": ["workflow-api", "agent-langgraph"], "confirm_plan": True,
+            })
+            self.assertTrue(path.is_file())
+            self.assertEqual(config["evaluation"]["required_dimensions"], ["classification", "confidence"])
+            self.assertIn("trajectory", config["assurance"]["planned_dimensions"])
+            self.assertTrue((target / "discovery.json").is_file())
+            self.assertTrue((target / "assurance-scope.json").is_file())
+            self.assertTrue((target / "risk-plan.json").is_file())
+            self.assertIn("automatically uses", (target / "README.md").read_text(encoding="utf-8"))
+
+    def test_guided_browser_setup_requires_loopback_and_a_visible_assertion(self) -> None:
+        with TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "loopback"):
+                create_guided_plan({
+                    "directory": str(Path(directory) / "browser"), "agent_id": "my-app",
+                    "subject_version": "2.0.0", "project_key": "demo", "url": "https://staging.example.test",
+                    "profile": "smoke", "connection_type": "browser", "browser_path": "/", "browser_expected_text": "Welcome", "confirm_plan": True,
+                })
+
+    def test_run_automatically_includes_setup_scope_and_plan_in_local_report(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            discovery = {"repository": str(root), "components": [
+                {"id": "workflow-api", "name": "API workflow", "kind": "workflow_entry_point"},
+                {"id": "agent-langgraph", "name": "LangGraph", "kind": "agent_framework"},
+            ]}
+            scope = create_scope(discovery, ["workflow-api", "agent-langgraph"])
+            plan = build_risk_plan(scope, "release")
+            for name, value in (("discovery.json", discovery), ("assurance-scope.json", scope), ("risk-plan.json", plan)):
+                (root / name).write_text(json.dumps(value), encoding="utf-8")
+            config = {
+                "schema_version": "esx-client-runner-config-1.0",
+                "evaluation": {"name": "guided", "agent_id": "demo-agent", "subject_version": "1.0.0", "project_key": "demo", "dataset_version": "guided-1.0", "required_dimensions": ["classification", "confidence"]},
+                "dataset": {"version": "guided-1.0", "cases": [{"case_id": "one", "input": {"message": "normal request"}, "expected_label": "safe"}]},
+                "adapter": {"type": "command_json_v1", "command": ADAPTER_COMMAND},
+                "source": {"origin": "local"},
+                "assurance": {"discovery_file": "discovery.json", "scope_file": "assurance-scope.json", "plan_file": "risk-plan.json", "telemetry_file": "out/telemetry.jsonl"},
+            }
+            config_path = root / "esx-eval.json"
+            output_path = root / "out" / "evaluation.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(run_command(argparse.Namespace(config=str(config_path), out=str(output_path), github_oidc_token_file=None, sign=False, summary_only=True, output_format="text")), 0)
+            report = read_json(output_path.with_name("evaluation.local-report.json"))
+            self.assertEqual(report["assurance_graph"]["summary"]["scope_status"], "confirmed")
+            self.assertIn("trajectory", report["metrics"])
+
     def test_discovery_scope_plan_and_assurance_graph_are_reviewable(self) -> None:
         discovery = {
             "repository": "C:/demo",
@@ -190,7 +252,7 @@ class LocalRunTests(unittest.TestCase):
         metrics = {"classification": {"measurement_status": "measured"}, "confidence": {"measurement_status": "measured"}, "rag": {"measurement_status": "not_measurable"}}
         graph = build_assurance_graph(package, metrics, discovery=discovery, scope=scope, plan=plan, telemetry={"span_count": 4})
         self.assertEqual(graph["summary"]["confirmed_component_count"], 3)
-        self.assertEqual(graph["summary"]["unmeasurable_metric_count"], 1)
+        self.assertEqual(graph["summary"]["unmeasurable_metric_count"], 6)
 
     def test_telemetry_redaction_and_browser_loopback_policy(self) -> None:
         payload = {"resourceSpans": [{"resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "demo"}}, {"key": "gen_ai.prompt", "value": {"stringValue": "secret prompt"}}]}, "scopeSpans": [{"spans": [{"name": "tool.run", "attributes": [{"key": "gen_ai.tool.name", "value": {"stringValue": "search"}}, {"key": "input.value", "value": {"stringValue": "do not retain"}}]}]}]}]}

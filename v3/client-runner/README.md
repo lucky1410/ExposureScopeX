@@ -21,12 +21,20 @@ separate call for every internal agent.
 esx-eval setup --directory .\my-application-evaluation
 ```
 
-The page opens only on `127.0.0.1`. It can optionally scan a local repository
-for framework, API-route, and observability hints without exporting source
-content. Then choose a `smoke`, `release`, or `red_team` baseline plan, enter
-the application's local HTTP endpoint and response fields, and create the
-plan. Every generated case remains editable in `esx-eval.json`; teams can add
-their own product, domain, and organization-policy cases.
+The page opens only on `127.0.0.1`. It can scan a local repository for
+framework, API-route, tool, retrieval, and observability hints without
+exporting source content. The customer explicitly selects what is in scope,
+then chooses a local JSON API or a loopback browser journey, reviews a
+`smoke`, `release`, `red_team`, or custom baseline, and creates the plan.
+Every generated case remains editable in `esx-eval.json`; teams can add their
+own product, domain, and organization-policy cases.
+
+The generated folder contains `esx-eval.json`, `discovery.json`,
+`assurance-scope.json`, `risk-plan.json`, and a local `README.md`. A normal
+`run` automatically includes the confirmed scope and plan in the Assurance
+Graph. Planned advanced checks are clearly shown as `NOT MEASURABLE` until
+compatible redacted local evidence is available; the runner never invents a
+score.
 
 The built-in connector posts `{"message": "..."}` to the configured endpoint
 and reads a decision label plus numeric confidence from configured JSON paths.
@@ -45,10 +53,11 @@ The terminal report and HTML report never upload automatically. The HTML report
 contains only derived, redacted evaluation data, not case prompts or raw model
 responses.
 
-## Assurance workflow
+## Advanced assurance workflow
 
-Use this optional local-first workflow to generate a customer-approved coverage
-map. Discovery never executes application code or calls an AI model.
+Use these optional commands when a team prefers the individual local workflow
+steps. Discovery never executes application code or calls an AI model. Most
+users should use `esx-eval setup` instead.
 
 ```powershell
 # Discover local technology and workflow hints. Source stays on this computer.

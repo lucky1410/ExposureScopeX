@@ -88,7 +88,11 @@ def build_assurance_graph(
         component_id = "component:" + str(component.get("id", "unknown"))
         nodes.append({"id": component_id, "kind": str(component.get("kind", "unknown")), "label": str(component.get("name", component_id)), "status": "in_scope"})
         edges.append({"from": subject_id, "to": component_id, "kind": "contains"})
-    for dimension in evaluation["required_dimensions"]:
+    required_dimensions = list(evaluation["required_dimensions"])
+    for dimension in (plan or {}).get("required_dimensions", []):
+        if isinstance(dimension, str) and dimension not in required_dimensions:
+            required_dimensions.append(dimension)
+    for dimension in required_dimensions:
         metric = metrics.get(dimension, {"measurement_status": "not_measurable"})
         status = str(metric.get("measurement_status", "not_measurable"))
         node_id = "metric:" + dimension
@@ -99,8 +103,8 @@ def build_assurance_graph(
         status = "captured" if telemetry.get("span_count", 0) else "not_measurable"
         nodes.append({"id": node_id, "kind": "telemetry", "label": f"{telemetry.get('span_count', 0)} redacted spans", "status": status})
         edges.append({"from": subject_id, "to": node_id, "kind": "evidence"})
-    measured = sum(1 for metric in metrics.values() if metric.get("measurement_status") == "measured")
-    required = len(evaluation["required_dimensions"])
+    measured = sum(1 for dimension in required_dimensions if metrics.get(dimension, {}).get("measurement_status") == "measured")
+    required = len(required_dimensions)
     return {
         "schema_version": "esx-assurance-graph-1.0",
         "summary": {

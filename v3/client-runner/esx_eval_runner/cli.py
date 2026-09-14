@@ -562,11 +562,11 @@ def run_command(args: argparse.Namespace) -> int:
         "signed": "signature" in package,
         "duration_ms": package["execution"]["duration_ms"],
     })
-    local_metrics = calculate_local_metrics(package)
-    discovery = _optional_json(getattr(args, "discovery", None))
-    scope = _optional_json(getattr(args, "scope", None))
-    plan = _optional_json(getattr(args, "plan", None))
-    telemetry_path = getattr(args, "telemetry", None)
+    discovery = _optional_json(_workflow_file(config, args.config, getattr(args, "discovery", None), "discovery_file"))
+    scope = _optional_json(_workflow_file(config, args.config, getattr(args, "scope", None), "scope_file"))
+    plan = _optional_json(_workflow_file(config, args.config, getattr(args, "plan", None), "plan_file"))
+    local_metrics = _planned_metrics(calculate_local_metrics(package), plan)
+    telemetry_path = _workflow_file(config, args.config, getattr(args, "telemetry", None), "telemetry_file", optional=True)
     telemetry = telemetry_summary(telemetry_path) if telemetry_path else None
     assurance_graph = build_assurance_graph(package, local_metrics, discovery=discovery, scope=scope, plan=plan, telemetry=telemetry)
     report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.json")
@@ -652,10 +652,17 @@ def telemetry_command(args: argparse.Namespace) -> int:
 
 def report_command(args: argparse.Namespace) -> int:
     package = read_json(args.package)
-    metrics = calculate_local_metrics(package)
+    config_path = getattr(args, "config", None)
+    config = read_json(config_path) if config_path else {}
+    discovery_path = _workflow_file(config, config_path, args.discovery, "discovery_file") if config_path else args.discovery
+    scope_path = _workflow_file(config, config_path, args.scope, "scope_file") if config_path else args.scope
+    plan_path = _workflow_file(config, config_path, args.plan, "plan_file") if config_path else args.plan
+    telemetry_path = _workflow_file(config, config_path, args.telemetry, "telemetry_file", optional=True) if config_path else args.telemetry
+    plan = _optional_json(plan_path)
+    metrics = _planned_metrics(calculate_local_metrics(package), plan)
     graph = build_assurance_graph(
-        package, metrics, discovery=_optional_json(args.discovery), scope=_optional_json(args.scope),
-        plan=_optional_json(args.plan), telemetry=telemetry_summary(args.telemetry) if args.telemetry else None,
+        package, metrics, discovery=_optional_json(discovery_path), scope=_optional_json(scope_path),
+        plan=plan, telemetry=telemetry_summary(telemetry_path) if telemetry_path else None,
     )
     report = {
         "schema_version": "esx-local-assurance-report-1.0", "status": "completed_locally",
@@ -673,6 +680,34 @@ def report_command(args: argparse.Namespace) -> int:
 
 def _optional_json(path: str | None) -> dict[str, object] | None:
     return read_json(path) if path else None
+
+
+def _workflow_file(
+    config: dict[str, object], config_path: str | None, explicit: str | None,
+    key: str, *, optional: bool = False,
+) -> str | None:
+    """Prefer an explicit artifact, otherwise resolve a setup-generated local file."""
+    if explicit:
+        return explicit
+    assurance = config.get("assurance", {})
+    if not isinstance(assurance, dict) or not isinstance(assurance.get(key), str) or not config_path:
+        return None
+    path = Path(config_path).resolve().parent / assurance[key]
+    if optional and not path.is_file():
+        return None
+    return str(path)
+
+
+def _planned_metrics(metrics: dict[str, dict[str, object]], plan: dict[str, object] | None) -> dict[str, dict[str, object]]:
+    """Show planned dimensions as gaps until customer-local evidence is supplied."""
+    result = dict(metrics)
+    for dimension in (plan or {}).get("required_dimensions", []):
+        if isinstance(dimension, str) and dimension not in result:
+            result[dimension] = {
+                "measurement_status": "not_measurable",
+                "reason": "This dimension is in the confirmed risk plan, but no compatible redacted local measurement was supplied.",
+            }
+    return result
 
 
 def view_command(args: argparse.Namespace) -> int:
@@ -775,6 +810,7 @@ def parser() -> argparse.ArgumentParser:
     report = commands.add_parser("report", help="Create a standalone local Assurance Graph report from an existing result package")
     report.add_argument("--package", required=True, help="Local evaluation package JSON")
     report.add_argument("--out", required=True, help="New local Assurance Graph JSON path")
+    report.add_argument("--config", help="Optional setup-generated esx-eval.json; resolves its local scope and plan automatically")
     report.add_argument("--discovery", help="Optional local discovery JSON")
     report.add_argument("--scope", help="Optional confirmed local scope JSON")
     report.add_argument("--plan", help="Optional reviewed local risk plan JSON")
