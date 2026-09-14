@@ -5,6 +5,7 @@ from __future__ import annotations
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import platform
 import re
 import secrets
 import webbrowser
@@ -41,9 +42,7 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     connection_type = values.get("connection_type", "http")
     if connection_type not in {"http", "browser"}:
         raise ValueError("Choose an HTTP API or browser journey connection")
-    target = Path(values["directory"]).expanduser().resolve()
-    if target.exists() and any(target.iterdir()):
-        raise ValueError(f"Refusing to overwrite non-empty folder: {target}")
+    target = _available_plan_directory(Path(values["directory"]).expanduser().resolve())
     dataset_version = f"{values['agent_id']}-{profile_name}-1.0"
     host = urlparse(values["url"]).hostname or ""
     if connection_type == "browser" and not _is_loopback_host(host):
@@ -97,6 +96,7 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
         "source": {"origin": "local"},
         "plan": {"profile": profile_name, "profile_description": profile(profile_name)["description"], "review_required": False},
         "assurance": {"discovery_file": "discovery.json", "scope_file": "assurance-scope.json", "plan_file": "risk-plan.json", "telemetry_file": "out/telemetry.jsonl", "planned_dimensions": plan["required_dimensions"]},
+        "environment": {"host_os": _host_os(values.get("host_os"))},
     }
     target.mkdir(parents=True, exist_ok=True)
     path = target / "esx-eval.json"
@@ -108,10 +108,34 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     return path, config
 
 
+def _available_plan_directory(requested: Path) -> Path:
+    """Keep existing local work intact by choosing a predictable sibling folder."""
+    if not requested.exists() or not any(requested.iterdir()):
+        return requested
+    for number in range(2, 10_001):
+        candidate = requested.with_name(f"{requested.name}-{number}")
+        if not candidate.exists():
+            return candidate
+    raise ValueError(f"Could not find an available plan folder beside: {requested}")
+
+
+def _host_os(value: object = None) -> str:
+    """Normalize host names for generated cross-platform instructions."""
+    name = str(value or platform.system()).lower()
+    if name.startswith("win"):
+        return "windows"
+    if name in {"darwin", "macos", "mac os"}:
+        return "macos"
+    return "linux"
+
+
 def _plan_readme(config: dict[str, Any], plan: dict[str, Any] | None = None) -> str:
     adapter = config["adapter"]
+    host_os = _host_os((config.get("environment") or {}).get("host_os"))
+    python_command = "py" if host_os == "windows" else "python3"
+    connection = "browser journey" if adapter["type"] == "browser_journey" else "JSON API"
     staging_note = ""
-    if adapter["target_environment"] == "staging":
+    if adapter.get("target_environment") == "staging":
         staging_note = '''
 
 ## Required staging security configuration
@@ -125,18 +149,18 @@ adding those values. Do not downgrade this target to plain HTTP.
 '''
     return f'''# Local pre-release evaluation
 
-This folder was generated locally by `esx-eval setup`. It evaluates a customer-owned HTTP application without uploading prompts, responses, source code, credentials, or results.
+This folder was generated locally by `esx-eval setup` on {host_os}. It evaluates a customer-owned {connection} without uploading prompts, responses, source code, credentials, or results.
 
 ## Run this plan
 
 1. Start the application locally, or use an approved staging URL.
 2. Open `esx-eval.json` and review every labelled test case. Replace, remove, or add cases to match the product's real requirements.
-3. The runner sends `{{"message": "..."}}` to `{adapter['url']}`. It reads the decision label from `{adapter['response_label_path']}` and a numeric confidence from `{adapter['response_confidence_path']}`.
+3. The runner uses the approved {connection} at `{adapter.get('url', adapter.get('base_url'))}`.{" It reads the decision label from `" + adapter['response_label_path'] + "` and a numeric confidence from `" + adapter['response_confidence_path'] + "`." if adapter['type'] == 'http_json_target' else " It verifies the configured local browser assertion."}
 4. Run:
 
-```powershell
-esx-eval run --config .\\esx-eval.json --out .\\out\\evaluation.json
-esx-eval view --report .\\out\\evaluation.local-report.html
+```text
+esx-eval run --config ./esx-eval.json --out ./out/evaluation.json
+esx-eval view --report ./out/evaluation.local-report.html
 ```
 
 The terminal and HTML report are private and local. A successful smoke plan proves only this connection and the selected labelled cases, not universal safety or reliability.
@@ -154,14 +178,14 @@ To capture supported OpenTelemetry JSON metadata locally, run this in a second
 terminal before the evaluation, then configure the test application with the
 printed loopback URL and token:
 
-```powershell
-esx-eval telemetry --out .\out\telemetry.jsonl
+```text
+esx-eval telemetry --out ./out/telemetry.jsonl
 ```
 
 For a browser journey, install the optional local dependency once:
 
-```powershell
-py -m pip install "exposurescopex-eval-runner[browser]"
+```text
+{python_command} -m pip install "exposurescopex-eval-runner[browser]"
 playwright install chromium
 ```
 {staging_note}'''
@@ -205,6 +229,7 @@ def serve_setup(default_directory: str | None = None) -> None:
                 values = json.loads(self.rfile.read(length).decode("utf-8"))
                 if not isinstance(values, dict):
                     raise ValueError("Request must be a JSON object")
+                values["host_os"] = _host_os()
                 if self.path == "/api/discover":
                     self._json(200, discover_repository(values.get("repository", "")))
                     return
@@ -237,7 +262,8 @@ def _guided_setup_html(token: str, default_directory: str | None) -> str:
 def _guided_setup_html_with_evidence(token: str, default_directory: str | None) -> str:
     """Label every displayed discovery item with the scanner evidence level."""
     page = _guided_setup_html(token, default_directory)
-    return page.replace("item.name+' ('+item.kind+')'", "item.name+' ('+item.kind+'; '+(item.verification_status||'customer declared')+')'")
+    host_label = {"windows": "WINDOWS", "macos": "MACOS", "linux": "LINUX"}[_host_os()]
+    return page.replace("LOCAL-ONLY | NO ACCOUNT | NO UPLOAD", f"LOCAL-ONLY | HOST: {host_label} | NO ACCOUNT | NO UPLOAD").replace("item.name+' ('+item.kind+')'", "item.name+' ('+item.kind+'; '+(item.verification_status||'customer declared')+')'")
 
 
 def _setup_html(token: str, default_directory: str | None) -> str:

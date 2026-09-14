@@ -207,6 +207,23 @@ class LocalRunTests(unittest.TestCase):
                     "profile": "smoke", "connection_type": "browser", "browser_path": "/", "browser_expected_text": "Welcome", "confirm_plan": True,
                 })
 
+    def test_guided_setup_uses_a_safe_sibling_folder_and_macos_commands(self) -> None:
+        with TemporaryDirectory() as directory:
+            requested = Path(directory) / "evaluation"
+            requested.mkdir()
+            (requested / "keep.txt").write_text("do not overwrite", encoding="utf-8")
+            path, config = create_guided_plan({
+                "directory": str(requested), "agent_id": "my-app", "subject_version": "2.0.0",
+                "project_key": "demo", "url": "http://127.0.0.1:8000/evaluate",
+                "profile": "smoke", "connection_type": "http", "confirm_plan": True, "host_os": "Darwin",
+            })
+            self.assertEqual(path.parent.name, "evaluation-2")
+            self.assertEqual((requested / "keep.txt").read_text(encoding="utf-8"), "do not overwrite")
+            self.assertEqual(config["environment"]["host_os"], "macos")
+            guide = (path.parent / "README.md").read_text(encoding="utf-8")
+            self.assertIn("python3 -m pip", guide)
+            self.assertIn("./out/evaluation.json", guide)
+
     def test_run_automatically_includes_setup_scope_and_plan_in_local_report(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

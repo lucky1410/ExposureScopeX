@@ -17,8 +17,8 @@ user-facing HTTP workflow. That workflow can orchestrate any number of
 internal agents, tools, retrievers, and models; the runner does not require a
 separate call for every internal agent.
 
-```powershell
-esx-eval setup --directory .\my-application-evaluation
+```text
+esx-eval setup --directory ./my-application-evaluation
 ```
 
 The page opens only on `127.0.0.1`. It can scan a local repository for
@@ -49,10 +49,10 @@ explicit `allow_remote` choice in the setup page or generated config.
 
 Run the generated plan and open its self-contained local report:
 
-```powershell
-Set-Location .\my-application-evaluation
-esx-eval run --config .\esx-eval.json --out .\out\evaluation.json
-esx-eval view --report .\out\evaluation.local-report.html
+```text
+cd ./my-application-evaluation
+esx-eval run --config ./esx-eval.json --out ./out/evaluation.json
+esx-eval view --report ./out/evaluation.local-report.html
 ```
 
 The terminal report and HTML report never upload automatically. The HTML report
