@@ -32,7 +32,7 @@ send_slack_notification() {
         }')
 
     local resp
-    resp=$(curl -s -X POST \
+    resp=$(curl -s --max-time 15 -X POST \
         -H 'Content-type: application/json' \
         --data "$payload" \
         "$SLACK_WEBHOOK_URL" 2>/dev/null)
@@ -78,7 +78,7 @@ send_teams_notification() {
             text:       $text
         }')
 
-    if ! curl -s -X POST \
+    if ! curl -s --max-time 15 -X POST \
         -H 'Content-Type: application/json' \
         --data "$payload" \
         "$TEAMS_WEBHOOK_URL" &>/dev/null; then
@@ -116,7 +116,7 @@ send_siem_log() {
                 --arg severity "$severity" \
                 '{ event: $event, severity: $severity }')
 
-            curl --silent --show-error --fail "$SPLUNK_HEC_URL" \
+            curl --silent --show-error --fail --max-time 15 "$SPLUNK_HEC_URL" \
                 -H "Authorization: Splunk $SPLUNK_HEC_TOKEN" \
                 -H "Content-Type: application/json" \
                 --data "$payload" &>/dev/null || \

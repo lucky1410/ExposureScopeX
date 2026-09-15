@@ -7,6 +7,32 @@ run_api_security() {
     local target=$1
     local output_dir=$2
     local api_output="${output_dir}/api_security.txt"
+    local max_base_urls max_api_paths max_gql_paths max_js_urls max_meta_targets max_ssrf_params stage_timeout
+    _TOOL_RUN_SEQUENCE=$(( ${_TOOL_RUN_SEQUENCE:-0} + 1 ))
+    local module_run_id="api-security-${$}-${_TOOL_RUN_SEQUENCE}"
+    local module_started_at
+    module_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '%s\t%s\trunning\t\t%s\t\t%s\t%s\n' \
+        "$module_run_id" "api-security" "$module_started_at" \
+        "run_api_security $target" "api_security.txt" >> "${output_dir}/tool_runs.tsv"
+
+    # API probes multiply quickly across discovered hosts. Keep each profile
+    # bounded and record the limit so reduced coverage is never implicit.
+    case "${MODE:-medium}" in
+        light)
+            max_base_urls=3; max_api_paths=10; max_gql_paths=4; max_js_urls=5
+            max_meta_targets=1; max_ssrf_params=6; stage_timeout=180
+            ;;
+        full|aggressive)
+            max_base_urls=25; max_api_paths=19; max_gql_paths=7; max_js_urls=30
+            max_meta_targets=4; max_ssrf_params=25; stage_timeout=900
+            ;;
+        *)
+            max_base_urls=10; max_api_paths=14; max_gql_paths=5; max_js_urls=10
+            max_meta_targets=2; max_ssrf_params=10; stage_timeout=600
+            ;;
+    esac
+    local stage_started=$SECONDS
 
     log_info "Starting API Security Testing..."
     : > "$api_output"
@@ -14,15 +40,51 @@ run_api_security() {
     # Build URL list from live hosts or target
     local -a base_urls=()
     if [ -f "${output_dir}/live_hosts.txt" ] && [ -s "${output_dir}/live_hosts.txt" ]; then
-        mapfile -t base_urls < "${output_dir}/live_hosts.txt"
+        mapfile -t base_urls < <(
+            awk '{print $1}' "${output_dir}/live_hosts.txt" \
+                | grep -E '^https?://' \
+                | sed 's#/$##' \
+                | sort -u \
+                | head -n "$max_base_urls"
+        )
     elif validate_domain "$target"; then
         base_urls=("https://$target" "http://$target")
     else
         log_error "No valid targets for API security test"
+        printf '%s\t%s\tfailed\t1\t%s\t%s\t%s\t%s\n' \
+            "$module_run_id" "api-security" "$module_started_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "run_api_security $target" "api_security.txt" >> "${output_dir}/tool_runs.tsv"
         return 1
     fi
 
+    local discovered_url_count=${#base_urls[@]}
+    local available_url_count=$discovered_url_count
+    if [ -f "${output_dir}/live_hosts.txt" ] && [ -s "${output_dir}/live_hosts.txt" ]; then
+        available_url_count=$(awk '{print $1}' "${output_dir}/live_hosts.txt" \
+            | grep -E '^https?://' | sed 's#/$##' | sort -u | wc -l | tr -d ' ')
+    fi
+    {
+        echo "=== Coverage Policy ==="
+        echo "Profile: ${MODE:-medium}"
+        echo "Base URLs selected: ${discovered_url_count}/${available_url_count}"
+        echo "Stage deadline: ${stage_timeout}s"
+        echo "Limits per URL: OpenAPI=${max_api_paths}, GraphQL=${max_gql_paths}, JS=${max_js_urls}, metadata=${max_meta_targets}, SSRF parameters=${max_ssrf_params}"
+        [ "$available_url_count" -gt "$discovered_url_count" ] && \
+            echo "[COVERAGE LIMIT] $((available_url_count - discovered_url_count)) additional live URL(s) were not tested by this profile."
+        echo ""
+    } >> "$api_output"
+
+    log_info "API security coverage: ${discovered_url_count}/${available_url_count} live URL(s), deadline ${stage_timeout}s"
+
+    local host_index=0
+    local deadline_reached=false
     for base_url in "${base_urls[@]}"; do
+        if (( SECONDS - stage_started >= stage_timeout )); then
+            deadline_reached=true
+            break
+        fi
+        host_index=$((host_index + 1))
+        log_info "API security target ${host_index}/${discovered_url_count}: $base_url"
         {
             echo "=== API Security: $base_url ==="
             echo ""
@@ -41,7 +103,7 @@ run_api_security() {
                 "/api/v1/docs" "/api/v2/docs"
             )
             local found_api=false
-            for path in "${api_paths[@]}"; do
+            for path in "${api_paths[@]:0:$max_api_paths}"; do
                 local status
                 status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
                     -A "${USER_AGENT:-ExposureScopeX/1.0}" "${base_url}${path}" 2>/dev/null)
@@ -59,7 +121,7 @@ run_api_security() {
             echo "--- GraphQL Introspection ---"
             local -a gql_paths=("/graphql" "/api/graphql" "/gql" "/query" "/graphiql" "/playground" "/api/v1/graphql")
             local found_gql=false
-            for path in "${gql_paths[@]}"; do
+            for path in "${gql_paths[@]:0:$max_gql_paths}"; do
                 local gql_resp
                 gql_resp=$(curl -s -X POST --max-time 5 \
                     -H "Content-Type: application/json" \
@@ -86,8 +148,8 @@ run_api_security() {
             # Collect JS URLs from crawler output
             for f in katana_crawl.txt wayback_urls.txt feroxbuster_results.txt; do
                 [ -f "${output_dir}/$f" ] && \
-                    mapfile -t -O "${#js_urls[@]}" js_urls < \
-                        <(grep -E "\.js(\?|$)" "${output_dir}/$f" 2>/dev/null | grep "^http" | sort -u | head -30)
+                        mapfile -t -O "${#js_urls[@]}" js_urls < \
+                        <(grep -E "\.js(\?|$)" "${output_dir}/$f" 2>/dev/null | grep "^http" | sort -u | head -n "$max_js_urls")
             done
 
             if [ ${#js_urls[@]} -eq 0 ]; then
@@ -153,8 +215,8 @@ run_api_security() {
             )
 
             local ssrf_found=false
-            for meta_url in "${meta_targets[@]}"; do
-                for param in "${ssrf_params[@]}"; do
+            for meta_url in "${meta_targets[@]:0:$max_meta_targets}"; do
+                for param in "${ssrf_params[@]:0:$max_ssrf_params}"; do
                     local probe="${base_url}?${param}=${meta_url}"
                     local resp
                     resp=$(curl -s --max-time 3 -A "${USER_AGENT:-ExposureScopeX/1.0}" "$probe" 2>/dev/null)
@@ -187,6 +249,20 @@ run_api_security() {
         } >> "$api_output"
     done
 
+    if [ "$deadline_reached" = true ]; then
+        echo "[COVERAGE LIMIT] Stage deadline reached after ${stage_timeout}s; $((discovered_url_count - host_index)) selected URL(s) were not tested." >> "$api_output"
+        log_warn "API security reached its ${stage_timeout}s deadline after ${host_index}/${discovered_url_count} URL(s)"
+        printf '%s\t%s\ttimed_out\t124\t%s\t%s\t%s\t%s\n' \
+            "$module_run_id" "api-security" "$module_started_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "run_api_security $target" "api_security.txt" >> "${output_dir}/tool_runs.tsv"
+        return 124
+    fi
+
+    local module_status="completed"
+    [ "$available_url_count" -gt "$discovered_url_count" ] && module_status="warning"
+    printf '%s\t%s\t%s\t0\t%s\t%s\t%s\t%s\n' \
+        "$module_run_id" "api-security" "$module_status" "$module_started_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "run_api_security $target" "api_security.txt" >> "${output_dir}/tool_runs.tsv"
     log_success "API security testing complete: $api_output"
     return 0
 }

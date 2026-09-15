@@ -27,6 +27,7 @@ SOURCE_CONFIDENCE = {
     "scoutsuite": 80,
     "sqlmap": 93,
     "grype": 84,
+    "safe-web-validator": 80,
 }
 
 

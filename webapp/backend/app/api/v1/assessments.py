@@ -7,15 +7,19 @@ import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.dependencies import get_current_user, get_db, require_permission, require_role
 from app.models.assessment import Assessment
 from app.models.asset import Asset
+from app.models.operation_workspace import OperationWorkspace
 from app.models.scan import Scan
 from app.models.report import ReportArtifact
 from app.models.scan_runtime import OrganizationExecutionPolicy, OrganizationScanProfile, ScanArtifact, ScanSchedule, ScanScheduleRun
@@ -26,8 +30,11 @@ from app.schemas.assessment import (
     AssessmentList,
     AssessmentResponse,
     AssessmentScanResponse,
+    ScanArtifactResponse,
+    ScanEventResponse,
     ScanExecutionList,
     ScanExecutionResponse,
+    ScanToolRunResponse,
     ExecutionPreviewResponse,
     ScanProfileResponse,
     SavedScanProfileCreate,
@@ -41,11 +48,13 @@ from app.services.assessment_runtime import build_scan_metadata
 from app.services.capability_catalog import get_capability_catalog
 from app.services.intake_parser import parse_csv_row
 from app.services.open_source_catalog import build_tool_plan
+from app.services.operation_control import operation_execution_issue
 from app.services.scan_authorization import AuthorizationCoverage, require_scan_authorization
 from app.services.scan_planning import build_scan_plan
 from app.services.scan_profiles import get_scan_profile
 from app.services.validation import ValidationError as TargetValidationError
 from app.services.audit import write_audit
+from app.services.encryption import encrypt_dict
 
 router = APIRouter(prefix="/assessments", tags=["Assessments"])
 logger = logging.getLogger(__name__)
@@ -152,6 +161,15 @@ async def _dispatch_assessment_scan(
     authorization: AuthorizationCoverage,
 ) -> Scan:
     """Create a scan row and dispatch work for an assessment."""
+    if assessment.operation_id:
+        operation = await db.scalar(select(OperationWorkspace).where(
+            OperationWorkspace.id == assessment.operation_id,
+            OperationWorkspace.org_id == assessment.org_id,
+        ))
+        if operation is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Linked operation no longer exists")
+        if issue := operation_execution_issue(operation):
+            raise HTTPException(status.HTTP_409_CONFLICT, issue)
     # Serialize dispatch decisions per tenant so concurrent API requests cannot
     # race past queue and concurrency limits.
     await db.execute(
@@ -281,15 +299,33 @@ def _scan_execution_response(
     if not include_log:
         scan_data["raw_log"] = None
     elif scan.session_dir:
-        from app.services.celery_app import _read_scan_summary_files, _read_tool_runs
+        try:
+            from app.services.celery_app import _read_scan_summary_files, _read_tool_runs
 
-        metadata = dict(scan_data.get("scan_metadata") or {})
-        metadata["tool_runs"] = _read_tool_runs(scan.session_dir, include_output=True)
-        metadata.update(_read_scan_summary_files(scan.session_dir))
-        scan_data["scan_metadata"] = metadata
-    events = sorted(scan.events, key=lambda item: item.created_at)[-250:] if include_log else []
-    tool_runs = sorted(scan.tool_runs, key=lambda item: item.created_at) if include_log else []
-    artifacts = sorted(scan.artifacts, key=lambda item: item.path) if include_log else []
+            metadata = dict(scan_data.get("scan_metadata") or {})
+            metadata["tool_runs"] = _read_tool_runs(scan.session_dir, include_output=True)
+            metadata.update(_read_scan_summary_files(scan.session_dir))
+            scan_data["scan_metadata"] = metadata
+        except Exception:
+            logger.warning("Could not enrich scan %s from its runtime directory", scan.id, exc_info=True)
+    events = _validated_scan_items(
+        sorted(scan.events, key=lambda item: item.created_at)[-250:] if include_log else [],
+        ScanEventResponse,
+        scan.id,
+        "event",
+    )
+    tool_runs = _validated_scan_items(
+        sorted(scan.tool_runs, key=lambda item: item.created_at) if include_log else [],
+        ScanToolRunResponse,
+        scan.id,
+        "tool run",
+    )
+    artifacts = _validated_scan_items(
+        sorted(scan.artifacts, key=lambda item: item.path) if include_log else [],
+        ScanArtifactResponse,
+        scan.id,
+        "artifact",
+    )
     return ScanExecutionResponse(
         **scan_data,
         assessment_name=assessment.name,
@@ -302,17 +338,37 @@ def _scan_execution_response(
     )
 
 
+def _validated_scan_items(items: list, schema: type[BaseModel], scan_id, label: str) -> list[BaseModel]:
+    """Keep one malformed runtime row from hiding the rest of a scan."""
+    validated: list[BaseModel] = []
+    for item in items:
+        try:
+            validated.append(schema.model_validate(item))
+        except ValidationError:
+            logger.warning("Skipping malformed %s for scan %s", label, scan_id, exc_info=True)
+    return validated
+
+
+def _assessment_authorization_targets(assessment: Assessment) -> list[tuple[str, str]]:
+    """Return operator-declared seeds, never assets discovered by an earlier run."""
+    flags = assessment.flags or {}
+    imported = flags.get("_imported_targets") or []
+    targets = [
+        (str(item.get("target") or "").strip(), str(item.get("target_type") or "auto"))
+        for item in imported
+        if isinstance(item, dict) and str(item.get("target") or "").strip()
+    ]
+    return targets or [(assessment.target, assessment.target_type)]
+
+
 async def _authorize_assessment_scan(
     assessment: Assessment,
     db: AsyncSession,
 ) -> AuthorizationCoverage:
-    # Newly flushed assessments do not have a safely loaded relationship in an
-    # async session. Query explicitly instead of triggering implicit lazy I/O.
-    targets = list((await db.execute(
-        select(Asset.value, Asset.asset_type).where(Asset.assessment_id == assessment.id)
-    )).all())
-    if not targets:
-        targets = [(assessment.target, assessment.target_type)]
+    # Authorization binds to the immutable operator-declared scope. Discovered
+    # assets remain constrained by the worker scope file but cannot expand the
+    # authorization requirement and make retries impossible.
+    targets = _assessment_authorization_targets(assessment)
     flags = assessment.flags or {}
     phases = assessment.phases or {}
     passive_only = bool(flags.get("passive_only")) and not any(
@@ -688,6 +744,11 @@ async def get_scan_execution(
     row = (
         await db.execute(
             select(Scan, Assessment)
+            .options(
+                selectinload(Scan.events),
+                selectinload(Scan.tool_runs),
+                selectinload(Scan.artifacts),
+            )
             .join(Assessment, Scan.assessment_id == Assessment.id)
             .where(
                 and_(
@@ -720,8 +781,8 @@ async def retry_scan_execution(
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Scan execution not found")
     previous, assessment = row
-    if previous.status not in {"failed", "cancelled"}:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Only failed or cancelled scans can be retried")
+    if previous.status not in {"partial", "failed", "cancelled"}:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Only partial, failed, or cancelled scans can be retried")
     active = (
         await db.execute(
             select(Scan.id).where(
@@ -746,6 +807,68 @@ async def retry_scan_execution(
     return _scan_execution_response(scan, assessment, include_log=True)
 
 
+@router.post("/scan-executions/{scan_id}/retry-ingestion")
+async def retry_scan_ingestion(
+    scan_id: uuid.UUID,
+    current_user: User = Depends(require_permission("assessments:run")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recover retained results without repeating target-facing scan activity."""
+    row = (
+        await db.execute(
+            select(Scan, Assessment)
+            .join(Assessment, Scan.assessment_id == Assessment.id)
+            .where(Scan.id == scan_id, Assessment.org_id == current_user.org_id)
+        )
+    ).one_or_none()
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Scan execution not found")
+    scan, assessment = row
+    if scan.status in {"queued", "running"}:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Result ingestion cannot run while the scan is active")
+    if not scan.session_dir:
+        raise HTTPException(status.HTTP_409_CONFLICT, "The retained scan session is unavailable")
+
+    from app.services.scan_result_ingestion import ingest_assessment_scan
+
+    try:
+        result = await ingest_assessment_scan(
+            org_id=str(current_user.org_id), assessment_id=str(assessment.id),
+            scan_id=str(scan.id), session_dir=scan.session_dir,
+        )
+    except Exception as exc:
+        scan.error_message = f"Result ingestion retry failed: {exc}"[:4000]
+        await db.commit()
+        logger.exception("Result ingestion retry failed: scan=%s", scan.id)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, scan.error_message) from exc
+
+    await db.refresh(scan)
+    await db.refresh(assessment)
+    scan.status = "completed"
+    scan.current_phase = "completed"
+    scan.progress = 100
+    scan.error_message = None
+    assessment.status = "completed"
+    metadata = dict(scan.scan_metadata or {})
+    metadata["ingestion_result"] = result
+    metadata["ingestion_recovered_at"] = datetime.now(timezone.utc).isoformat()
+    scan.scan_metadata = metadata
+    await write_audit(
+        db, event="scan.ingestion.recovered", user_id=str(current_user.id),
+        org_id=str(current_user.org_id), resource_type="scan", resource_id=str(scan.id),
+        details={"assessment_id": str(assessment.id), "findings_added": result.get("findings_added", 0)},
+    )
+    await db.commit()
+
+    from app.services.report_jobs import enqueue_automatic_scan_report
+
+    reports = await enqueue_automatic_scan_report(
+        assessment_id=str(assessment.id), org_id=str(current_user.org_id),
+        scan_id=str(scan.id), terminal_status="recovered",
+    )
+    return {"status": "completed", "scan_id": str(scan.id), "ingestion": result, "reports": reports}
+
+
 @router.post("/scan-executions/{scan_id}/clone-draft", response_model=AssessmentResponse, status_code=status.HTTP_201_CREATED)
 async def clone_scan_as_draft(scan_id: uuid.UUID, current_user: User = Depends(require_permission("assessments:run")), db: AsyncSession = Depends(get_db)):
     row = (await db.execute(select(Scan, Assessment).join(Assessment).where(
@@ -753,7 +876,7 @@ async def clone_scan_as_draft(scan_id: uuid.UUID, current_user: User = Depends(r
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Scan execution not found")
     previous, source = row
-    draft = Assessment(org_id=current_user.org_id, created_by=current_user.id, name=f"{source.name} recovery",
+    draft = Assessment(org_id=current_user.org_id, created_by=current_user.id, operation_id=source.operation_id, name=f"{source.name} recovery",
         description=f"Editable recovery draft cloned from scan {previous.id}", target=source.target,
         target_type=source.target_type, status="created", scan_mode=source.scan_mode,
         phases=dict(source.phases or {}), flags={**dict(source.flags or {}), "_recovery_of": str(previous.id)}, is_demo=False)
@@ -810,9 +933,26 @@ async def create_assessment(
         requested_utilities=payload.requested_utilities,
         nuclei_tags=payload.nuclei_tags,
     )
+
+    encrypted_web_auth = None
+    if payload.web_authentication:
+        if stored_target_type not in {"url", "domain"} or len(imported_targets) > 1:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Web authentication requires one URL or domain target")
+        if not plan["flags"].get("allow_active_validation"):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Enable safe active validation to use web authentication")
+        login = payload.web_authentication
+        target_host = urlsplit(stored_target if "://" in stored_target else f"https://{stored_target}").hostname
+        login_host = urlsplit(login.login_url).hostname
+        if not target_host or not login_host or login_host.lower() != target_host.lower():
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Login URL must use the exact authorized target host")
+        encrypted_web_auth = encrypt_dict({
+            **login.model_dump(exclude={"password"}),
+            "password": login.password.get_secret_value(),
+        })
     assessment = Assessment(
         org_id=current_user.org_id,
         created_by=current_user.id,
+        operation_id=payload.operation_id,
         name=payload.name,
         description=payload.description,
         target=stored_target,
@@ -821,6 +961,7 @@ async def create_assessment(
         phases=plan["phases"],
         flags={
             **plan["flags"],
+            "authenticated": bool(encrypted_web_auth),
             "_seed": build_seed_metadata(normalized_target.normalized_value, normalized_target.target_type, source="assessment", stage="seed"),
             "_requested_scans": plan["requested_scans"],
             "_requested_utilities": plan["utilities"],
@@ -834,11 +975,22 @@ async def create_assessment(
             "_imported_targets": imported_targets,
             "_imported_target_count": len(imported_targets),
             "_import_skipped_duplicates": skipped_imports,
+            **({"_web_auth_encrypted": encrypted_web_auth} if encrypted_web_auth else {}),
         },
         status="created",
     )
     db.add(assessment)
     await db.flush()
+
+    if payload.operation_id:
+        operation = await db.scalar(select(OperationWorkspace).where(
+            OperationWorkspace.id == payload.operation_id,
+            OperationWorkspace.org_id == current_user.org_id,
+        ))
+        if operation is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Operation workspace not found")
+        if operation.status in {"stopped", "completed", "archived"}:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"Cannot attach an assessment to a {operation.status} operation")
 
     if imported_targets:
         await _create_assessment_assets(db, assessment, imported_targets)
@@ -932,6 +1084,38 @@ async def update_assessment(
         nuclei_tags=payload.nuclei_tags,
     )
 
+    encrypted_web_auth = (
+        (assessment.flags or {}).get("_web_auth_encrypted")
+        if plan["flags"].get("allow_active_validation") else None
+    )
+    if payload.web_authentication:
+        if normalized_target.target_type not in {"url", "domain"}:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Web authentication requires a URL or domain target")
+        if not plan["flags"].get("allow_active_validation"):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Enable safe active validation to use web authentication")
+        login = payload.web_authentication
+        target_host = urlsplit(
+            normalized_target.normalized_value if "://" in normalized_target.normalized_value
+            else f"https://{normalized_target.normalized_value}"
+        ).hostname
+        login_host = urlsplit(login.login_url).hostname
+        if not target_host or not login_host or login_host.lower() != target_host.lower():
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Login URL must use the exact authorized target host")
+        encrypted_web_auth = encrypt_dict({
+            **login.model_dump(exclude={"password"}),
+            "password": login.password.get_secret_value(),
+        })
+
+    if payload.operation_id:
+        operation = await db.scalar(select(OperationWorkspace).where(
+            OperationWorkspace.id == payload.operation_id,
+            OperationWorkspace.org_id == current_user.org_id,
+        ))
+        if operation is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Operation workspace not found")
+        if operation.status in {"stopped", "completed", "archived"}:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"Cannot attach an assessment to a {operation.status} operation")
+    assessment.operation_id = payload.operation_id
     assessment.name = payload.name
     assessment.description = payload.description
     assessment.target = normalized_target.normalized_value
@@ -940,6 +1124,7 @@ async def update_assessment(
     assessment.phases = plan["phases"]
     assessment.flags = {
         **plan["flags"],
+        "authenticated": bool(encrypted_web_auth),
         "_seed": build_seed_metadata(normalized_target.normalized_value, normalized_target.target_type, source="assessment", stage="seed"),
         "_requested_scans": plan["requested_scans"],
         "_requested_utilities": plan["utilities"],
@@ -949,6 +1134,7 @@ async def update_assessment(
         "_normalized_key": normalized_target.canonical_key,
         "_parent_key": normalized_target.parent_key,
         "_root_domain": normalized_target.root_domain,
+        **({"_web_auth_encrypted": encrypted_web_auth} if encrypted_web_auth else {}),
     }
 
     await db.flush()

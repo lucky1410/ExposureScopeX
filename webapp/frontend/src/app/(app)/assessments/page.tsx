@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import axios from 'axios'
 import { type ColumnDef } from '@tanstack/react-table'
-import { Plus, MoreHorizontal, Play, Trash2, Eye, Upload, Square } from 'lucide-react'
+import { Plus, MoreHorizontal, Play, Trash2, Eye, Upload, Square, Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { PageHeader } from '@/components/shared/page-header'
@@ -14,12 +14,14 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useToast } from '@/components/ui/use-toast'
 import { formatRelativeTime, getRiskScoreColor } from '@/lib/utils'
-import { cancelAssessment, deleteAssessment, getAssessments, importAssessments, startScan } from '@/lib/api'
-import type { Assessment } from '@/lib/types'
+import { cancelAssessment, deleteAssessment, downloadReport, getAssessments, getReports, importAssessments, startScan } from '@/lib/api'
+import type { Assessment, Report } from '@/lib/types'
 
 function getErrorMessage(error: unknown, fallback: string): string {
   if (axios.isAxiosError(error)) {
@@ -66,15 +68,21 @@ export default function AssessmentsPage() {
   const router = useRouter()
   const { toast } = useToast()
   const [assessments, setAssessments] = useState<Assessment[]>([])
+  const [reports, setReports] = useState<Report[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
+  const [downloadingReport, setDownloadingReport] = useState<string | null>(null)
 
   const loadAssessments = useCallback(async () => {
     try {
       setError(null)
-      const res = await getAssessments({ page_size: 100 })
+      const [res, reportItems] = await Promise.all([
+        getAssessments({ page_size: 100 }),
+        getReports().catch(() => [] as Report[]),
+      ])
       setAssessments(res.items)
+      setReports(reportItems)
     } catch (err) {
       const message = getErrorMessage(err, 'Failed to load assessments')
       setError(message)
@@ -203,6 +211,21 @@ export default function AssessmentsPage() {
     router.push(`/assessments/${assessment.id}`)
   }
 
+  const handleDownloadReport = async (report: Report) => {
+    setDownloadingReport(report.id)
+    try {
+      await downloadReport(report)
+    } catch (err) {
+      toast({
+        title: 'Download failed',
+        description: getErrorMessage(err, 'Could not download the assessment report'),
+        variant: 'destructive',
+      })
+    } finally {
+      setDownloadingReport(null)
+    }
+  }
+
   const columns: ColumnDef<Assessment>[] = [
     {
       accessorKey: 'name',
@@ -234,6 +257,7 @@ export default function AssessmentsPage() {
           created: 'pending',
           running: 'running',
           completed: 'success',
+          partial: 'pending',
           failed: 'error',
           pending: 'pending',
           cancelled: 'idle',
@@ -278,27 +302,80 @@ export default function AssessmentsPage() {
       header: 'Scan',
       cell: ({ row }) => {
         const assessment = row.original
+        const formatOrder: Report['format'][] = ['docx', 'pdf', 'evidence']
+        const formatLabels: Partial<Record<Report['format'], string>> = {
+          docx: 'Word document (DOCX)',
+          pdf: 'PDF document',
+          evidence: 'Evidence bundle (ZIP)',
+        }
+        const assessmentReports = reports.filter((report) => report.assessment_id === assessment.id)
+        const latestByFormat = new Map<Report['format'], Report>()
+        for (const format of formatOrder) {
+          const candidates = assessmentReports.filter((report) => report.format === format)
+          const report = candidates.find((item) => item.scope?.automatic === true)
+          if (report) latestByFormat.set(format, report)
+        }
+        const hasReports = latestByFormat.size > 0
+        const hasGeneratingReport = [...latestByFormat.values()].some((report) => report.status === 'generating')
+        const isDownloadingAssessment = assessmentReports.some((report) => report.id === downloadingReport)
+        const reportButton = hasReports ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="outline" className="h-8">
+                <Download className="mr-2 h-3.5 w-3.5" />
+                {isDownloadingAssessment ? 'Downloading' : hasGeneratingReport ? 'Preparing' : 'Reports'}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-56">
+              <DropdownMenuLabel>Download latest report</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {formatOrder.map((format) => {
+                const report = latestByFormat.get(format)
+                const ready = report?.status === 'ready' && Boolean(report.download_url)
+                const status = report?.status === 'generating' ? 'Preparing' : report?.status === 'failed' ? 'Failed' : 'Unavailable'
+                return (
+                  <DropdownMenuItem
+                    key={format}
+                    disabled={!ready || downloadingReport === report?.id}
+                    onClick={() => ready && report && void handleDownloadReport(report)}
+                  >
+                    <Download className="mr-2 h-4 w-4" />
+                    <span>{formatLabels[format]}</span>
+                    {!ready && <span className="ml-auto text-xs text-muted-foreground">{status}</span>}
+                  </DropdownMenuItem>
+                )
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null
+
         if (assessment.status === 'running') {
           return (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8"
-              onClick={() => handleCancelScan(assessment)}
-            >
-              <Square className="mr-2 h-3.5 w-3.5" /> Stop
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8"
+                onClick={() => handleCancelScan(assessment)}
+              >
+                <Square className="mr-2 h-3.5 w-3.5" /> Stop
+              </Button>
+              {reportButton}
+            </div>
           )
         }
 
         return (
-          <Button
-            size="sm"
-            className="h-8"
-            onClick={() => handleRunScan(assessment)}
-          >
-            <Play className="mr-2 h-3.5 w-3.5" /> Start
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              className="h-8"
+              onClick={() => handleRunScan(assessment)}
+            >
+              <Play className="mr-2 h-3.5 w-3.5" /> Start
+            </Button>
+            {reportButton}
+          </div>
         )
       },
     },

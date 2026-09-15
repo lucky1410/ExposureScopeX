@@ -1,7 +1,13 @@
 import unittest
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
+from app.api.v1.assessments import _validated_scan_items
+from app.api.v1.operations import QUEUES
 from app.api.v1.reports import _compare_findings
+from app.schemas.assessment import ScanEventResponse
 from app.services.assessment_runtime import build_scan_metadata
 from app.services.asset_inventory import normalize_target
 from app.services.celery_app import celery_app
@@ -98,3 +104,57 @@ class MaintenanceScheduleTests(unittest.TestCase):
         self.assertEqual(schedule["task"], "app.services.celery_app.retention_maintenance_task")
         self.assertEqual(schedule["schedule"], 86400)
         self.assertEqual(schedule["options"]["queue"], "default")
+
+    def test_runtime_queue_snapshot_includes_reports(self):
+        self.assertIn("reports", QUEUES)
+
+    def test_default_worker_consumes_reports(self):
+        from unittest.mock import patch
+
+        from app.services.worker_capabilities import capability_snapshot
+
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertIn("reports", capability_snapshot("worker-test")["queues"])
+
+    def test_worker_entrypoint_uses_unix_line_endings(self):
+        webapp_root = Path(__file__).resolve().parents[2]
+        repository_root = webapp_root.parent
+        runtime_files = [
+            webapp_root / "worker" / "entrypoint.sh",
+            repository_root / "exposurescopex.sh",
+            repository_root / "config" / "exposurescopex.conf.template",
+        ]
+        for runtime_file in runtime_files:
+            with self.subTest(runtime_file=runtime_file.name):
+                self.assertNotIn(b"\r\n", runtime_file.read_bytes())
+
+    def test_scan_commands_are_bounded_and_support_queue_isolated(self):
+        webapp_root = Path(__file__).resolve().parents[2]
+        repository_root = webapp_root.parent
+        enumeration = (repository_root / "modules" / "enumeration.sh").read_text()
+        osint = (repository_root / "modules" / "osint.sh").read_text()
+        compose = (webapp_root / "docker-compose.yml").read_text()
+
+        self.assertIn('run_tool waybackurls waybackurls', enumeration)
+        self.assertIn('run_tool "subjack" "subjack"', enumeration)
+        self.assertIn('MAX_ENUMERATION_TARGETS', enumeration)
+        self.assertNotIn('curl -s "https://api.shodan.io', osint)
+        self.assertIn('worker-support:', compose)
+        self.assertIn('--queues=reports,default', compose)
+        self.assertIn('--destination=celery@$$HOSTNAME', compose)
+
+    def test_malformed_runtime_row_does_not_hide_scan(self):
+        malformed = SimpleNamespace(
+            id=uuid.uuid4(),
+            event_type="progress",
+            status="running",
+            phase="scan",
+            progress=10,
+            message="working",
+            payload=None,
+            created_at=datetime.now(timezone.utc),
+        )
+        self.assertEqual(
+            _validated_scan_items([malformed], ScanEventResponse, uuid.uuid4(), "event"),
+            [],
+        )

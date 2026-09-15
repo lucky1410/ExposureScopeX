@@ -13,7 +13,9 @@ import secrets
 import sys
 import time
 import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
 import httpx
 from sqlalchemy import delete, select, text
@@ -30,7 +32,7 @@ BASE_URL = os.getenv("ESX_E2E_BASE_URL", "http://backend:8000/api/v1")
 EMAIL = os.getenv("ESX_E2E_EMAIL", "admin@exposurescopex.local")
 PASSWORD = os.getenv("ESX_E2E_PASSWORD") or os.getenv("BOOTSTRAP_ADMIN_PASSWORD")
 LOCAL_TARGET = os.getenv("ESX_E2E_LOCAL_TARGET", "http://host.docker.internal:3001/login")
-TERMINAL_SCAN_STATES = {"completed", "failed", "cancelled"}
+TERMINAL_SCAN_STATES = {"completed", "partial", "failed", "cancelled"}
 ACTIVE_TEMPORARY_USER_ID: str | None = None
 
 
@@ -243,7 +245,7 @@ def run_journey() -> int:
             assert resumed["is_active"] is True
             require(client.get(f"/assessments/schedules/{schedule['id']}/history"), 200, "schedule history")
 
-            for report_format in ("html", "pdf", "markdown", "sarif", "csv", "json", "evidence"):
+            for report_format in ("html", "markdown", "sarif", "csv", "json"):
                 report = require(
                     client.post(
                         "/reports/generate",
@@ -331,6 +333,22 @@ def run_journey() -> int:
             ), "scan is missing its durable orchestrator command record"
             assert (detail.get("scan_metadata") or {}).get("worker_manifest"), "worker manifest was not persisted"
             print(f"PASS scan recorded {len(detail['tool_runs'])} tool run(s) and worker provenance", flush=True)
+
+            report_deadline = time.monotonic() + 30
+            automatic_report = (detail.get("scan_metadata") or {}).get("automatic_report") or {}
+            while not automatic_report.get("id") and time.monotonic() < report_deadline:
+                time.sleep(0.5)
+                detail = require(client.get(f"/assessments/scan-executions/{scan_id}"), 200, "wait for automatic report").json()
+                automatic_report = (detail.get("scan_metadata") or {}).get("automatic_report") or {}
+            assert automatic_report.get("id"), "terminal scan did not queue its automatic DOCX report"
+            report_ids.append(automatic_report["id"])
+            terminal_report = poll_report(client, live_assessment_id, automatic_report["id"])
+            assert terminal_report["status"] == "ready", terminal_report.get("error")
+            document = require(client.get(f"/reports/{automatic_report['id']}/download"), 200, "download automatic DOCX report")
+            assert document.content.startswith(b"PK")
+            with zipfile.ZipFile(BytesIO(document.content)) as archive:
+                assert "word/document.xml" in archive.namelist()
+            print("PASS terminal scan generated a valid automatic DOCX report", flush=True)
 
             if detail["status"] in {"failed", "cancelled"}:
                 retried = require(client.post(f"/assessments/scan-executions/{scan_id}/retry"), 200, "retry terminal scan").json()

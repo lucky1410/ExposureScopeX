@@ -37,6 +37,7 @@ class AssessmentCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     target: str = Field(min_length=1, max_length=2048)
     mode: Literal["light", "medium", "aggressive"]
+    service_tier: Literal["external_baseline", "authorized_deep"] = "external_baseline"
     authorization_confirmed: bool
     authentication: "WebAuthentication | None" = None
     scope: AssessmentScope | None = None
@@ -62,7 +63,125 @@ class AssessmentCreate(BaseModel):
                 raise ValueError("authentication login_url must use the assessment target origin")
         if self.scope and self.scope.target != self.target:
             raise ValueError("scope target must exactly match the assessment target")
+        if self.service_tier == "authorized_deep" and self.scope is None:
+            raise ValueError("authorized deep assessments require a validated scope file")
+        if self.service_tier == "authorized_deep" and self.mode == "light":
+            raise ValueError("authorized deep assessments require the medium or aggressive profile")
         return self
+
+
+class PassiveInventoryRequest(BaseModel):
+    """A public-record lookup target. This request never authorizes active assessment work."""
+
+    target: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("target")
+    @classmethod
+    def valid_target(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("target must be an absolute HTTP or HTTPS URL")
+        if parsed.username or parsed.password:
+            raise ValueError("credentials must not be embedded in the target URL")
+        return value.rstrip("/")
+
+
+class SubdomainAssessmentCreate(BaseModel):
+    hostnames: list[str] = Field(min_length=1, max_length=25)
+    authorization_confirmed: bool
+
+
+class AssetDiscoveryRequest(BaseModel):
+    """Bound passive discovery to a reviewable number of candidate assets."""
+
+    limit: int = Field(default=100, ge=1, le=250)
+
+
+class AssessmentAssetReview(BaseModel):
+    ownership_status: Literal["approved", "excluded"]
+    authorization_confirmed: bool = False
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class AssetAssessmentStart(BaseModel):
+    authorization_confirmed: bool
+
+
+class ExposureAssetReview(BaseModel):
+    ownership_status: Literal["verified", "excluded"]
+    verification_method: Literal["written_authorization", "dns_attestation", "cloud_connector"]
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ExposureMonitorCreate(BaseModel):
+    assessment_id: UUID
+    cadence_hours: int = Field(default=168, ge=24, le=720)
+
+
+class ExposureMonitorUpdate(BaseModel):
+    status: Literal["active", "paused"]
+
+
+class ExposureFindingLifecycleUpdate(BaseModel):
+    lifecycle_status: Literal["open", "accepted_risk", "dismissed", "needs_revalidation"]
+    note: str = Field(min_length=3, max_length=1000)
+
+
+class ValidationCorpusCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    version: str = Field(min_length=1, max_length=100)
+    classification: Literal["synthetic", "public", "internal", "restricted"]
+    source_reference: str = Field(min_length=1, max_length=512)
+    source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    cases: list["ValidationCorpusCase"] = Field(min_length=1, max_length=10_000)
+
+
+class ValidationCorpusCase(BaseModel):
+    case_key: str = Field(min_length=1, max_length=180)
+    expected_outcome: Literal["finding_expected", "no_finding_expected"]
+    family: str = Field(min_length=1, max_length=100)
+    severity: Literal["critical", "high", "medium", "low", "info"] | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class IntegrationCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    integration_type: Literal["webhook", "siem", "cloud_inventory", "dns_attestation"]
+    endpoint_url: str | None = Field(default=None, max_length=2048)
+    signing_secret: str | None = Field(default=None, max_length=1024)
+    event_types: list[Literal["asset.discovered", "asset.changed", "finding.opened", "finding.resolved", "scan.completed", "monitor.blocked"]] = Field(default_factory=list, max_length=20)
+    configuration: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def endpoint_matches_type(self):
+        if self.integration_type in {"webhook", "siem"} and not self.endpoint_url:
+            raise ValueError("webhook and SIEM integrations require an endpoint URL")
+        if self.endpoint_url:
+            parsed = urlsplit(self.endpoint_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                raise ValueError("endpoint_url must be an absolute HTTP or HTTPS URL")
+            if parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError("endpoint_url cannot contain credentials, a query string, or a fragment")
+        if _configuration_contains_secret(self.configuration):
+            raise ValueError("connector configuration cannot contain credentials; use the encrypted signing_secret field")
+        return self
+
+
+def _configuration_contains_secret(value: object) -> bool:
+    """Reject credential-shaped configuration so it cannot bypass encrypted storage."""
+    sensitive_fragments = ("secret", "token", "password", "credential", "private_key", "access_key", "api_key")
+    if isinstance(value, dict):
+        return any(
+            any(fragment in str(key).lower() for fragment in sensitive_fragments)
+            or _configuration_contains_secret(nested)
+            for key, nested in value.items()
+        )
+    if isinstance(value, list):
+        return any(_configuration_contains_secret(item) for item in value)
+    return False
+
+
+ValidationCorpusCreate.model_rebuild()
 
 
 class WebAuthentication(BaseModel):
@@ -92,6 +211,7 @@ class Assessment(BaseModel):
     name: str
     target: str
     mode: str
+    service_tier: str = "external_baseline"
     authorization_confirmed: bool
     status: str
     created_at: datetime

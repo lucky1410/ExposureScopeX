@@ -750,6 +750,379 @@ MIGRATIONS = [
           FOR EACH ROW EXECUTE FUNCTION esx_prevent_evaluator_record_mutation();
         """,
     ),
+    (
+        "017_approved_subdomain_followups",
+        """
+        CREATE TABLE IF NOT EXISTS subdomain_assessment_origins (
+          child_assessment_id uuid PRIMARY KEY REFERENCES assessments(id) ON DELETE CASCADE,
+          parent_assessment_id uuid NOT NULL REFERENCES assessments(id) ON DELETE RESTRICT,
+          source_artifact_id uuid NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT,
+          source_artifact_sha256 char(64) NOT NULL,
+          hostname text NOT NULL,
+          approved_by uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+
+        CREATE INDEX IF NOT EXISTS subdomain_assessment_origins_parent_idx
+          ON subdomain_assessment_origins (parent_assessment_id, created_at DESC);
+
+        CREATE OR REPLACE FUNCTION esx_prevent_subdomain_origin_mutation()
+        RETURNS trigger AS $$
+        BEGIN
+          RAISE EXCEPTION 'subdomain approval provenance is immutable';
+        END;
+        $$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS subdomain_assessment_origins_immutable ON subdomain_assessment_origins;
+        CREATE TRIGGER subdomain_assessment_origins_immutable
+          BEFORE UPDATE OR DELETE ON subdomain_assessment_origins
+          FOR EACH ROW EXECUTE FUNCTION esx_prevent_subdomain_origin_mutation();
+        """,
+    ),
+    (
+        "018_assessment_asset_inventory",
+        """
+        CREATE TABLE IF NOT EXISTS assessment_assets (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          assessment_id uuid NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+          hostname text NOT NULL,
+          canonical_target text NOT NULL,
+          asset_type text NOT NULL DEFAULT 'hostname' CHECK (asset_type IN ('hostname', 'ip_address', 'web_application')),
+          discovery_sources jsonb NOT NULL DEFAULT '[]'::jsonb,
+          discovery_evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+          ownership_status text NOT NULL CHECK (ownership_status IN ('client_declared', 'candidate', 'approved', 'excluded')),
+          ownership_confidence integer NOT NULL CHECK (ownership_confidence BETWEEN 0 AND 100),
+          assessment_status text NOT NULL DEFAULT 'not_assessed' CHECK (assessment_status IN ('not_assessed', 'approved_for_assessment', 'queued', 'assessed', 'blocked')),
+          review_note text,
+          reviewed_by uuid REFERENCES users(id) ON DELETE SET NULL,
+          reviewed_at timestamptz,
+          first_seen_at timestamptz NOT NULL DEFAULT now(),
+          last_seen_at timestamptz NOT NULL DEFAULT now(),
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (assessment_id, hostname)
+        );
+
+        CREATE INDEX IF NOT EXISTS assessment_assets_assessment_idx
+          ON assessment_assets (assessment_id, ownership_status, assessment_status, last_seen_at DESC);
+
+        CREATE TABLE IF NOT EXISTS assessment_asset_scans (
+          assessment_asset_id uuid NOT NULL REFERENCES assessment_assets(id) ON DELETE CASCADE,
+          scan_id uuid NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (assessment_asset_id, scan_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS assessment_asset_scans_scan_idx
+          ON assessment_asset_scans (scan_id);
+
+        INSERT INTO assessment_assets (
+          assessment_id, hostname, canonical_target, asset_type, discovery_sources,
+          discovery_evidence, ownership_status, ownership_confidence, assessment_status
+        )
+        SELECT
+          a.id,
+          lower(regexp_replace(split_part(a.target, '://', 2), '[:/?#].*$', '')),
+          a.target,
+          'web_application',
+          jsonb_build_array('client_declared_seed'),
+          jsonb_build_object('target', a.target, 'source', 'client_declared_seed'),
+          'client_declared',
+          100,
+          CASE WHEN a.authorization_confirmed THEN 'approved_for_assessment' ELSE 'not_assessed' END
+        FROM assessments a
+        WHERE lower(regexp_replace(split_part(a.target, '://', 2), '[:/?#].*$', '')) <> ''
+        ON CONFLICT (assessment_id, hostname) DO NOTHING;
+
+        INSERT INTO assessment_asset_scans (assessment_asset_id, scan_id)
+        SELECT aa.id, s.id
+        FROM assessment_assets aa
+        JOIN scans s ON s.assessment_id = aa.assessment_id
+        WHERE aa.canonical_target = (SELECT target FROM assessments WHERE id = aa.assessment_id)
+        ON CONFLICT DO NOTHING;
+        """,
+    ),
+    (
+        "019_exposure_management_foundation",
+        """
+        -- Assessment records predate organization workspaces.  Associate historical
+        -- work with the owner's workspace before adding organization-scoped controls.
+        ALTER TABLE assessments
+          ADD COLUMN IF NOT EXISTS organization_id uuid REFERENCES organizations(id),
+          ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES users(id),
+          ADD COLUMN IF NOT EXISTS service_tier text NOT NULL DEFAULT 'external_baseline'
+            CHECK (service_tier IN ('external_baseline', 'authorized_deep'));
+
+        UPDATE assessments a
+        SET organization_id = workspace.organization_id,
+            created_by = workspace.owner_user_id
+        FROM LATERAL (
+          SELECT o.id AS organization_id, o.owner_user_id
+          FROM organizations o
+          ORDER BY o.created_at
+          LIMIT 1
+        ) workspace
+        WHERE a.organization_id IS NULL;
+
+        ALTER TABLE assessments
+          ALTER COLUMN organization_id SET NOT NULL,
+          ALTER COLUMN created_by SET NOT NULL;
+        CREATE INDEX IF NOT EXISTS assessments_organization_idx
+          ON assessments (organization_id, created_at DESC);
+        ALTER TABLE assessment_assets
+          ADD COLUMN IF NOT EXISTS exposure_asset_id uuid;
+
+        CREATE TABLE IF NOT EXISTS exposure_assets (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          hostname text NOT NULL,
+          canonical_target text NOT NULL,
+          asset_type text NOT NULL CHECK (asset_type IN ('hostname', 'ip_address', 'web_application', 'api')),
+          ownership_status text NOT NULL CHECK (ownership_status IN ('candidate', 'client_declared', 'verified', 'excluded')),
+          ownership_confidence integer NOT NULL CHECK (ownership_confidence BETWEEN 0 AND 100),
+          ownership_evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+          discovery_sources jsonb NOT NULL DEFAULT '[]'::jsonb,
+          lifecycle_status text NOT NULL DEFAULT 'active' CHECK (lifecycle_status IN ('active', 'retired')),
+          first_seen_at timestamptz NOT NULL DEFAULT now(),
+          last_seen_at timestamptz NOT NULL DEFAULT now(),
+          last_verified_at timestamptz,
+          reviewed_by uuid REFERENCES users(id) ON DELETE SET NULL,
+          reviewed_at timestamptz,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (organization_id, hostname)
+        );
+        CREATE INDEX IF NOT EXISTS exposure_assets_workspace_idx
+          ON exposure_assets (organization_id, ownership_status, lifecycle_status, last_seen_at DESC);
+
+        ALTER TABLE assessment_assets
+          ADD CONSTRAINT assessment_assets_exposure_asset_fk
+          FOREIGN KEY (exposure_asset_id) REFERENCES exposure_assets(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS assessment_assets_exposure_asset_idx
+          ON assessment_assets (exposure_asset_id);
+
+        CREATE TABLE IF NOT EXISTS exposure_asset_observations (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          asset_id uuid NOT NULL REFERENCES exposure_assets(id) ON DELETE CASCADE,
+          source text NOT NULL,
+          source_reference text,
+          payload_sha256 char(64) NOT NULL,
+          payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+          observed_at timestamptz NOT NULL DEFAULT now(),
+          created_at timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (asset_id, source, payload_sha256)
+        );
+        CREATE INDEX IF NOT EXISTS exposure_asset_observations_asset_idx
+          ON exposure_asset_observations (asset_id, observed_at DESC);
+
+        CREATE TABLE IF NOT EXISTS exposure_asset_relations (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          source_asset_id uuid NOT NULL REFERENCES exposure_assets(id) ON DELETE CASCADE,
+          target_asset_id uuid NOT NULL REFERENCES exposure_assets(id) ON DELETE CASCADE,
+          relation_type text NOT NULL CHECK (relation_type IN ('subdomain_of', 'redirects_to', 'served_by', 'api_of')),
+          confidence integer NOT NULL CHECK (confidence BETWEEN 0 AND 100),
+          evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+          first_seen_at timestamptz NOT NULL DEFAULT now(),
+          last_seen_at timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (source_asset_id, target_asset_id, relation_type),
+          CHECK (source_asset_id <> target_asset_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS exposure_asset_events (
+          id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          asset_id uuid NOT NULL REFERENCES exposure_assets(id) ON DELETE CASCADE,
+          event_type text NOT NULL,
+          actor_id uuid REFERENCES users(id) ON DELETE SET NULL,
+          payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+          occurred_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS exposure_asset_events_workspace_idx
+          ON exposure_asset_events (organization_id, occurred_at DESC);
+
+        CREATE TABLE IF NOT EXISTS exposure_findings (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          asset_id uuid REFERENCES exposure_assets(id) ON DELETE SET NULL,
+          fingerprint char(64) NOT NULL,
+          title text NOT NULL,
+          severity text NOT NULL CHECK (severity IN ('critical', 'high', 'medium', 'low', 'info')),
+          validation_status text NOT NULL DEFAULT 'candidate' CHECK (validation_status IN ('candidate', 'confirmed', 'rejected', 'inconclusive')),
+          lifecycle_status text NOT NULL DEFAULT 'open' CHECK (lifecycle_status IN ('open', 'accepted_risk', 'dismissed', 'resolved', 'needs_revalidation')),
+          first_seen_scan_id uuid REFERENCES scans(id) ON DELETE SET NULL,
+          last_seen_scan_id uuid REFERENCES scans(id) ON DELETE SET NULL,
+          first_seen_at timestamptz NOT NULL DEFAULT now(),
+          last_seen_at timestamptz NOT NULL DEFAULT now(),
+          resolved_at timestamptz,
+          lifecycle_note text,
+          updated_by uuid REFERENCES users(id) ON DELETE SET NULL,
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (organization_id, fingerprint)
+        );
+        CREATE INDEX IF NOT EXISTS exposure_findings_workspace_idx
+          ON exposure_findings (organization_id, lifecycle_status, severity, last_seen_at DESC);
+
+        CREATE TABLE IF NOT EXISTS exposure_finding_events (
+          id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          finding_id uuid NOT NULL REFERENCES exposure_findings(id) ON DELETE CASCADE,
+          event_type text NOT NULL,
+          actor_id uuid REFERENCES users(id) ON DELETE SET NULL,
+          payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+          occurred_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS exposure_finding_events_finding_idx
+          ON exposure_finding_events (finding_id, occurred_at DESC);
+
+        CREATE TABLE IF NOT EXISTS validation_corpora (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          name text NOT NULL CHECK (length(name) BETWEEN 2 AND 160),
+          version text NOT NULL CHECK (length(version) BETWEEN 1 AND 100),
+          classification text NOT NULL CHECK (classification IN ('synthetic', 'public', 'internal', 'restricted')),
+          source_reference text NOT NULL,
+          source_sha256 char(64) NOT NULL,
+          status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'approved', 'retired')),
+          created_by uuid NOT NULL REFERENCES users(id),
+          approved_by uuid REFERENCES users(id),
+          approved_at timestamptz,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (organization_id, name, version)
+        );
+
+        CREATE TABLE IF NOT EXISTS validation_corpus_cases (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          corpus_id uuid NOT NULL REFERENCES validation_corpora(id) ON DELETE CASCADE,
+          case_key text NOT NULL,
+          expected_outcome text NOT NULL CHECK (expected_outcome IN ('finding_expected', 'no_finding_expected')),
+          family text NOT NULL,
+          severity text CHECK (severity IN ('critical', 'high', 'medium', 'low', 'info')),
+          metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (corpus_id, case_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS exposure_monitors (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          assessment_id uuid NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+          asset_id uuid REFERENCES exposure_assets(id) ON DELETE SET NULL,
+          cadence_hours integer NOT NULL CHECK (cadence_hours BETWEEN 24 AND 720),
+          status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'blocked')),
+          next_run_at timestamptz NOT NULL,
+          last_run_at timestamptz,
+          last_scan_id uuid REFERENCES scans(id) ON DELETE SET NULL,
+          last_error text,
+          created_by uuid NOT NULL REFERENCES users(id),
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (assessment_id)
+        );
+        CREATE INDEX IF NOT EXISTS exposure_monitors_due_idx
+          ON exposure_monitors (status, next_run_at) WHERE status = 'active';
+
+        CREATE TABLE IF NOT EXISTS exposure_monitor_runs (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          monitor_id uuid NOT NULL REFERENCES exposure_monitors(id) ON DELETE CASCADE,
+          scan_id uuid REFERENCES scans(id) ON DELETE SET NULL,
+          status text NOT NULL CHECK (status IN ('queued', 'started', 'completed', 'skipped', 'blocked', 'failed')),
+          detail text,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS exposure_monitor_runs_monitor_idx
+          ON exposure_monitor_runs (monitor_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS exposure_integrations (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          name text NOT NULL CHECK (length(name) BETWEEN 2 AND 160),
+          integration_type text NOT NULL CHECK (integration_type IN ('webhook', 'siem', 'cloud_inventory', 'dns_attestation')),
+          status text NOT NULL DEFAULT 'configured' CHECK (status IN ('configured', 'active', 'paused', 'disabled')),
+          endpoint_ciphertext bytea,
+          secret_ciphertext bytea,
+          event_types jsonb NOT NULL DEFAULT '[]'::jsonb,
+          configuration jsonb NOT NULL DEFAULT '{}'::jsonb,
+          created_by uuid NOT NULL REFERENCES users(id),
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (organization_id, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS exposure_delivery_events (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          integration_id uuid NOT NULL REFERENCES exposure_integrations(id) ON DELETE CASCADE,
+          organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          event_type text NOT NULL,
+          idempotency_key char(64) NOT NULL UNIQUE,
+          payload jsonb NOT NULL,
+          status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'failed', 'abandoned')),
+          attempts integer NOT NULL DEFAULT 0,
+          next_attempt_at timestamptz NOT NULL DEFAULT now(),
+          last_error text,
+          delivered_at timestamptz,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS exposure_delivery_events_due_idx
+          ON exposure_delivery_events (status, next_attempt_at) WHERE status = 'pending';
+
+        CREATE TABLE IF NOT EXISTS exposure_audit_events (
+          id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          actor_id uuid REFERENCES users(id) ON DELETE SET NULL,
+          event_type text NOT NULL,
+          target_type text NOT NULL,
+          target_id uuid,
+          payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+          occurred_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS exposure_audit_events_workspace_idx
+          ON exposure_audit_events (organization_id, occurred_at DESC);
+
+        INSERT INTO exposure_assets (
+          organization_id, hostname, canonical_target, asset_type, ownership_status,
+          ownership_confidence, ownership_evidence, discovery_sources, first_seen_at, last_seen_at
+        )
+        SELECT DISTINCT ON (a.organization_id, aa.hostname)
+          a.organization_id, aa.hostname, aa.canonical_target,
+          CASE WHEN aa.asset_type IN ('hostname', 'ip_address', 'web_application') THEN aa.asset_type ELSE 'hostname' END,
+          CASE aa.ownership_status WHEN 'excluded' THEN 'excluded' WHEN 'approved' THEN 'verified'
+               WHEN 'client_declared' THEN 'client_declared' ELSE 'candidate' END,
+          aa.ownership_confidence, aa.discovery_evidence, aa.discovery_sources,
+          aa.first_seen_at, aa.last_seen_at
+        FROM assessment_assets aa
+        JOIN assessments a ON a.id = aa.assessment_id
+        ORDER BY a.organization_id, aa.hostname, aa.last_seen_at DESC
+        ON CONFLICT (organization_id, hostname) DO NOTHING;
+
+        UPDATE assessment_assets aa
+        SET exposure_asset_id = ea.id
+        FROM assessments a, exposure_assets ea
+        WHERE a.id = aa.assessment_id
+          AND ea.organization_id = a.organization_id
+          AND ea.hostname = aa.hostname
+          AND aa.exposure_asset_id IS NULL;
+
+        CREATE OR REPLACE FUNCTION esx_prevent_exposure_event_mutation()
+        RETURNS trigger AS $$
+        BEGIN
+          RAISE EXCEPTION 'exposure history is append-only; create a new lifecycle event';
+        END;
+        $$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS exposure_asset_events_immutable ON exposure_asset_events;
+        CREATE TRIGGER exposure_asset_events_immutable BEFORE UPDATE OR DELETE ON exposure_asset_events
+          FOR EACH ROW EXECUTE FUNCTION esx_prevent_exposure_event_mutation();
+        DROP TRIGGER IF EXISTS exposure_finding_events_immutable ON exposure_finding_events;
+        CREATE TRIGGER exposure_finding_events_immutable BEFORE UPDATE OR DELETE ON exposure_finding_events
+          FOR EACH ROW EXECUTE FUNCTION esx_prevent_exposure_event_mutation();
+        DROP TRIGGER IF EXISTS exposure_audit_events_immutable ON exposure_audit_events;
+        CREATE TRIGGER exposure_audit_events_immutable BEFORE UPDATE OR DELETE ON exposure_audit_events
+          FOR EACH ROW EXECUTE FUNCTION esx_prevent_exposure_event_mutation();
+        """,
+    ),
 ]
 
 

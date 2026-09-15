@@ -1,0 +1,22 @@
+{
+  "fixture_version": "1.0.0",
+  "target_type": "url",
+  "scope_violations": 0,
+  "cases": [
+    {"id": "headers-001", "category": "security_headers", "vulnerable": true},
+    {"id": "headers-002", "category": "security_headers", "vulnerable": false}
+  ],
+  "observations": [
+    {
+      "benchmark_case_id": "headers-001",
+      "evidence_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "screenshot_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ],
+  "execution_manifest": [
+    {"id": "preflight", "planned": true, "status": "completed"},
+    {"id": "headers", "planned": true, "status": "completed"},
+    {"id": "reporting", "planned": true, "status": "completed"}
+  ]
+}

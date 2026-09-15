@@ -128,6 +128,81 @@ validate_domain() {
     fi
 }
 
+# Keep every discovered or aggregated target inside the original authorized seed.
+# URL seeds authorize only their exact host; domain seeds authorize that domain and subdomains.
+filter_targets_to_scope() {
+    local scope=$1
+    local source_file=$2
+    local destination_file=$3
+    local dropped
+    dropped=$(python - "$scope" "$source_file" "$destination_file" <<'PY'
+import ipaddress
+import os
+import re
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+scope, source_name, destination_name = sys.argv[1:]
+
+def host(value):
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        parsed = urlsplit(value if "://" in value else f"//{value}")
+        return (parsed.hostname or "").lower().rstrip(".") or None
+    except ValueError:
+        return None
+
+def seed(value):
+    value = value.strip()
+    candidate = host(value)
+    if not candidate:
+        return None
+    try:
+        return ("network", ipaddress.ip_network(value, strict=False)) if "/" in value and "://" not in value else ("ip", ipaddress.ip_address(candidate))
+    except ValueError:
+        return ("host", candidate, "://" not in value)
+
+scope_path = Path(scope)
+scope_values = scope_path.read_text(encoding="utf-8", errors="replace").splitlines() if scope_path.is_file() else [scope]
+seeds = [item for item in (seed(value) for value in scope_values) if item]
+lines = Path(source_name).read_text(encoding="utf-8", errors="replace").splitlines()
+kept = []
+for raw in lines:
+    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", raw).strip()
+    candidate = host(value)
+    allowed = False
+    if candidate:
+        for item in seeds:
+            if item[0] == "host" and (candidate == item[1] or (item[2] and candidate.endswith(f".{item[1]}"))):
+                allowed = True
+            elif item[0] == "ip":
+                try:
+                    allowed = ipaddress.ip_address(candidate) == item[1]
+                except ValueError:
+                    pass
+            elif item[0] == "network":
+                try:
+                    allowed = ipaddress.ip_address(candidate) in item[1]
+                except ValueError:
+                    pass
+            if allowed:
+                break
+    if allowed and value not in kept:
+        kept.append(value)
+
+destination = Path(destination_name)
+destination.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+print(len(lines) - len(kept))
+PY
+    ) || return 1
+    if [ "${dropped:-0}" -gt 0 ]; then
+        log_warn "Scope containment removed ${dropped} out-of-scope or invalid target(s)"
+    fi
+}
+
 validate_file() {
     local file=$1
     if [ -f "$file" ]; then
@@ -185,6 +260,132 @@ install_tool() {
     fi
 }
 
+tool_timeout_seconds() {
+    local tool_cmd=$1
+    case "$tool_cmd" in
+        nuclei)
+            case "${MODE:-medium}" in
+                light) echo "${NUCLEI_TOOL_TIMEOUT_LIGHT:-1800}" ;;
+                aggressive) echo "${NUCLEI_TOOL_TIMEOUT_AGGRESSIVE:-7200}" ;;
+                *) echo "${NUCLEI_TOOL_TIMEOUT_MEDIUM:-3600}" ;;
+            esac
+            ;;
+        nmap)
+            [ "${MODE:-medium}" = "light" ] && echo 600 || echo 1800
+            ;;
+        sqlmap|wapiti|amass) echo 1800 ;;
+        nikto|feroxbuster) echo 900 ;;
+        katana|waybackurls|gau)
+            [ "${MODE:-medium}" = "light" ] && echo 120 || echo 300
+            ;;
+        subfinder|assetfinder)
+            [ "${MODE:-medium}" = "light" ] && echo 90 || echo 300
+            ;;
+        *) echo 300 ;;
+    esac
+}
+
+_terminate_process_tree() {
+    local pid=$1
+    local signal_name=${2:-TERM}
+    local child
+    if command -v pgrep &>/dev/null; then
+        while IFS= read -r child; do
+            [ -n "$child" ] && _terminate_process_tree "$child" "$signal_name"
+        done < <(pgrep -P "$pid" 2>/dev/null || true)
+    fi
+    kill "-$signal_name" "$pid" 2>/dev/null || true
+}
+
+_finalize_orphaned_tool_runs() {
+    local terminal_status=$1
+    local exit_code=$2
+    local status_file="${SESSION_DIR:-}/tool_runs.tsv"
+    [ -f "$status_file" ] || return 0
+
+    local completed_at temp_file
+    completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    temp_file=$(mktemp)
+    awk -F '\t' -v OFS='\t' -v terminal_status="$terminal_status" \
+        -v exit_code="$exit_code" -v completed_at="$completed_at" '
+        $3 == "running" { starts[$1] = $0; order[++count] = $1 }
+        $3 != "running" { terminal[$1] = 1 }
+        END {
+            for (idx = 1; idx <= count; idx++) {
+                id = order[idx]
+                if (terminal[id] || emitted[id] || !(id in starts)) continue
+                split(starts[id], fields, FS)
+                print fields[1], fields[2], terminal_status, exit_code,
+                    fields[5], completed_at, fields[7], fields[8]
+                emitted[id] = 1
+            }
+        }
+    ' "$status_file" > "$temp_file"
+    if [ -s "$temp_file" ]; then
+        cat "$temp_file" >> "$status_file"
+    fi
+    rm -f "$temp_file"
+}
+
+run_bounded_stage() {
+    local stage_id=$1
+    local budget_seconds=$2
+    local stage_function=$3
+    shift 3
+
+    log_info "[stage-start] ${stage_id}: execution started"
+
+    if [ "${MODE:-medium}" != "light" ]; then
+        local direct_rc=0
+        "$stage_function" "$@" || direct_rc=$?
+        if [ "$direct_rc" -ne 0 ]; then
+            local direct_message="returned exit code ${direct_rc}; partial evidence was retained and the scan continued"
+            log_warn "[stage-warning] ${stage_id}: $direct_message"
+            printf '%s\t%s\t%s\n' "$stage_id" "warning" "$direct_message" >> "${SESSION_DIR}/coverage_exceptions.tsv"
+        else
+            log_success "[stage-completed] ${stage_id}: execution completed"
+        fi
+        return 0
+    fi
+
+    log_info "Light-mode budget for ${stage_id}: ${budget_seconds}s"
+    ( "$stage_function" "$@" ) &
+    local stage_pid=$!
+    local started_at=$SECONDS
+    local timed_out=false
+    ACTIVE_STAGE_PID=$stage_pid
+
+    while kill -0 "$stage_pid" 2>/dev/null; do
+        if (( SECONDS - started_at >= budget_seconds )); then
+            timed_out=true
+            _terminate_process_tree "$stage_pid" TERM
+            sleep 2
+            kill -0 "$stage_pid" 2>/dev/null && _terminate_process_tree "$stage_pid" KILL
+            break
+        fi
+        sleep 1
+    done
+
+    local stage_rc=0
+    wait "$stage_pid" 2>/dev/null || stage_rc=$?
+    ACTIVE_STAGE_PID=""
+    if [ "$timed_out" = true ]; then
+        local message="exceeded the ${budget_seconds}s Light-mode budget; remaining work was skipped"
+        _finalize_orphaned_tool_runs "timed_out" 124
+        log_warn "[stage-timeout] ${stage_id}: $message"
+        printf '%s\t%s\t%s\n' "$stage_id" "timed_out" "$message" >> "${SESSION_DIR}/coverage_exceptions.tsv"
+        return 0
+    fi
+    if [ "$stage_rc" -ne 0 ]; then
+        local message="returned exit code ${stage_rc}; partial evidence was retained and the scan continued"
+        log_warn "[stage-warning] ${stage_id}: $message"
+        printf '%s\t%s\t%s\n' "$stage_id" "warning" "$message" >> "${SESSION_DIR}/coverage_exceptions.tsv"
+    else
+        log_success "[stage-completed] ${stage_id}: execution completed"
+    fi
+    return 0
+}
+
 run_tool() {
     local tool_cmd=$1
     local tool_pkg=${2:-$1}
@@ -199,7 +400,8 @@ run_tool() {
     command_text=${command_text//$'\t'/ }
     command_text=${command_text//$'\n'/ }
     command_text=$(printf '%s' "$command_text" | sed -E \
-        -e 's/(Bearer|token|password|secret|api[_-]?key)[ =:]+[^ ]+/\1=[REDACTED]/Ig')
+        -e 's/(Bearer|token|password|secret|api[_-]?key)[ =:]+[^ ]+/\1=[REDACTED]/Ig' \
+        -e 's/(Cookie:).*/\1[REDACTED]/Ig')
     if [ -n "${SESSION_DIR:-}" ]; then
         mkdir -p "${SESSION_DIR}/tool_logs"
         output_log="tool_logs/${run_id}.log"
@@ -242,21 +444,9 @@ run_tool() {
 
     # Per-tool timeout (seconds); execute_with_timeout is defined in safe_execution.sh
     local tool_timeout
-    case "$tool_cmd" in
-        nmap|nuclei)            tool_timeout=3600 ;;
-        sqlmap|wapiti|amass)    tool_timeout=1800 ;;
-        nikto|feroxbuster)      tool_timeout=900  ;;
-        subfinder|assetfinder)
-            if [ "${MODE:-medium}" = "light" ]; then
-                tool_timeout=90
-            else
-                tool_timeout=300
-            fi
-            ;;
-        *)                      tool_timeout=300  ;;
-    esac
+    tool_timeout=$(tool_timeout_seconds "$tool_cmd")
 
-    log_debug "Executing (timeout=${tool_timeout}s): $tool_cmd ${tool_args[*]}"
+    log_debug "Executing (timeout=${tool_timeout}s): $command_text"
     if [ -n "${SESSION_DIR:-}" ]; then
         execute_with_timeout "$tool_timeout" "$tool_cmd" "${tool_args[@]}" \
             > >(tee -a "${SESSION_DIR}/${output_log}") \
@@ -279,7 +469,7 @@ run_tool() {
     fi
 
     # Stealth mode: randomised inter-tool delay to reduce detection fingerprint
-    if [ "${STEALTH_MODE:-false}" = true ]; then
+    if [ "${STEALTH_MODE:-false}" = true ] && [ "${EXPOSURESCOPEX_SKIP_POST_TOOL_DELAY:-false}" != true ]; then
         local delay=$(( STEALTH_DELAY_MIN + RANDOM % (STEALTH_DELAY_MAX - STEALTH_DELAY_MIN + 1) ))
         log_debug "[stealth] Sleeping ${delay}s before next tool..."
         sleep "$delay"

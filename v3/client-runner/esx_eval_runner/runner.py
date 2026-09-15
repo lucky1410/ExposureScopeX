@@ -36,6 +36,7 @@ SUPPORTED_DIMENSIONS = BASE_DIMENSIONS | {
     "groundedness",
     "security",
     "trajectory",
+    "tool_use",
     "rag",
     "robustness",
     "judge_agreement",
@@ -154,6 +155,7 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
         if item["case_id"] in case_ids:
             raise RunnerError("dataset case_id values must be unique")
         case_ids.add(item["case_id"])
+        _safe_reference(item["case_id"], "dataset case_id")
         if not isinstance(item.get("input"), dict) or not isinstance(item.get("expected_label"), str) or not item["expected_label"]:
             raise RunnerError("Every dataset case needs object input and expected_label")
         _safe_reference(item["expected_label"], "dataset expected_label")
@@ -176,8 +178,10 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
     unsupported = sorted(dimensions - SUPPORTED_DIMENSIONS)
     if unsupported:
         raise RunnerError("Unsupported evaluation dimensions: " + ", ".join(unsupported))
-    if adapter["type"] in {"command_json_v1", "http_json_target", "browser_journey"} and dimensions != BASE_DIMENSIONS:
-        raise RunnerError("This connector supports classification and confidence only; use command_json_v2 for redacted advanced measurements")
+    telemetry = config.get("telemetry")
+    telemetry_enabled = isinstance(telemetry, dict) and telemetry.get("enabled") is True
+    if adapter["type"] in {"command_json_v1", "http_json_target", "browser_journey"} and dimensions != BASE_DIMENSIONS and not telemetry_enabled:
+        raise RunnerError("This connector supports classification and confidence only; enable redacted local telemetry or use command_json_v2 for advanced measurements")
     return evaluation, cases, adapter
 
 
@@ -480,7 +484,10 @@ def _invoke_http_json_target(
             body = {"input": input_data}
         request_summary.append({"case_id": case["case_id"], "body_sha256": sha256(body)})
         try:
-            request = Request(adapter["url"], data=canonical_json(body), headers=headers, method="POST")
+            request = Request(
+                adapter["url"], data=canonical_json(body),
+                headers={**headers, "X-ESX-Case-ID": case["case_id"]}, method="POST",
+            )
             with opener.open(request, timeout=adapter.get("timeout_seconds", 60)) as raw_response:
                 response_bytes = raw_response.read(1_048_577)
         except HTTPError as exc:
@@ -669,6 +676,42 @@ def _normalise_trajectory(value: object) -> dict[str, Any]:
         "scope_violations": _safe_references(item.get("scope_violations", []), "measurements.trajectory.scope_violations"),
         "tool_misuse_events": _safe_references(item.get("tool_misuse_events", []), "measurements.trajectory.tool_misuse_events"),
     }
+
+
+def _normalise_tool_use(value: object) -> dict[str, Any]:
+    item = _strict_object(
+        value,
+        "measurements.tool_use",
+        required={"cases"},
+        allowed={"cases"},
+    )
+    cases = item["cases"]
+    if not isinstance(cases, list) or not cases or len(cases) > 10_000:
+        raise RunnerError("measurements.tool_use.cases must contain between 1 and 10,000 cases")
+    output = []
+    for index, raw_case in enumerate(cases):
+        field = f"measurements.tool_use.cases[{index}]"
+        case = _strict_object(
+            raw_case,
+            field,
+            required={"case_id", "expected_tool_names", "observed_tool_names", "authorized", "result_valid"},
+            allowed={"case_id", "expected_tool_names", "observed_tool_names", "authorized", "result_valid", "evidence_ids", "evidence_integrity_valid"},
+        )
+        integrity = case.get("evidence_integrity_valid")
+        if integrity is not None:
+            integrity = _boolean(integrity, f"{field}.evidence_integrity_valid")
+        output.append({
+            "case_id": _safe_reference(case["case_id"], f"{field}.case_id"),
+            "expected_tool_names": _safe_references(case["expected_tool_names"], f"{field}.expected_tool_names", minimum=1),
+            "observed_tool_names": _safe_references(case["observed_tool_names"], f"{field}.observed_tool_names"),
+            "authorized": _boolean(case["authorized"], f"{field}.authorized"),
+            "result_valid": _boolean(case["result_valid"], f"{field}.result_valid"),
+            "evidence_ids": _safe_references(case.get("evidence_ids", []), f"{field}.evidence_ids"),
+            "evidence_integrity_valid": integrity,
+        })
+    if len({case["case_id"] for case in output}) != len(output):
+        raise RunnerError("measurements.tool_use.cases case_id values must be unique")
+    return {"cases": output}
 
 
 def _normalise_rag(value: object) -> dict[str, Any]:
@@ -870,6 +913,7 @@ def _normalise_measurements(
     *,
     adapter_type: str,
     required_dimensions: list[str],
+    allow_partial: bool = False,
 ) -> dict[str, Any]:
     if adapter_type in {"command_json_v1", "http_json_target"}:
         return {}
@@ -880,6 +924,7 @@ def _normalise_measurements(
         "groundedness": lambda value: _normalise_claims(value, "measurements.claims"),
         "security": _normalise_security,
         "trajectory": _normalise_trajectory,
+        "tool_use": _normalise_tool_use,
         "rag": _normalise_rag,
         "robustness": _normalise_robustness,
         "judge_agreement": lambda value: _normalise_decisions(value, field="measurements.judge_agreement", actor_field="judge_id", with_confidence=True),
@@ -887,7 +932,7 @@ def _normalise_measurements(
         "cost_efficiency": _normalise_cost_efficiency,
         "trace_envelope": _normalise_trace,
     }
-    allowed = {"claims", "security", "trajectory", "rag", "robustness", "judge_agreement", "reproducibility", "cost_efficiency", "trace_envelope"}
+    allowed = {"claims", "security", "trajectory", "tool_use", "rag", "robustness", "judge_agreement", "reproducibility", "cost_efficiency", "trace_envelope"}
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise RunnerError("measurements has unsupported fields: " + ", ".join(unknown))
@@ -903,14 +948,54 @@ def _normalise_measurements(
     for dimension in set(required_dimensions) - BASE_DIMENSIONS:
         field = field_by_dimension[dimension]
         if field not in raw:
+            if allow_partial:
+                continue
             raise RunnerError(f"command_json_v2 response is missing measurements.{field} for required {dimension}")
         output[field] = normalisers[dimension](raw[field])
     for dimension, field in field_by_dimension.items():
-        if field in raw and dimension not in required_dimensions:
+        if field in raw and dimension not in required_dimensions and dimension != "trace_envelope":
             raise RunnerError(f"measurements.{field} requires {dimension} in evaluation.required_dimensions")
     if "trace_envelope" in raw:
         output["trace_envelope"] = _normalise_trace(raw["trace_envelope"])
     return output
+
+
+def attach_local_measurements(
+    package: dict[str, Any], measurements: dict[str, Any], provenance: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach independently collected, redacted local evidence to a local package.
+
+    Telemetry follows the same strict schema validation as adapter-v2 output.
+    It can supplement browser and HTTP connectors but never replaces an
+    adapter-provided measurement for the same metric.
+    """
+    evaluation = package.get("evaluation")
+    execution = package.get("execution")
+    if not isinstance(evaluation, dict) or not isinstance(execution, dict):
+        raise RunnerError("Cannot attach local evidence to an invalid evaluation package")
+    if not measurements:
+        return package
+    required = evaluation.get("required_dimensions", [])
+    if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+        raise RunnerError("Evaluation package has invalid required dimensions")
+    normalised = _normalise_measurements(
+        {"measurements": measurements}, adapter_type="command_json_v2",
+        required_dimensions=required, allow_partial=True,
+    )
+    conflicts = sorted(set(normalised) & set(evaluation))
+    if conflicts:
+        raise RunnerError("Local telemetry conflicts with adapter-provided evidence: " + ", ".join(conflicts))
+    safe_provenance = {
+        "schema_version": str(provenance.get("schema_version", "esx-local-evidence-1.0")),
+        "record_count": int(provenance.get("record_count", 0)),
+        "derived_dimensions": list(provenance.get("derived_dimensions", [])),
+        "trace_captured": bool(provenance.get("trace_captured", False)),
+    }
+    return {
+        **package,
+        "execution": {**execution, "local_evidence": safe_provenance},
+        "evaluation": {**evaluation, **normalised},
+    }
 
 
 def _github_source(token: str) -> dict[str, Any]:
@@ -935,19 +1020,27 @@ def _github_source(token: str) -> dict[str, Any]:
 def build_package(config: dict[str, Any], *, github_oidc_token: str | None = None) -> dict[str, Any]:
     evaluation, cases, adapter = _validate_config(config)
     browser_summary: dict[str, Any] = {}
+    scored_cases = cases
+    scored_response: dict[str, Any]
     if adapter["type"] == "http_json_target":
         response, duration_ms, request_sha, response_sha = _invoke_http_json_target(adapter, cases, evaluation)
     elif adapter["type"] == "browser_journey":
         from .browser import invoke_browser_journeys
         response, duration_ms, request_sha, response_sha = invoke_browser_journeys(adapter, cases, evaluation)
         browser_summary = _browser_execution_summary(response, cases)
+        scored_cases, scored_response = _browser_scored_inputs(cases, response, browser_summary)
     else:
         response, duration_ms, request_sha, response_sha = _invoke_command_adapter(adapter, cases, evaluation)
-    predicted_labels, confidences = _normalise_results(cases, response)
+    if adapter["type"] != "browser_journey":
+        scored_response = response
+    predicted_labels, confidences = _normalise_results(scored_cases, scored_response)
+    telemetry_config = config.get("telemetry")
+    telemetry_enabled = isinstance(telemetry_config, dict) and telemetry_config.get("enabled") is True
     measurements = _normalise_measurements(
         response,
         adapter_type=adapter["type"],
         required_dimensions=evaluation.get("required_dimensions", ["classification", "confidence"]),
+        allow_partial=telemetry_enabled,
     )
     source_config = config.get("source", {})
     if not isinstance(source_config, dict):
@@ -970,6 +1063,8 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
             "adapter_type": adapter["type"],
             "sandbox_mode": adapter.get("sandbox", {}).get("mode", "none") if isinstance(adapter.get("sandbox"), dict) else "none",
             "case_count": len(cases),
+            "scored_case_count": len(scored_cases),
+            "blocked_case_count": len(cases) - len(scored_cases),
             "duration_ms": duration_ms,
             "request_sha256": request_sha,
             "response_sha256": response_sha,
@@ -985,7 +1080,8 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
             "dataset_version": evaluation["dataset_version"],
             "policy_id": evaluation.get("policy_id", "esx-ai-evaluator-release-1.0"),
             "required_dimensions": evaluation.get("required_dimensions", ["classification", "confidence"]),
-            "expected_labels": [item["expected_label"] for item in cases],
+            # Only cases that reached the application workflow feed quality metrics.
+            "expected_labels": [item["expected_label"] for item in scored_cases],
             "predicted_labels": predicted_labels,
             "confidences": confidences,
             **measurements,
@@ -1008,7 +1104,7 @@ def _browser_execution_summary(response: dict[str, Any], cases: list[dict[str, A
         scope = item.get("coverage_scope")
         outcome = item.get("outcome")
         session = item.get("session_status")
-        if scope not in {"pre_auth", "authenticated"} or outcome not in {"passed", "failed"} or not isinstance(session, str):
+        if scope not in {"pre_auth", "authenticated"} or outcome not in {"passed", "failed", "blocked"} or not isinstance(session, str):
             raise RunnerError("Browser journey returned an invalid diagnostic status")
         steps = item.get("steps")
         if not isinstance(steps, list):
@@ -1028,6 +1124,7 @@ def _browser_execution_summary(response: dict[str, Any], cases: list[dict[str, A
             "failure_screenshot_available": bool(item.get("failure_screenshot")),
         }
         if isinstance(failed_step, dict):
+            entry["failure_stage"] = "workflow_execution"
             entry["failed_step"] = failed_step.get("step")
             entry["failed_action"] = failed_step.get("action")
             entry["failure_kind"] = failed_step.get("failure_kind", "browser_action_failed")
@@ -1036,6 +1133,12 @@ def _browser_execution_summary(response: dict[str, Any], cases: list[dict[str, A
             entry["observed_origin"] = failed_step.get("observed_origin", "unavailable")
             entry["document_ready_state"] = failed_step.get("document_ready_state", "unavailable")
         elif outcome == "failed":
+            entry["failure_stage"] = "workflow_execution"
+            entry["failure_kind"] = item.get("failure_kind", "authenticated_session_unavailable")
+        elif outcome == "blocked":
+            if item.get("failure_stage") != "session_setup":
+                raise RunnerError("Blocked browser diagnostics must identify session_setup")
+            entry["failure_stage"] = "session_setup"
             entry["failure_kind"] = item.get("failure_kind", "authenticated_session_unavailable")
         safe_cases.append(entry)
     if len({item["case_id"] for item in safe_cases}) != len(cases):
@@ -1044,6 +1147,28 @@ def _browser_execution_summary(response: dict[str, Any], cases: list[dict[str, A
     if not isinstance(session_status, str):
         raise RunnerError("Browser journey returned an invalid session status")
     return {"browser_session_status": session_status, "browser_case_diagnostics": safe_cases}
+
+
+def _browser_scored_inputs(
+    cases: list[dict[str, Any]], response: dict[str, Any], browser_summary: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Exclude blocked browser cases from metrics without hiding their diagnostics."""
+    diagnostics = browser_summary.get("browser_case_diagnostics", [])
+    if not isinstance(diagnostics, list):
+        raise RunnerError("Browser journey diagnostics are invalid")
+    blocked_ids = {
+        item.get("case_id") for item in diagnostics
+        if isinstance(item, dict) and item.get("outcome") == "blocked" and isinstance(item.get("case_id"), str)
+    }
+    scored_cases = [case for case in cases if case["case_id"] not in blocked_ids]
+    results = response.get("results")
+    if not isinstance(results, list):
+        raise RunnerError("Browser journey did not return results")
+    scored_results = [
+        item for item in results
+        if isinstance(item, dict) and item.get("case_id") not in blocked_ids
+    ]
+    return scored_cases, {**response, "results": scored_results}
 
 
 def _safe_browser_health(value: object) -> dict[str, int]:

@@ -1,33 +1,35 @@
 # Assessment Lifecycle and Analyst Flow
 
 Status: target workflow contract  
-Workflow version: 1.0.0-draft
+Workflow version: 1.1.0-draft
 
 ## 1. Product Flow
 
 ```mermaid
 flowchart LR
-    A[Create assessment] --> B[Define target and scope]
-    B --> C[Confirm authorization and ROE]
-    C --> D[Choose profile and credentials]
-    D --> E[Applicability and capability preflight]
-    E -->|blocked| X[Blocked report with reasons]
-    E --> F[Approve immutable plan]
-    F --> G[Execute specialist work units]
-    G --> H[Ingest evidence immediately]
-    H --> I[Normalize candidate observations]
-    I --> J[Independent validation]
-    J -->|unsupported| K[Rejected or inconclusive]
-    J -->|supported| L[Analyst review when required]
-    K --> M[Coverage and exception ledger]
-    L --> N[Confirmed finding]
-    N --> M
-    M --> O[Benchmark gate for product releases]
-    M --> P[Generate client fact set]
-    P --> Q[DOCX]
-    P --> R[PDF]
-    P --> S[Evidence bundle]
-    Q & R & S --> T[Retest and closure]
+    A[Declare customer seed] --> B[Optional public discovery]
+    B --> C[Candidate asset inventory]
+    C --> D[Client confirms ownership and authorization]
+    D --> E[Define exact target and scope]
+    E --> F[Choose profile and credentials]
+    F --> G[Applicability and capability preflight]
+    G -->|blocked| X[Blocked report with reasons]
+    G --> H[Approve immutable plan]
+    H --> I[Execute specialist work units]
+    I --> J[Ingest evidence immediately]
+    J --> K[Normalize candidate observations]
+    K --> L[Independent validation]
+    L -->|unsupported| M[Rejected or inconclusive]
+    L -->|supported| N[Analyst review when required]
+    M --> O[Coverage and exception ledger]
+    N --> P[Confirmed finding]
+    P --> O
+    O --> Q[Benchmark gate for product releases]
+    O --> R[Generate client fact set]
+    R --> S[Assessment decision report]
+    R --> T[Asset inventory export]
+    R --> U[Technical evidence bundle]
+    S & T & U --> V[Retest and closure]
 ```
 
 The benchmark gate evaluates the scanner product on labelled fixtures. It does
@@ -49,6 +51,7 @@ sequenceDiagram
     participant Validator
     participant Reporter
 
+    Analyst->>UI: Declare seed, review candidates, confirm ownership
     Analyst->>UI: Scope, ROE, profile, credentials
     UI->>Control: Create authorized assessment
     Control->>Control: Normalize scope and compile applicability
@@ -70,7 +73,7 @@ sequenceDiagram
     Analyst->>DB: Review required dispositions and business context
     Reporter->>DB: Read one versioned validated fact set
     Reporter->>Evidence: Package referenced originals
-    Reporter-->>Analyst: DOCX, PDF and evidence bundle
+    Reporter-->>Analyst: Decision report, asset inventory and evidence bundle
 ```
 
 ## 3. Lifecycle State Machine
@@ -110,6 +113,7 @@ an applicable required test is anything other than succeeded and evidence-valid.
 | Contract | Authoritative contents | Producer | Consumer |
 |---|---|---|---|
 | Scope decision | Targets, exclusions, ownership, authorization, window, rates, safety permissions | Scope agent | Planner, supervisor, audit |
+| Asset inventory | Declared seeds, candidate assets, discovery source, confidence, ownership review, and per-asset assessment state | Inventory service | Client, planner, reporter |
 | Methodology plan | Profile version, applicable test cases, dependencies, budgets, expected evidence | Planner | Supervisor, coverage ledger |
 | Work request | One allowlisted capability, target subset, credentials reference, deadline, idempotency key | Supervisor | Specialist agent |
 | Tool execution | Tool/adaptor identity, version, sanitized configuration, timing, exit and resource state | Specialist agent | Evidence custody, coverage |
@@ -121,7 +125,21 @@ an applicable required test is anything other than succeeded and evidence-valid.
 | Benchmark result | Dataset identity, confusion matrix, precision, recall, F1, evidence and release decision | Benchmark service | Engineering release gate |
 | Report fact set | Frozen assessment, coverage, findings, evidence references and approvals | Reporting service | DOCX/PDF/bundle renderers |
 
-## 5. Failure and Partial-Result Flow
+## 5. Asset Discovery and Ownership Flow
+
+Public discovery can collect bounded certificate-transparency candidates from a
+customer-declared seed. It does not resolve, visit, crawl, probe, or assess
+those hosts. A candidate is not treated as a customer-owned asset solely
+because it was discovered.
+
+1. The client declares a seed domain or URL.
+2. Public discovery records source and collection limitations for each candidate.
+3. The client approves or excludes each candidate and confirms written authority.
+4. Only an approved exact-origin asset can be queued for an assessment.
+5. The inventory records whether that asset is queued, assessed, or blocked.
+6. Every assessment result is linked back to the originating asset record.
+
+## 6. Failure and Partial-Result Flow
 
 `scope_preflight` is an execution barrier. If target resolution or scope
 validation fails, every later queued network stage is atomically marked blocked
@@ -137,7 +155,7 @@ target can therefore never be presented as successful coverage.
 7. Generate a Partial, Failed, or Cancelled report from the retained fact set.
 8. Permit report regeneration and analyst disposition without rerunning scanners.
 
-## 6. Finding Decision Flow
+## 7. Finding Decision Flow
 
 ```mermaid
 flowchart TD
@@ -160,8 +178,26 @@ flowchart TD
     H -->|Reject| R3[Rejected with rationale]
 ```
 
-## 7. UI Flow Requirements
+## 8. Report Layers
 
+The client-facing report library exposes three distinct deliverables for every
+assessment record:
+
+1. The assessment decision report (PDF, with an optional DOCX copy) explains
+   authorized scope, execution state, coverage, validated findings,
+   limitations, and next actions.
+2. The asset inventory export (CSV) lists declared and discovered assets, their
+   discovery sources, ownership state, review confidence, and assessment state.
+3. The technical evidence bundle (ZIP) retains the raw, integrity-checked
+   supporting artifacts for engineering and audit review.
+
+A partial, blocked, failed, or cancelled assessment must say that coverage is
+incomplete. It must not make a clean-security or absence-of-risk conclusion.
+
+## 9. UI Flow Requirements
+
+- Asset inventory shows the difference between a declared seed, a discovery
+  candidate, an approved asset, and an excluded asset before execution.
 - Assessment creation shows scope, authorization, profile behavior, prohibited
   actions, supplied roles, expected test families, and missing capabilities.
 - The execution page shows current stage, current test case, real tool status,

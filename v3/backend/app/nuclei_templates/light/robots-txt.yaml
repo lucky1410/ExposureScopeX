@@ -1,0 +1,18 @@
+id: esx-light-robots-txt
+
+info:
+  name: Public robots.txt observed
+  author: ExposureScopeX
+  severity: info
+  description: Records whether the exact declared origin publishes a robots.txt file as public route context.
+  tags: esx,light,passive
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/robots.txt"
+    redirects: false
+    matchers:
+      - type: status
+        status:
+          - 200

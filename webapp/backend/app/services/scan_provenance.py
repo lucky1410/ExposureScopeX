@@ -30,6 +30,7 @@ _VERSION_COMMANDS = {
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization:\s*bearer\s+)[^\s'\"]+"),
+    re.compile(r"(?i)(cookie:\s*)[^'\"\r\n]+"),
     re.compile(r"(?i)((?:api[-_]?key|token|password|secret)[=:\s]+)[^\s'\"]+"),
     re.compile(r"(?i)(--(?:token|password|api-key|secret)\s+)[^\s'\"]+"),
     re.compile(r"(https?://)[^/@\s]+:[^/@\s]+@"),

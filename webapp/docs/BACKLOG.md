@@ -482,17 +482,20 @@ The `app/api/v1/ai.py` router handles AI Analyst requests. Implement a `POST /ap
 ---
 
 ### ESX-030
-**Title:** Agent mode integration with UI
+**Title:** Evidence-grounded analyst assistance
 **Priority:** P2 | **Estimate:** 8 | **Status:** Backlog
 
 **Description:**
-Expose `--agent` mode through the web UI. When an assessment is created with `flags.agent=true`, the Celery worker invokes `run_agent()` from `modules/agent.sh` instead of the standard phase loop. Stream the agentic iteration log (observe→reason→execute) to the WebSocket. Display `agent_summary.md` on the assessment detail page when complete.
+Add optional post-scan assistance that explains findings, prioritizes remediation,
+and drafts narratives from immutable evidence. It must remain isolated from scan
+planning and execution and must never modify scanner facts.
 
 **Acceptance Criteria:**
-- "AI Agent" toggle visible on the assessment creation form (requires ANTHROPIC_API_KEY)
-- Agent iterations visible in real time in the log viewer
-- `agent_summary.md` rendered as Markdown on the completed assessment page
-- Passive-only enforcement: agent mode with `--passive-only` blocks active tool calls at dispatch level
+- Assistance is available only after normalized evidence is persisted
+- Every generated claim cites finding and artifact identifiers
+- Model, prompt version, inputs, output, and operator decision are auditable
+- Generated content is clearly labelled and operator-review gated
+- No AI configuration or response can alter targets, tools, templates, or scan actions
 
 ---
 
@@ -635,18 +638,21 @@ Add focused modules for parameter mining and content discovery so operators can 
 ---
 
 ### ESX-039
-**Title:** Guard-railed active exploitation adapters
-**Priority:** P1 | **Estimate:** 8 | **Status:** Backlog
+**Title:** Non-exploitative validation policy enforcement
+**Priority:** P0 | **Estimate:** 8 | **Status:** Backlog
 
 **Description:**
-Add tightly controlled adapters for higher-risk tools such as `sqlmap`, plus operator-reviewed execution flows for any future exploitation tooling. These adapters must require explicit scope approval, expose safe presets, capture exact command/evidence trails, and prevent background execution without operator intent.
+Enforce the product boundary that scan workers perform deterministic discovery and
+non-exploitative validation only. Planning, dispatch, and worker execution must
+reject exploit utilities, credential attacks, destructive template classes, and
+AI-selected scan actions.
 
 **Acceptance Criteria:**
-- `sqlmap` is available only through an explicit `active_validation` workflow with per-run confirmation
-- API rejects active validation when no authorization or approval record exists
-- Exact command, target, start time, finish time, and artifact paths are recorded for every active validation step
-- Operators can stop an active validation run from the UI and receive terminal status within 5 seconds
-- Failed validations surface actionable errors instead of generic task failures
+- API and workers reject SQLMap, Hydra, Metasploit, and equivalent exploit utilities
+- Unsafe Nuclei tags and templates are rejected before dispatch and again at execution
+- Versioned profiles fully determine targets, tools, limits, retries, and timeouts
+- Rejections produce auditable policy events without launching a process
+- Historical/manual tool output can be imported only through a labelled, validated evidence workflow
 
 ---
 
@@ -691,9 +697,9 @@ Create a formal support matrix for tool integrations to prevent platform sprawl 
 
 - Keep bundled and first-class: `nuclei`, `katana`, `subfinder`, `httpx`, `naabu`, `amass`, `waybackurls`, `assetfinder`, `gau`, `dnsx`, `nmap`, `masscan`, `trivy`, `gitleaks`, `syft`, `grype`, `prowler`
 - Keep ScoutSuite, Hakrawler, and GoSpider as optional external adapters until maintained releases no longer require legacy dependency trees.
-- Add next as high-value first-class or guarded adapters: `ffuf`, `arjun`, `nikto`, `sqlmap`, `ScoutSuite`
+- Add next as high-value first-class or guarded adapters: `ffuf`, `arjun`, `nikto`, `ScoutSuite`
 - Support via interoperability or import rather than deep embedding: `Burp`
-- Keep external/manual, not first-class platform modules: `Wireshark`, `Hydra`, `John the Ripper`, `Aircrack-ng`
+- Keep import-only or external/manual, never executable by platform workers: `SQLMap`, `Wireshark`, `Hydra`, `Metasploit`, `John the Ripper`, `Aircrack-ng`
 
 **Acceptance Criteria:**
 - A machine-readable tool catalog exists with status, install strategy, module owner, and resource cost
@@ -701,3 +707,38 @@ Create a formal support matrix for tool integrations to prevent platform sprawl 
 - UI clearly indicates whether a tool is bundled, optional, or import-only
 - Storage controls prevent repeated cloning/downloading of template repos and wordlists
 - Docs explain why some tools remain external/manual instead of embedded
+
+---
+
+### ESX-043
+**Title:** Documentation-driven Nuclei profiles for Light, Medium, and Aggressive scans
+**Priority:** P0 | **Estimate:** 13 | **Status:** Backlog (implementation deferred)
+
+**Description:**
+Review the official Nuclei documentation and the documentation shipped with the
+version pinned by ExposureScopeX before changing scan behavior. Convert supported
+Nuclei controls into explicit, versioned Light, Medium, and Aggressive execution
+contracts rather than relying on arbitrary time limits or template counts. The
+review must cover template selection and exclusions, protocols, workflows,
+headless execution, severity and tag filters, concurrency, rate limits, retries,
+request timeouts, host-error handling, statistics, result formats, template
+signing, template updates, and resume behavior.
+
+Light should provide a fast, non-destructive baseline with a documented minimum
+coverage floor. Medium should broaden protocols and template families and increase
+depth while remaining safe for authorized production-like environments.
+Aggressive should maximize permitted non-exploitative coverage in isolated or
+explicitly approved environments; it must not introduce exploitation, destructive
+templates, credential attacks, denial-of-service checks, or AI-directed scanning.
+
+**Acceptance Criteria:**
+- The design cites the official documentation and records the Nuclei binary and template versions used to derive every setting
+- Each mode has a machine-readable contract for included and excluded tags, severities, protocols, headless policy, workflows, concurrency, rate, retries, per-request timeout, host-error threshold, and total execution budget
+- Mode differences are justified by coverage, target impact, runtime, and evidence quality rather than labels or arbitrary template counts
+- Unsafe, intrusive, fuzzing, denial-of-service, credential, and exploit-oriented templates are denied by a shared policy enforced before dispatch and inside the worker
+- Nuclei completion distinguishes successful coverage, zero matches, request errors, host skips, template exclusions, operator cancellation, and timeout without treating them as equivalent outcomes
+- Benchmark runs use DVWA plus additional versioned vulnerable and clean fixtures, with expected findings, false positives, false negatives, precision, recall, F-score, runtime, requests, and error rate recorded per mode
+- Regression gates prevent a profile release when required coverage falls below its baseline or error rate exceeds its documented tolerance
+- Reports preserve the exact command policy, template-set identity, template exclusions, statistics, findings, source output, screenshots, and hashes for every run
+- The UI explains what each mode will and will not test before dispatch and warns when authentication or another prerequisite limits expected coverage
+- No implementation begins until the documentation review and profile specification are approved

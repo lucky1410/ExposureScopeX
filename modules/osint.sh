@@ -30,14 +30,14 @@ run_osint() {
         else
             while IFS= read -r ip; do
                 log_info "  Shodan host lookup: $ip"
-                curl -s "https://api.shodan.io/shodan/host/${ip}?key=${SHODAN_API_KEY}" \
+                curl -s --max-time 30 "https://api.shodan.io/shodan/host/${ip}?key=${SHODAN_API_KEY}" \
                     | jq . > "${output_dir}/shodan_${ip//./_}.json" 2>/dev/null || \
                     log_warn "Shodan API query failed for $ip"
             done <<< "$shodan_ips"
         fi
 
         # Domain-based search (returns hosts mentioning the domain in their data)
-        curl -s "https://api.shodan.io/shodan/host/search?key=${SHODAN_API_KEY}&query=hostname:${target}" \
+        curl -s --max-time 30 "https://api.shodan.io/shodan/host/search?key=${SHODAN_API_KEY}&query=hostname:${target}" \
             | jq . > "${output_dir}/shodan_search.json" 2>/dev/null || true
     else
         log_info "SHODAN_API_KEY not set — skipping Shodan"
@@ -48,13 +48,13 @@ run_osint() {
     # -----------------------------------------------------------------------
     if [ -n "$VIRUSTOTAL_API_KEY" ]; then
         log_info "Querying VirusTotal..."
-        curl -s --header "x-apikey: $VIRUSTOTAL_API_KEY" \
+        curl -s --max-time 30 --header "x-apikey: $VIRUSTOTAL_API_KEY" \
             "https://www.virustotal.com/api/v3/domains/$target" \
             | jq . > "${output_dir}/vt_data.json" 2>/dev/null || \
             log_warn "VirusTotal query failed"
 
         # Passive DNS resolutions from VT
-        curl -s --header "x-apikey: $VIRUSTOTAL_API_KEY" \
+        curl -s --max-time 30 --header "x-apikey: $VIRUSTOTAL_API_KEY" \
             "https://www.virustotal.com/api/v3/domains/$target/resolutions?limit=20" \
             | jq -r '.data[]?.attributes?.ip_address // empty' \
             >> "$osint_output" 2>/dev/null || true
@@ -67,7 +67,7 @@ run_osint() {
     # -----------------------------------------------------------------------
     if [ -n "$CENSYS_API_ID" ] && [ -n "$CENSYS_API_SECRET" ]; then
         log_info "Querying Censys..."
-        curl -s --user "${CENSYS_API_ID}:${CENSYS_API_SECRET}" \
+        curl -s --max-time 30 --user "${CENSYS_API_ID}:${CENSYS_API_SECRET}" \
             -H "Content-Type: application/json" \
             -d "{\"q\":\"${target}\"}" \
             "https://search.censys.io/api/v2/hosts/search" \
@@ -107,7 +107,7 @@ run_osint() {
     if [ -n "$harvester_bin" ]; then
         log_info "Running theHarvester..."
         local harvester_out="${output_dir}/theharvester"
-        "$harvester_bin" -d "$target" -b all -f "$harvester_out" >/dev/null 2>&1 || \
+        run_tool "theharvester" "$harvester_bin" -d "$target" -b all -f "$harvester_out" >/dev/null 2>&1 || \
             log_warn "theHarvester encountered errors (some sources may have failed)"
         [ -f "${harvester_out}.xml" ] && log_success "theHarvester: ${harvester_out}.xml"
     fi
@@ -121,14 +121,14 @@ run_osint() {
 
     if command -v trufflehog &>/dev/null; then
         log_info "  Using trufflehog..."
-        trufflehog github --org="$target" --only-verified >> "$git_leak_out" 2>/dev/null || true
+        run_tool "trufflehog" "trufflehog" github --org="$target" --only-verified >> "$git_leak_out" 2>/dev/null || true
     elif command -v gitleaks &>/dev/null; then
         log_info "  Using gitleaks..."
-        gitleaks detect --source="$output_dir" \
+        run_tool "gitleaks" "gitleaks" detect --source="$output_dir" \
             --report-path="$git_leak_out" --report-format=json 2>/dev/null || true
     elif command -v git-hound &>/dev/null; then
         log_info "  Using git-hound..."
-        echo "$target" | git-hound >> "$git_leak_out" 2>/dev/null || \
+        echo "$target" | run_tool "git-hound" "git-hound" >> "$git_leak_out" 2>/dev/null || \
             log_warn "git-hound failed"
     else
         log_info "  No git leak scanner found (install trufflehog, gitleaks, or git-hound)"

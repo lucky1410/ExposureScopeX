@@ -37,9 +37,14 @@ from app.services.real_data_importer import _calculate_risk_score, _count_severi
 from app.services.asset_inventory import normalize_target
 from app.services.asset_graph import persist_scan_graph
 from app.services.risk_engine import confidence_score, contextual_risk_score
+from app.services.scan_authorization import target_matches_scope
 from app.config import settings
 
 INGESTION_NAMESPACE = uuid.UUID("7abf4252-fd41-4d4f-a919-5576ae9d7fa0")
+_SENSITIVE_RUNTIME_ARTIFACTS = {
+    "web-auth-cookie.txt",
+    "web-auth-storage-state.json",
+}
 
 _FINDING_STAGES = {
     "ssl_tls", "cloud", "web_testing", "api_security", "nuclei", "exploitation",
@@ -100,14 +105,41 @@ def _finding_asset_id(url: str, assets: dict[str, Asset], fallback: uuid.UUID) -
     return fallback
 
 
+def _finding_evidence_key(item: dict) -> str:
+    """Return the stable key shared by capture and ingestion for one observation."""
+    return "|".join((
+        str(item.get("source") or "unknown"),
+        str(item.get("template_id") or ""),
+        str(item.get("url") or ""),
+        str(item.get("title") or "Unknown finding"),
+    ))
+
+
 def _collect_findings(scan_dir: Path, target: str) -> list[dict]:
     findings: list[dict] = []
+    for path in scan_dir.rglob("safe_web_findings.json"):
+        for item in _read_json(path, []):
+            if isinstance(item, dict):
+                item["_artifact_path"] = str(path.relative_to(scan_dir))
+                findings.append(item)
     for path in scan_dir.rglob("nuclei_results.txt"):
-        findings.extend(parse_nuclei_results(path))
+        parsed = parse_nuclei_results(path)
+        for item in parsed:
+            item["_artifact_path"] = str(path.relative_to(scan_dir))
+            item["evidence"] = item.get("extra") or ""
+        findings.extend(parsed)
     for path in scan_dir.rglob("cloud_results.txt"):
-        findings.extend(parse_cloud_results(path))
+        parsed = parse_cloud_results(path)
+        for item in parsed:
+            item["_artifact_path"] = str(path.relative_to(scan_dir))
+            item["evidence"] = item.get("extra") or ""
+        findings.extend(parsed)
     for path in scan_dir.rglob("api_security.txt"):
-        findings.extend(parse_api_security(path))
+        parsed = parse_api_security(path)
+        for item in parsed:
+            item["_artifact_path"] = str(path.relative_to(scan_dir))
+            item["evidence"] = item.get("title") or ""
+        findings.extend(parsed)
 
     for path in scan_dir.rglob("cloud_buckets.txt"):
         for bucket in parse_cloud_buckets(path):
@@ -117,6 +149,7 @@ def _collect_findings(scan_dir: Path, target: str) -> list[dict]:
                 "url": bucket.get("url", ""),
                 "source": "cloud",
                 "evidence": "",
+                "_artifact_path": str(path.relative_to(scan_dir)),
             })
 
     for path in scan_dir.rglob("ssl_results.txt"):
@@ -128,6 +161,7 @@ def _collect_findings(scan_dir: Path, target: str) -> list[dict]:
                 "url": f"https://{target}",
                 "source": "ssl_check",
                 "evidence": "",
+                "_artifact_path": str(path.relative_to(scan_dir)),
             })
 
     for path in scan_dir.rglob("email_security.txt"):
@@ -139,6 +173,7 @@ def _collect_findings(scan_dir: Path, target: str) -> list[dict]:
                 "url": f"https://{target}",
                 "source": "email_security",
                 "evidence": "",
+                "_artifact_path": str(path.relative_to(scan_dir)),
             })
 
     for path in scan_dir.rglob("http_headers.txt"):
@@ -150,6 +185,7 @@ def _collect_findings(scan_dir: Path, target: str) -> list[dict]:
                     "url": block.get("url", f"https://{target}"),
                     "source": "http_headers",
                     "evidence": "",
+                    "_artifact_path": str(path.relative_to(scan_dir)),
                 })
 
     for nikto_file in scan_dir.rglob("nikto_*.txt"):
@@ -161,6 +197,7 @@ def _collect_findings(scan_dir: Path, target: str) -> list[dict]:
                 "url": f"https://{nikto.get('target', target)}:{nikto.get('port', 443)}",
                 "source": "nikto",
                 "evidence": item.get("reference", ""),
+                "_artifact_path": str(nikto_file.relative_to(scan_dir)),
             })
     for report_path in scan_dir.rglob("ffuf_*.json"):
         for item in parse_ffuf_results(report_path):
@@ -177,6 +214,7 @@ def _collect_findings(scan_dir: Path, target: str) -> list[dict]:
                     f"length: {item.get('length')}; "
                     f"words: {item.get('words')}"
                 )[:4000],
+                "_artifact_path": str(report_path.relative_to(scan_dir)),
             })
     for report_path in scan_dir.rglob("arjun_*.json"):
         for item in parse_arjun_results(report_path):
@@ -188,6 +226,7 @@ def _collect_findings(scan_dir: Path, target: str) -> list[dict]:
                 "source": "arjun",
                 "template_id": "arjun-parameter-discovery",
                 "evidence": f"Method: {item.get('method') or 'GET'}; parameter: {item.get('parameter')}"[:4000],
+                "_artifact_path": str(report_path.relative_to(scan_dir)),
             })
     for report_path in scan_dir.rglob("sqlmap_results.csv"):
         for item in parse_sqlmap_results(report_path):
@@ -204,6 +243,7 @@ def _collect_findings(scan_dir: Path, target: str) -> list[dict]:
                     f"techniques: {item.get('techniques')}; "
                     f"notes: {item.get('notes') or 'none'}"
                 )[:4000],
+                "_artifact_path": str(report_path.relative_to(scan_dir)),
             })
     findings.extend(_collect_specialized_findings(scan_dir, target))
     return findings
@@ -228,7 +268,7 @@ def _artifact_type(path: Path) -> str:
     name = path.name.lower()
     if "sbom" in name:
         return "sbom"
-    if "report" in name or path.suffix.lower() in {".html", ".pdf", ".md", ".sarif"}:
+    if "report" in name or path.suffix.lower() in {".html", ".pdf", ".docx", ".md", ".sarif"}:
         return "report"
     if "screenshot" in name or path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
         return "screenshot"
@@ -237,12 +277,77 @@ def _artifact_type(path: Path) -> str:
     return "evidence"
 
 
+def _screenshot_evidence_by_url(scan_path: Path) -> dict[str, dict]:
+    """Index only screenshots whose immutable sidecar matches the original bytes."""
+    evidence_by_url: dict[str, dict] = {}
+    for sidecar in scan_path.rglob("*.png.json"):
+        metadata = _read_json(sidecar, {})
+        screenshot = Path(str(sidecar)[:-5])
+        if not isinstance(metadata, dict) or not screenshot.is_file():
+            continue
+        try:
+            digest = _file_sha256(screenshot)
+        except OSError:
+            continue
+        if digest != metadata.get("screenshot_sha256"):
+            continue
+        record = {
+            "evidence_id": metadata.get("evidence_id"),
+            "path": str(screenshot.relative_to(scan_path))[:1000],
+            "sha256": digest,
+            "captured_at": metadata.get("captured_at"),
+            "task_id": metadata.get("task_id"),
+            "capture_tool": metadata.get("capture_tool"),
+        }
+        for field in ("requested_url", "final_url"):
+            url = str(metadata.get(field) or "").rstrip("/")
+            if url:
+                evidence_by_url[url] = record
+    return evidence_by_url
+
+
+def _terminal_evidence_by_finding_key(scan_path: Path) -> dict[str, dict]:
+    """Index finding terminal captures only when both image and source hashes verify."""
+    evidence_by_key: dict[str, dict] = {}
+    root = scan_path.resolve()
+    for sidecar in scan_path.rglob("finding-terminal-*.png.json"):
+        metadata = _read_json(sidecar, {})
+        screenshot = Path(str(sidecar)[:-5])
+        if not isinstance(metadata, dict) or not screenshot.is_file():
+            continue
+        finding_key = str(metadata.get("finding_key") or "")
+        source = (root / str(metadata.get("source_artifact") or "")).resolve()
+        try:
+            if not source.is_relative_to(root):
+                continue
+            screenshot_hash = _file_sha256(screenshot)
+            source_hash = _file_sha256(source)
+        except (OSError, ValueError):
+            continue
+        if (
+            not finding_key
+            or screenshot_hash != metadata.get("screenshot_sha256")
+            or source_hash != metadata.get("source_artifact_sha256")
+        ):
+            continue
+        evidence_by_key[finding_key] = {
+            "evidence_id": metadata.get("evidence_id"),
+            "path": str(screenshot.relative_to(scan_path))[:1000],
+            "sha256": screenshot_hash,
+            "captured_at": metadata.get("captured_at"),
+            "source_artifact_sha256": source_hash,
+        }
+    return evidence_by_key
+
+
 async def _persist_artifact_manifest(session, scan: Scan, scan_path: Path) -> dict:
     entries: list[dict] = []
     for path in sorted(scan_path.rglob("*")):
         if not path.is_file() or path.is_symlink():
             continue
         relative = str(path.relative_to(scan_path))[:1000]
+        if path.name.lower() in _SENSITIVE_RUNTIME_ARTIFACTS:
+            continue
         try:
             size = path.stat().st_size
             digest = _file_sha256(path)
@@ -250,16 +355,27 @@ async def _persist_artifact_manifest(session, scan: Scan, scan_path: Path) -> di
             continue
         artifact_type = _artifact_type(path)
         mime_type = mimetypes.guess_type(path.name)[0]
+        provenance = {"scanner_image": settings.SCANNER_IMAGE_IDENTITY}
+        if path.suffix.lower() == ".png":
+            sidecar = Path(f"{path}.json")
+            metadata = _read_json(sidecar, {})
+            if isinstance(metadata, dict) and metadata.get("screenshot_sha256") == digest:
+                provenance.update({
+                    "evidence_id": metadata.get("evidence_id"),
+                    "capture_metadata": metadata,
+                    "metadata_sha256": _file_sha256(sidecar),
+                    "metadata_verified": True,
+                })
         await session.execute(
             pg_insert(ScanArtifact).values(
                 scan_id=scan.id, path=relative, artifact_type=artifact_type,
                 mime_type=mime_type, size_bytes=size, sha256=digest, retained=True,
-                provenance={"scanner_image": settings.SCANNER_IMAGE_IDENTITY},
+                provenance=provenance,
             ).on_conflict_do_update(
                 constraint="uq_scan_artifact_path",
                 set_={"artifact_type": artifact_type, "mime_type": mime_type, "size_bytes": size,
                       "sha256": digest, "retained": True,
-                      "provenance": {"scanner_image": settings.SCANNER_IMAGE_IDENTITY}},
+                      "provenance": provenance},
             )
         )
         entries.append({"path": relative, "type": artifact_type, "size_bytes": size, "sha256": digest})
@@ -272,6 +388,7 @@ def _collect_specialized_findings(scan_dir: Path, target: str) -> list[dict]:
     for report_path in scan_dir.rglob("specialized_findings.json"):
         for item in _read_json(report_path, []):
             if isinstance(item, dict):
+                item["_artifact_path"] = str(report_path.relative_to(scan_dir))
                 findings.append(item)
     for report_path in scan_dir.rglob("gitleaks.json"):
         for item in _read_json(report_path, []):
@@ -288,6 +405,7 @@ def _collect_specialized_findings(scan_dir: Path, target: str) -> list[dict]:
                 "source": "gitleaks",
                 "template_id": rule_id,
                 "evidence": f"File: {path}; line: {line or 'unknown'}; fingerprint: {item.get('Fingerprint') or 'unavailable'}",
+                "_artifact_path": str(report_path.relative_to(scan_dir)),
             })
 
     for report_path in scan_dir.rglob("trivy.json"):
@@ -306,6 +424,7 @@ def _collect_specialized_findings(scan_dir: Path, target: str) -> list[dict]:
                     "source": "trivy",
                     "template_id": str(vulnerability.get("VulnerabilityID") or "dependency-vulnerability"),
                     "evidence": f"Artifact: {result_target}; package: {vulnerability.get('PkgName')}; installed: {vulnerability.get('InstalledVersion')}; fixed: {vulnerability.get('FixedVersion') or 'not published'}",
+                    "_artifact_path": str(report_path.relative_to(scan_dir)),
                 })
             for misconfiguration in result.get("Misconfigurations") or []:
                 severity = str(misconfiguration.get("Severity") or "MEDIUM").upper()
@@ -317,6 +436,7 @@ def _collect_specialized_findings(scan_dir: Path, target: str) -> list[dict]:
                     "source": "trivy-misconfiguration",
                     "template_id": str(misconfiguration.get("ID") or "iac-misconfiguration"),
                     "evidence": f"Artifact: {result_target}; cause: {misconfiguration.get('CauseMetadata') or 'see scanner artifact'}",
+                    "_artifact_path": str(report_path.relative_to(scan_dir)),
                 })
             for secret in result.get("Secrets") or []:
                 findings.append({
@@ -327,6 +447,7 @@ def _collect_specialized_findings(scan_dir: Path, target: str) -> list[dict]:
                     "source": "trivy-secret",
                     "template_id": str(secret.get("RuleID") or "secret"),
                     "evidence": f"Artifact: {result_target}; line: {secret.get('StartLine') or 'unknown'}",
+                    "_artifact_path": str(report_path.relative_to(scan_dir)),
                 })
     for report_path in scan_dir.rglob("grype.json"):
         grype = _read_json(report_path, {})
@@ -347,6 +468,7 @@ def _collect_specialized_findings(scan_dir: Path, target: str) -> list[dict]:
                     f"version: {artifact.get('version') or 'unknown'}; "
                     f"location: {((artifact.get('locations') or [{}])[0] or {}).get('path') or 'n/a'}"
                 )[:4000],
+                "_artifact_path": str(report_path.relative_to(scan_dir)),
             })
 
     for report_path in scan_dir.rglob("mcp_audit.json"):
@@ -362,15 +484,20 @@ def _collect_specialized_findings(scan_dir: Path, target: str) -> list[dict]:
                 "source": "mcp",
                 "template_id": str(item.get("category") or item.get("id") or "mcp-security"),
                 "evidence": str(item.get("evidence") or "")[:4000],
+                "_artifact_path": str(report_path.relative_to(scan_dir)),
             })
     for report_path in scan_dir.rglob("*.json"):
         if "prowler" not in report_path.name.lower():
             continue
         parsed = parse_prowler_ocsf(report_path)
-        findings.extend(parsed.get("findings", []))
+        for item in parsed.get("findings", []):
+            item["_artifact_path"] = str(report_path.relative_to(scan_dir))
+            findings.append(item)
     for report_path in list(scan_dir.rglob("scoutsuite_results*.js")) + list(scan_dir.rglob("scoutsuite_results*.json")):
         parsed = parse_scoutsuite_report(report_path)
-        findings.extend(parsed.get("findings", []))
+        for item in parsed.get("findings", []):
+            item["_artifact_path"] = str(report_path.relative_to(scan_dir))
+            findings.append(item)
     return findings
 
 
@@ -473,7 +600,8 @@ async def ingest_assessment_scan(
 
         discovered = [
             (value, "subdomain", "discovered_subdomain")
-            for path in scan_path.rglob("subdomains.txt")
+            for pattern in ("subdomains_discovered.txt", "subdomains.txt")
+            for path in scan_path.rglob(pattern)
             for value in parse_subdomains(path)
         ]
         nmap_files = sorted(scan_path.rglob("nmap_scan*.xml"))
@@ -613,11 +741,17 @@ async def ingest_assessment_scan(
                 ))
             ).scalars().all() if identity_id
         )
+        screenshot_evidence = _screenshot_evidence_by_url(scan_path)
+        terminal_evidence = _terminal_evidence_by_finding_key(scan_path)
         added_findings = 0
+        out_of_scope_findings_rejected = 0
         seen_keys: set[str] = set()
         for item in parsed_findings:
             title = str(item.get("title") or "Unknown finding")[:500]
             url = str(item.get("url") or "")[:2000]
+            if url and not target_matches_scope(url, "url", assessment.target):
+                out_of_scope_findings_rejected += 1
+                continue
             source = str(item.get("source") or "unknown")
             template_id = item.get("template_id")
             key = f"{source}|{template_id or ''}|{url}|{title}"
@@ -630,6 +764,8 @@ async def ingest_assessment_scan(
             evidence = str(item.get("evidence") or "")
             confidence = confidence_score(source, evidence)
             reachable = bool(url)
+            screenshot = screenshot_evidence.get(url.rstrip("/")) if url else None
+            terminal_capture = terminal_evidence.get(_finding_evidence_key(item))
             asset_id = _finding_asset_id(url, assets, root_asset.id)
             identity_fingerprint = hashlib.sha256(
                 f"{source}|{template_id or ''}|{url.lower()}|{title.lower()}".encode()
@@ -670,8 +806,18 @@ async def ingest_assessment_scan(
                 ),
                 evidence_metadata={
                     "artifact_source": source,
+                    "source_artifact": item.get("_artifact_path"),
                     "scan_id": scan_id,
                     "has_direct_evidence": bool(evidence.strip()),
+                    "reproduction_steps": item.get("reproduction_steps") or item.get("steps_to_reproduce"),
+                    "screenshot_evidence_id": screenshot.get("evidence_id") if screenshot else None,
+                    "screenshot_path": screenshot.get("path") if screenshot else None,
+                    "screenshot_sha256": screenshot.get("sha256") if screenshot else None,
+                    "screenshot_captured_at": screenshot.get("captured_at") if screenshot else None,
+                    "terminal_evidence_id": terminal_capture.get("evidence_id") if terminal_capture else None,
+                    "terminal_screenshot_path": terminal_capture.get("path") if terminal_capture else None,
+                    "terminal_screenshot_sha256": terminal_capture.get("sha256") if terminal_capture else None,
+                    "source_artifact_sha256": terminal_capture.get("source_artifact_sha256") if terminal_capture else None,
                 },
                 first_seen=now,
                 last_seen=now,
@@ -688,7 +834,7 @@ async def ingest_assessment_scan(
                     "severity": str(item.get("severity") or "INFO").upper(),
                     "asset_id": str(asset_id), "url": url or None,
                     "source": source, "template_id": template_id,
-                    "confidence": confidence,
+                    "confidence": float(confidence),
                 },
             ))
             existing_finding_ids.add(finding_id)
@@ -743,6 +889,7 @@ async def ingest_assessment_scan(
             "assets_added": added_assets,
             "ports_added": added_ports,
             "findings_added": added_findings,
+            "out_of_scope_findings_rejected": out_of_scope_findings_rejected,
             "finding_identities_resolved": resolved_findings,
             "finding_scope_signature": finding_scope_signature(scan.scan_metadata),
             "files": sorted(str(path.relative_to(scan_path)) for path in scan_path.rglob("*") if path.is_file()),

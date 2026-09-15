@@ -20,8 +20,14 @@ from .artifact_store import persist_bytes, persist_text
 from .evidence_capture import terminal_evidence
 from .execution_control import blocks_downstream
 from .light_adapters import ADAPTERS
+from .network_errors import classify_target_connection_error
+from .profiles import PLAN_VERSION, compile_plan
 from .reporting import generate_scan_reports, report_status_for_scan
+from .methodology_cases import coverage_records
 from .serialization import json_safe
+from .scope_files import scope_dispatch_error
+from .exposure_management import deliver_one_pending_integration, enqueue_integration_deliveries, sync_scan_finding_lifecycle
+from .redaction import redact_text
 
 
 logging.basicConfig(
@@ -29,7 +35,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 LOGGER = logging.getLogger("exposurescopex.runner")
-from .redaction import redact_text
 
 TERMINAL_STAGE_STATUSES = {
     "succeeded",
@@ -145,6 +150,11 @@ async def claim_stage(owner: str) -> dict | None:
         await conn.execute(
             "UPDATE assessments SET status = 'running' WHERE id = $1",
             row["assessment_id"],
+        )
+        await conn.execute(
+            """UPDATE exposure_monitor_runs SET status = 'started'
+               WHERE scan_id = $1 AND status = 'queued'""",
+            row["scan_id"],
         )
         await conn.execute(
             """
@@ -373,17 +383,17 @@ async def execute_adapter(stage: dict) -> None:
         execution = await ADAPTERS[adapter](stage)
     elif adapter in {"http_probe"}:
         result = await asyncio.to_thread(fetch_url, target)
-        artifact_id = await store_artifact(stage, result)
+        await store_artifact(stage, result)
         execution = {"command": "http-probe [AUTHORIZED_TARGET]", "transcript": json.dumps(result, indent=2)}
     elif adapter == "robots_discovery":
         result = await asyncio.to_thread(fetch_url, urljoin(target + "/", "robots.txt"))
-        artifact_id = await store_artifact(stage, result)
+        await store_artifact(stage, result)
         execution = {"command": "robots-discovery [AUTHORIZED_TARGET]", "transcript": json.dumps(result, indent=2)}
     elif adapter == "well_known_discovery":
         result = await asyncio.to_thread(
             fetch_url, urljoin(target + "/", ".well-known/security.txt")
         )
-        artifact_id = await store_artifact(stage, result)
+        await store_artifact(stage, result)
         execution = {"command": "well-known-discovery [AUTHORIZED_TARGET]", "transcript": json.dumps(result, indent=2)}
     else:
         raise RuntimeError(f"Adapter is not allowlisted: {adapter}")
@@ -461,6 +471,16 @@ async def _finalize_if_terminal_unlocked(scan_id: UUID, assessment_id: UUID) -> 
         coverage = [dict(row) for row in rows]
     await pool().execute("UPDATE scans SET status = $2::lifecycle_status, finished_at = now() WHERE id = $1", scan_id, scan_status)
     await pool().execute("UPDATE assessments SET status = $2::lifecycle_status WHERE id = $1", assessment_id, scan_status)
+    await pool().execute(
+        """
+        UPDATE assessment_assets aa
+        SET assessment_status = CASE WHEN $2 IN ('complete', 'partial') THEN 'assessed' ELSE 'blocked' END,
+            updated_at = now()
+        FROM assessment_asset_scans aas
+        WHERE aas.scan_id = $1 AND aas.assessment_asset_id = aa.id
+        """,
+        scan_id, scan_status,
+    )
     try:
         manifest = await generate_scan_reports(scan_id, assessment_id, report_status, coverage)
     except Exception as exc:
@@ -468,6 +488,15 @@ async def _finalize_if_terminal_unlocked(scan_id: UUID, assessment_id: UUID) -> 
         report_status = report_status_for_scan(scan_status)
         await pool().execute("UPDATE scans SET status = 'partial', failure_reason = $2 WHERE id = $1", scan_id, f"Report generation failed: {exc}"[:2000])
         await pool().execute("UPDATE assessments SET status = 'partial' WHERE id = $1", assessment_id)
+        await pool().execute(
+            """
+            UPDATE assessment_assets aa
+            SET assessment_status = 'assessed', updated_at = now()
+            FROM assessment_asset_scans aas
+            WHERE aas.scan_id = $1 AND aas.assessment_asset_id = aa.id
+            """,
+            scan_id,
+        )
         manifest = json_safe({"schema_version": "2.5", "scan_id": str(scan_id), "generated_at": utcnow().isoformat(), "status": report_status, "execution_status": scan_status, "coverage": coverage, "report_error": f"{type(exc).__name__}: {exc}"[:2000], "outputs": {}})
     async with pool().acquire() as conn, conn.transaction():
         await conn.execute(
@@ -486,6 +515,18 @@ async def _finalize_if_terminal_unlocked(scan_id: UUID, assessment_id: UUID) -> 
             scan_id,
             {"status": scan_status, "report_status": report_status},
         )
+        await conn.execute(
+            """UPDATE exposure_monitor_runs
+               SET status = CASE WHEN $2 = 'complete' THEN 'completed' ELSE 'failed' END,
+                   detail = CASE WHEN $2 = 'complete' THEN NULL ELSE 'Scheduled assessment completed with limited coverage.' END
+               WHERE scan_id = $1 AND status IN ('queued', 'started')""",
+            scan_id, scan_status,
+        )
+    try:
+        await sync_scan_finding_lifecycle(scan_id, scan_status)
+    except Exception:
+        # Exposure history enriches the report but must never invalidate completed evidence.
+        LOGGER.exception("Failed to synchronize exposure lifecycle scan=%s", scan_id)
     return True
 
 
@@ -518,6 +559,119 @@ async def recover_missing_reports(limit: int = 10) -> int:
     return recovered
 
 
+async def queue_due_monitors(limit: int = 3) -> int:
+    """Queue recurring work only while its original authorization and scope remain valid."""
+    queued = 0
+    async with pool().acquire() as conn, conn.transaction():
+        monitors = await conn.fetch(
+            """
+            SELECT m.*, a.target, a.mode::text AS mode, a.authorization_confirmed,
+                   scope.scope
+            FROM exposure_monitors m
+            JOIN assessments a ON a.id = m.assessment_id
+            LEFT JOIN assessment_scopes scope ON scope.assessment_id = a.id
+            WHERE m.status = 'active' AND m.next_run_at <= now()
+            ORDER BY m.next_run_at
+            FOR UPDATE OF m SKIP LOCKED
+            LIMIT $1
+            """, limit,
+        )
+        for monitor in monitors:
+            reason = None
+            if not monitor["authorization_confirmed"]:
+                reason = "Recorded authorization is no longer available for this assessment."
+            elif monitor["scope"]:
+                reason = scope_dispatch_error(dict(monitor["scope"]), monitor["target"])
+            active = await conn.fetchval(
+                """SELECT EXISTS(
+                    SELECT 1 FROM scans WHERE assessment_id = $1 AND status IN ('queued', 'running')
+                )""", monitor["assessment_id"],
+            )
+            if reason:
+                await conn.execute(
+                    """UPDATE exposure_monitors SET status = 'blocked', last_error = $2, updated_at = now()
+                       WHERE id = $1""", monitor["id"], reason[:1000],
+                )
+                await conn.execute(
+                    """INSERT INTO exposure_monitor_runs (monitor_id, status, detail)
+                       VALUES ($1, 'blocked', $2)""", monitor["id"], reason[:1000],
+                )
+                await enqueue_integration_deliveries(
+                    conn, monitor["organization_id"], "monitor.blocked",
+                    {"monitor_id": str(monitor["id"]), "assessment_id": str(monitor["assessment_id"]), "reason": reason[:500]},
+                )
+                await conn.execute(
+                    """INSERT INTO exposure_audit_events (
+                         organization_id, actor_id, event_type, target_type, target_id, payload
+                       ) VALUES ($1, $2, 'monitor.blocked', 'monitor', $3, $4::jsonb)""",
+                    monitor["organization_id"], monitor["created_by"], monitor["id"],
+                    {"assessment_id": str(monitor["assessment_id"]), "reason": reason[:500]},
+                )
+                continue
+            if active:
+                # An active manual or scheduled run must finish before the cadence advances.
+                await conn.execute(
+                    """UPDATE exposure_monitors SET next_run_at = now() + interval '1 hour', updated_at = now()
+                       WHERE id = $1""", monitor["id"],
+                )
+                await conn.execute(
+                    """INSERT INTO exposure_monitor_runs (monitor_id, status, detail)
+                       VALUES ($1, 'skipped', 'An assessment is already queued or running.')""", monitor["id"],
+                )
+                continue
+            plan = compile_plan(monitor["mode"], monitor["target"])
+            scan = await conn.fetchrow(
+                """INSERT INTO scans (assessment_id, plan_version, plan)
+                   VALUES ($1, $2, $3::jsonb) RETURNING id""",
+                monitor["assessment_id"], PLAN_VERSION, plan,
+            )
+            await conn.executemany(
+                """INSERT INTO stage_runs (scan_id, position, adapter, required, timeout_seconds)
+                   VALUES ($1, $2, $3, $4, $5)""",
+                [(scan["id"], stage["position"], stage["adapter"], stage["required"], stage["timeout_seconds"])
+                 for stage in plan["stages"]],
+            )
+            stage_ids = {
+                row["adapter"]: row["id"]
+                for row in await conn.fetch("SELECT id, adapter FROM stage_runs WHERE scan_id = $1", scan["id"])
+            }
+            await conn.executemany(
+                """INSERT INTO scan_coverage (
+                     scan_id, stage_run_id, case_id, methodology_version, profile, family, adapter, title, required
+                   ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                [
+                    (scan["id"], stage_ids[case["adapter"]], case["case_id"], case["methodology_version"],
+                     case["profile"], case["family"], case["adapter"], case["title"], case["required"])
+                    for case in coverage_records(plan)
+                ],
+            )
+            await conn.execute("UPDATE assessments SET status = 'queued' WHERE id = $1", monitor["assessment_id"])
+            await conn.execute(
+                """INSERT INTO scan_events (scan_id, event_type, payload)
+                   VALUES ($1, 'monitor.queued', $2::jsonb)""",
+                scan["id"], {"monitor_id": str(monitor["id"]), "plan_version": PLAN_VERSION},
+            )
+            await conn.execute(
+                """INSERT INTO exposure_monitor_runs (monitor_id, scan_id, status)
+                   VALUES ($1, $2, 'queued')""", monitor["id"], scan["id"],
+            )
+            await conn.execute(
+                """UPDATE exposure_monitors
+                   SET last_run_at = now(), last_scan_id = $2, next_run_at = now() + make_interval(hours => cadence_hours),
+                       last_error = NULL, updated_at = now()
+                   WHERE id = $1""", monitor["id"], scan["id"],
+            )
+            await conn.execute(
+                """INSERT INTO exposure_audit_events (
+                     organization_id, actor_id, event_type, target_type, target_id, payload
+                   ) VALUES ($1, $2, 'monitor.dispatched', 'monitor', $3, $4::jsonb)""",
+                monitor["organization_id"], monitor["created_by"], monitor["id"],
+                {"assessment_id": str(monitor["assessment_id"]), "scan_id": str(scan["id"]), "plan_version": PLAN_VERSION},
+            )
+            queued += 1
+    return queued
+
+
 async def run_stage(stage: dict) -> None:
     LOGGER.info(
         "Starting stage scan=%s stage=%s adapter=%s attempt=%s timeout_seconds=%s",
@@ -540,8 +694,9 @@ async def run_stage(stage: dict) -> None:
         await _store_failure_evidence(stage, "ADAPTER_TIMEOUT", "Adapter exceeded its configured deadline")
         await finish_stage(stage, "timed_out", "ADAPTER_TIMEOUT", "Adapter exceeded its configured deadline")
     except (URLError, socket.timeout, OSError) as exc:
-        await _store_failure_evidence(stage, "TARGET_UNREACHABLE", str(exc))
-        await finish_stage(stage, "failed", "TARGET_UNREACHABLE", str(exc)[:2000])
+        error_code, error_detail = classify_target_connection_error(exc)
+        await _store_failure_evidence(stage, error_code, error_detail)
+        await finish_stage(stage, "failed", error_code, error_detail[:2000])
     except Exception as exc:
         LOGGER.exception("Stage failed scan=%s adapter=%s", stage["scan_id"], stage["adapter"])
         await _store_failure_evidence(stage, "ADAPTER_ERROR", str(exc))
@@ -602,6 +757,10 @@ async def main() -> None:
             LOGGER.info("Recovered missing terminal reports count=%s", recovered_reports)
         while not stop_requested.is_set():
             await recover_expired_leases()
+            scheduled = await queue_due_monitors()
+            if scheduled:
+                LOGGER.info("Queued due exposure monitors count=%s", scheduled)
+            await deliver_one_pending_integration()
             stage = await claim_stage(owner)
             if stage is None:
                 try:

@@ -33,6 +33,8 @@ export default function ReportsPage() {
   const [reports, setReports] = useState<Report[]>([])
   const [loading, setLoading] = useState(true)
   const { toast } = useToast()
+  const hasGeneratingReport = reports.some((report) => report.status === 'generating')
+  const scanBoundFormat = ['docx', 'pdf', 'evidence'].includes(selectedFormat)
 
   useEffect(() => {
     Promise.all([
@@ -48,12 +50,11 @@ export default function ReportsPage() {
   }, [])
 
   useEffect(() => {
-    if (!reports.some((report) => report.status === 'generating')) return
     const timer = window.setInterval(() => {
       getReports().then((rows) => setReports(Array.isArray(rows) ? rows : [])).catch(() => undefined)
-    }, 3000)
+    }, hasGeneratingReport ? 3000 : 10000)
     return () => window.clearInterval(timer)
-  }, [reports])
+  }, [hasGeneratingReport])
 
   useEffect(() => {
     setSelectedScan('all')
@@ -65,10 +66,19 @@ export default function ReportsPage() {
       setAssets([])
       return
     }
-    void Promise.all([getScans(selectedAssessment), getAssets({ assessment_id: selectedAssessment, page_size: 100 })])
-      .then(([scanRows, assetRows]) => { setScans(scanRows); setAssets(assetRows.items) })
-      .catch(() => { setScans([]); setAssets([]) })
+    void getScans(selectedAssessment)
+      .then((scanRows) => setScans(scanRows))
+      .catch(() => setScans([]))
+    void getAssets({ assessment_id: selectedAssessment, page_size: 100 })
+      .then((assetRows) => setAssets(assetRows.items))
+      .catch(() => setAssets([]))
   }, [selectedAssessment])
+
+  useEffect(() => {
+    if (scanBoundFormat && selectedScan === 'all' && scans[0]) {
+      setSelectedScan(scans[0].id)
+    }
+  }, [scanBoundFormat, scans, selectedScan])
 
   const handleGenerate = async () => {
     if (!selectedAssessment || !selectedFormat) return
@@ -105,6 +115,7 @@ export default function ReportsPage() {
   const formatIcons: Record<string, React.ElementType> = {
     html: FileText,
     pdf: FileText,
+    docx: FileText,
     sarif: FileJson,
     markdown: FileText,
     csv: FileText,
@@ -165,13 +176,19 @@ export default function ReportsPage() {
             </div>
             <div className="space-y-2">
               <Label>Format</Label>
-              <Select value={selectedFormat} onValueChange={setSelectedFormat}>
+              <Select value={selectedFormat} onValueChange={(value) => {
+                setSelectedFormat(value)
+                if (['docx', 'pdf', 'evidence'].includes(value) && selectedScan === 'all' && scans[0]) {
+                  setSelectedScan(scans[0].id)
+                }
+              }}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select format" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="html">HTML Report</SelectItem>
                   <SelectItem value="pdf">PDF Report</SelectItem>
+                  <SelectItem value="docx">Word Document (DOCX)</SelectItem>
                   <SelectItem value="sarif">SARIF (for CI/CD)</SelectItem>
                   <SelectItem value="markdown">Markdown Report</SelectItem>
                   <SelectItem value="csv">CSV Findings</SelectItem>
@@ -181,7 +198,7 @@ export default function ReportsPage() {
               </Select>
             </div>
             <div className="flex items-end">
-              <Button onClick={handleGenerate} disabled={!selectedAssessment || !selectedFormat || generating}>
+              <Button onClick={handleGenerate} disabled={!selectedAssessment || !selectedFormat || generating || (scanBoundFormat && selectedScan === 'all')}>
                 {generating ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Generating...</>
                 ) : (
@@ -232,12 +249,18 @@ export default function ReportsPage() {
               <TableBody>
                 {reports.map((report) => {
                   const Icon = formatIcons[report.format] || FileText
+                  const request = report.scope?.request as Record<string, unknown> | undefined
+                  const clientFormat = ['pdf', 'docx', 'evidence'].includes(report.format)
+                  const scanBound = report.scope?.automatic === true || Boolean(request?.scan_id)
+                  const legacySummary = clientFormat && !scanBound
+                  const downloadable = report.status === 'ready' && !legacySummary
                   return (
                     <TableRow key={report.id}>
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Icon className="h-4 w-4 text-muted-foreground" />
                           <span className="text-sm font-medium">{report.title}</span>
+                          {legacySummary ? <Badge variant="destructive" className="text-[9px]">Legacy summary - not client-ready</Badge> : null}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -257,8 +280,8 @@ export default function ReportsPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         {report.status === 'generating' ? <Button variant="ghost" size="sm" onClick={() => void cancelReport(report.id).then((updated) => setReports((current) => current.map((item) => item.id === updated.id ? updated : item)))}>Cancel</Button> : null}
-                        <Button variant="ghost" size="sm" disabled={report.status !== 'ready'} asChild={report.status === 'ready'}>
-                          {report.status === 'ready' && report.download_url ? (
+                        <Button variant="ghost" size="sm" disabled={!downloadable} asChild={downloadable}>
+                          {downloadable && report.download_url ? (
                             <button onClick={() => void downloadReport(report).catch(() => toast({ title: 'Download failed', variant: 'destructive' }))}>
                               <Download className="mr-2 inline h-3.5 w-3.5" /> Download
                             </button>

@@ -157,10 +157,10 @@ export default function EvaluationResultPage() {
   }, [evaluationId]);
 
   if (error) {
-    return <main className="workspacePage evaluationReportPage"><Link className="backLink" href="/ai-evaluator">BACK TO AI ASSURANCE</Link><p className="formError">{error}</p></main>;
+    return <main className="workspacePage evaluationReportPage"><Link className="backLink" href="/ai-evaluator">BACK TO PRE-D</Link><p className="formError">{error}</p></main>;
   }
   if (!result) {
-    return <main className="workspacePage evaluationReportPage"><Link className="backLink" href="/ai-evaluator">BACK TO AI ASSURANCE</Link><p className="reportLoading">Loading immutable pre-release result...</p></main>;
+    return <main className="workspacePage evaluationReportPage"><Link className="backLink" href="/ai-evaluator">BACK TO PRE-D</Link><p className="reportLoading">Loading immutable pre-release result...</p></main>;
   }
 
   const metrics = record(result.metrics);
@@ -205,7 +205,7 @@ export default function EvaluationResultPage() {
 
   return (
     <main className="workspacePage evaluationReportPage">
-      <Link className="backLink" href="/ai-evaluator">BACK TO AI ASSURANCE</Link>
+      <Link className="backLink" href="/ai-evaluator">BACK TO PRE-D</Link>
       <header className="pageHeader compactHeader">
         <div><p className="kicker">PRE-RELEASE ASSURANCE / IMMUTABLE SCORECARD</p><h1>{result.name}</h1><p>Deterministic release evidence for {result.evaluated_agent_id} on the declared labelled dataset.</p></div>
         <b className={`decision-${result.release_decision} resultDecision`}>{result.release_decision}</b>

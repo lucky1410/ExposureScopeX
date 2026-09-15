@@ -6,6 +6,97 @@ from copy import deepcopy
 from typing import Any
 
 
+PROFILE_CONTRACT_VERSION = "1.0.0"
+
+COMMON_QUALITY_GATES: dict[str, float | int] = {
+    "evidence_completeness_min": 1.0,
+    "scope_violations_max": 0,
+    "unreported_stage_outcomes_max": 0,
+    "repeatability_variance_max": 0.02,
+}
+
+PROFILE_CONTRACTS: dict[str, dict[str, Any]] = {
+    "light": {
+        "coverage_contract": {
+            "intent": "rapid non-destructive exposure baseline",
+            "enumeration_target_limit": 50,
+            "port_policy": "nmap fast top ports (-F) with open-port filtering",
+            "crawl_start_url_limit": 3,
+            "crawl_depth": 1,
+            "nuclei_target_limit": 75,
+            "nuclei_rate_limit_per_second": 10,
+            "nuclei_concurrency": 5,
+            "nuclei_retries": 0,
+            "nuclei_process_timeout_seconds": 1800,
+            "nuclei_stage_timeout_seconds": 1860,
+            "headless_templates": False,
+            "safe_validation_policy": "authenticated inventory only; zero input probes",
+            "long_stage_policy": "bounded; timeout is recorded and execution continues",
+        },
+        "quality_gates": {
+            **COMMON_QUALITY_GATES,
+            "precision_min": 0.95,
+            "recall_min": 0.60,
+            "f1_min": 0.73,
+        },
+    },
+    "medium": {
+        "coverage_contract": {
+            "intent": "balanced service identification and curated validation",
+            "enumeration_target_limit": 250,
+            "port_policy": "top 1000 ports with service detection and safe default scripts",
+            "crawl_start_url_limit": 10,
+            "crawl_depth": 3,
+            "nuclei_target_limit": 2500,
+            "nuclei_rate_limit_per_second": 25,
+            "nuclei_concurrency": 10,
+            "nuclei_retries": 1,
+            "nuclei_process_timeout_seconds": 3600,
+            "nuclei_stage_timeout_seconds": 3660,
+            "headless_templates": True,
+            "safe_validation_policy": "up to 25 same-origin GET-form malformed-input probes",
+            "long_stage_policy": "bounded per tool; failures are isolated and reported",
+        },
+        "quality_gates": {
+            **COMMON_QUALITY_GATES,
+            "precision_min": 0.95,
+            "recall_min": 0.80,
+            "f1_min": 0.86,
+        },
+    },
+    "aggressive": {
+        "coverage_contract": {
+            "intent": "maximum authorized breadth and deep non-destructive validation",
+            "enumeration_target_limit": 1000,
+            "port_policy": "all TCP ports with service, safe script, and OS detection",
+            "crawl_start_url_limit": 25,
+            "crawl_depth": 5,
+            "nuclei_target_limit": 5000,
+            "nuclei_rate_limit_per_second": 40,
+            "nuclei_concurrency": 15,
+            "nuclei_retries": 1,
+            "nuclei_process_timeout_seconds": 7200,
+            "nuclei_stage_timeout_seconds": 7260,
+            "headless_templates": True,
+            "safe_validation_policy": "up to 100 same-origin GET-form malformed-input probes",
+            "long_stage_policy": "extended bounded execution; failures are isolated and reported",
+        },
+        "quality_gates": {
+            **COMMON_QUALITY_GATES,
+            "precision_min": 0.93,
+            "recall_min": 0.90,
+            "f1_min": 0.91,
+        },
+    },
+}
+
+ASSESSMENT_STANDARDS = [
+    {"id": "NIST-SP-800-115", "role": "assessment planning, execution, analysis, and reporting"},
+    {"id": "OWASP-WSTG", "role": "web application security test coverage taxonomy"},
+    {"id": "OWASP-ASVS", "role": "verification-control traceability"},
+]
+
+
 SCAN_PROFILES: dict[str, dict[str, Any]] = {
     "light": {
         "mode": "light",
@@ -15,16 +106,16 @@ SCAN_PROFILES: dict[str, dict[str, Any]] = {
         "flags": {
             "passive_only": False,
             "stealth": True,
-            "screenshots": False,
-            "cve": False,
-            "crawl": False,
+            "screenshots": True,
+            "cve": True,
+            "crawl": True,
             "agent": False,
             "no_osint": False,
             "diff": False,
             "baseline": False,
         },
-        "utilities": ["crtsh", "wayback", "headers", "dns", "subfinder", "assetfinder", "httpx"],
-        "nuclei_tags": ["exposures", "misconfig", "tech"],
+        "utilities": ["crtsh", "wayback", "headers", "dns", "subfinder", "assetfinder", "httpx", "katana", "nmap", "nuclei"],
+        "nuclei_tags": ["exposures", "misconfig"],
         "business_logic": "discovery_only",
     },
     "medium": {
@@ -44,28 +135,28 @@ SCAN_PROFILES: dict[str, dict[str, Any]] = {
             "baseline": False,
         },
         "utilities": ["subfinder", "assetfinder", "amass", "dnsx", "httpx", "gau", "waybackurls", "katana", "arjun", "nikto", "naabu", "nuclei"],
-        "nuclei_tags": ["cves", "default-login", "exposures", "files", "misconfig", "tech", "takeovers"],
+        "nuclei_tags": ["cves", "exposures", "files", "misconfig", "tech", "takeovers"],
         "business_logic": "workflow_mapping",
     },
     "aggressive": {
         "mode": "aggressive",
         "label": "Aggressive",
         "description": "Expanded attack-surface enumeration, deep crawling, and broader nuclei execution.",
-        "phases": {"enum": True, "scan": True, "cloud": True, "exploit": True, "report": True},
+        "phases": {"enum": True, "scan": True, "cloud": True, "exploit": False, "report": True},
         "flags": {
             "passive_only": False,
             "stealth": False,
             "screenshots": True,
             "cve": True,
             "crawl": True,
-            "agent": True,
+            "agent": False,
             "no_osint": False,
             "diff": True,
             "baseline": False,
         },
         "utilities": ["subfinder", "assetfinder", "amass", "dnsx", "httpx", "gau", "waybackurls", "katana", "ffuf", "arjun", "nikto", "naabu", "nmap", "nuclei"],
-        "nuclei_tags": ["cves", "default-login", "dns", "exposures", "files", "misconfig", "panel", "takeovers", "tech", "workflow"],
-        "business_logic": "authenticated_and_stateful",
+        "nuclei_tags": ["cves", "dns", "exposures", "files", "misconfig", "panel", "takeovers", "tech"],
+        "business_logic": "deep_non_destructive_validation",
     },
 }
 
@@ -176,6 +267,11 @@ def get_scan_profile(scan_mode: str, target_type: str | None = None) -> dict[str
         base["business_logic"] = "seed_expansion_and_attribution"
 
     base["target_type"] = target_type
+    contract = deepcopy(PROFILE_CONTRACTS.get(scan_mode, PROFILE_CONTRACTS["medium"]))
+    base["contract_version"] = PROFILE_CONTRACT_VERSION
+    base["coverage_contract"] = contract["coverage_contract"]
+    base["quality_gates"] = contract["quality_gates"]
+    base["standards"] = deepcopy(ASSESSMENT_STANDARDS)
     base["pipeline"] = TARGET_PIPELINES.get(target_type, TARGET_PIPELINES["domain"])
     base["scan_strategy"] = "active" if base["phases"].get("scan") or base["phases"].get("exploit") else "inventory"
     base["readiness"] = {
@@ -201,4 +297,7 @@ def merge_scan_inputs(
     profile = get_scan_profile(scan_mode, target_type)
     profile["phases"] = {**profile["phases"], **(phases or {})}
     profile["flags"] = {**profile["flags"], **(flags or {})}
+    profile["phases"]["exploit"] = False
+    profile["flags"]["agent"] = False
+    profile["flags"]["allow_active_validation"] = bool((flags or {}).get("allow_active_validation", False))
     return profile

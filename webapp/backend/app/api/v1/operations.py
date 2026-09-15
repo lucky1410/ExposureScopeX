@@ -19,7 +19,7 @@ from app.models.user import User
 from app.services.telemetry import render_prometheus
 
 router = APIRouter(prefix="/operations", tags=["Operations"])
-QUEUES = ("scans-web", "scans-api", "scans-artifact", "scans-cloud", "scans-mobile", "scans", "default")
+QUEUES = ("scans-web", "scans-api", "scans-artifact", "scans-cloud", "scans-mobile", "scans", "reports", "default")
 
 
 async def _snapshot(user: User, db: AsyncSession) -> dict:

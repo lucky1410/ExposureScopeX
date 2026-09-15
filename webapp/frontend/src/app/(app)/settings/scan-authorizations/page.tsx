@@ -51,6 +51,11 @@ export default function ScanAuthorizationsPage() {
   const [saving, setSaving] = useState(false)
   const { toast } = useToast()
 
+  useEffect(() => {
+    const target = new URLSearchParams(window.location.search).get('target')
+    if (target) setForm(current => ({ ...current, target: current.target || target }))
+  }, [])
+
   const load = useCallback(async () => {
     setLoading(true)
     try {

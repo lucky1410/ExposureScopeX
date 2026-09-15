@@ -5,10 +5,22 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr, field_serializer
+
+
+class WebAuthenticationConfig(BaseModel):
+    """Operator-approved form login used only inside the isolated scan worker."""
+
+    login_url: str = Field(min_length=8, max_length=500, pattern=r"^https?://")
+    username: str = Field(min_length=1, max_length=255)
+    password: SecretStr = Field(min_length=1, max_length=1000)
+    username_field: str = Field(default="username", min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.:-]+$")
+    password_field: str = Field(default="password", min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.:-]+$")
+    success_url_pattern: str | None = Field(default=None, max_length=300)
 
 
 class AssessmentCreate(BaseModel):
+    operation_id: uuid.UUID | None = None
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     target: str = Field(..., min_length=1, max_length=500)
@@ -19,6 +31,7 @@ class AssessmentCreate(BaseModel):
     requested_scans: list[str] = Field(default_factory=list)
     requested_utilities: list[str] = Field(default_factory=list)
     nuclei_tags: list[str] = Field(default_factory=list)
+    web_authentication: WebAuthenticationConfig | None = None
     imported_targets: list[dict[str, Any]] = Field(default_factory=list)
     auto_start: bool = Field(
         default=True,
@@ -30,6 +43,7 @@ class AssessmentResponse(BaseModel):
     id: uuid.UUID
     org_id: uuid.UUID
     created_by: uuid.UUID
+    operation_id: uuid.UUID | None = None
     name: str
     description: Optional[str] = None
     target: str
@@ -44,6 +58,12 @@ class AssessmentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("flags")
+    def serialize_flags(self, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return {key: item for key, item in value.items() if key != "_web_auth_encrypted"}
 
 
 class AssessmentScanResponse(BaseModel):
@@ -145,6 +165,10 @@ class ScanProfileResponse(BaseModel):
     pipeline: list[str] = []
     scan_strategy: str = "active"
     readiness: dict[str, str]
+    contract_version: str
+    coverage_contract: dict[str, Any]
+    quality_gates: dict[str, float | int]
+    standards: list[dict[str, str]]
     tool_plan: list[dict[str, Any]] = Field(default_factory=list)
 
 

@@ -1,6 +1,6 @@
 # ExposureScopeX Production Operations
 
-**Validated:** 2026-09-09 against schema `015_scan_schedules`.
+**Validated:** 2026-09-10 against schema `018_operation_control_plane`.
 
 Deployment steps are in [Deployment](DEPLOYMENT.md). Incident procedures,
 including Docker disk pressure and stuck scans, are in [Runbooks](RUNBOOKS.md).

@@ -6,6 +6,7 @@ run_enumeration() {
     local domain=$1
     local output_dir=$2
     local subdomains_file="${output_dir}/subdomains.txt"
+    local discovered_subdomains_file="${output_dir}/subdomains_discovered.txt"
     local temp_file
 
     # validate domain
@@ -52,14 +53,33 @@ run_enumeration() {
         log_info "Light mode: skipping Amass"
     fi
 
-    # Deduplicate
+    # Include the authorized seed and retain the complete discovery inventory.
+    # Downstream active tools use a bounded subset so one broad domain cannot
+    # unexpectedly multiply scan duration and traffic.
+    printf '%s\n' "$domain" >> "$temp_file"
+
+    # Deduplicate and apply a mode-aware execution cap.
     if [ -s "$temp_file" ]; then
-        sort -u "$temp_file" > "$subdomains_file"
+        sort -u "$temp_file" > "$discovered_subdomains_file"
         rm -f "$temp_file"
-        local count
-        count=$(wc -l < "$subdomains_file")
-        log_success "Enumeration complete. Found $count unique subdomains."
-        log_info "Results saved to: $subdomains_file"
+        local count target_limit
+        count=$(wc -l < "$discovered_subdomains_file")
+        case "${MODE:-medium}" in
+            light) target_limit=50 ;;
+            aggressive) target_limit=1000 ;;
+            *) target_limit=250 ;;
+        esac
+        if [[ "${MAX_ENUMERATION_TARGETS:-}" =~ ^[1-9][0-9]*$ ]]; then
+            target_limit="$MAX_ENUMERATION_TARGETS"
+        fi
+        head -n "$target_limit" "$discovered_subdomains_file" > "$subdomains_file"
+        if [ "$count" -gt "$target_limit" ]; then
+            log_warn "Enumeration found $count unique hosts; active execution capped at $target_limit for ${MODE:-medium} mode"
+        else
+            log_success "Enumeration complete. Found $count unique hosts."
+        fi
+        log_info "Complete inventory: $discovered_subdomains_file"
+        log_info "Active target set: $subdomains_file"
     else
         log_warn "No subdomains discovered"
         touch "$subdomains_file"
@@ -69,7 +89,7 @@ run_enumeration() {
     if [ "${MODE:-medium}" != "light" ] && command -v subjack &> /dev/null && [ -s "$subdomains_file" ]; then
         log_info "Checking for potential subdomain takeovers"
         # Current subjack embeds its fingerprints and no longer accepts -c.
-        subjack -w "$subdomains_file" -t 100 -timeout 30 \
+        run_tool "subjack" "subjack" -w "$subdomains_file" -t 100 -timeout 30 \
                -o "${output_dir}/potential_takeovers.txt" -ssl -v || \
             log_warn "subjack reported errors"
     fi
@@ -93,13 +113,27 @@ run_enumeration() {
     local urls_file="${output_dir}/wayback_urls.txt"
     if command -v waybackurls &> /dev/null && [ -s "$subdomains_file" ]; then
         log_info "Fetching historical URLs with waybackurls"
-        if ! cat "$subdomains_file" | waybackurls > "$urls_file"; then
+        # Light mode uses the authorized seed only. Archive queries are
+        # expensive and querying every discovered host caused long stalls.
+        local history_targets="$subdomains_file"
+        if [ "${MODE:-medium}" = "light" ]; then
+            history_targets=$(mktemp -p "$output_dir" history_targets.XXXXXX) || return 1
+            register_cleanup "$history_targets"
+            printf '%s\n' "$domain" > "$history_targets"
+        fi
+        if ! run_tool waybackurls waybackurls < "$history_targets" > "$urls_file"; then
             log_warn "waybackurls failed"
             touch "$urls_file"
         fi
     elif command -v gau &> /dev/null && [ -s "$subdomains_file" ]; then
         log_info "Fetching historical URLs with gau"
-        if ! cat "$subdomains_file" | gau > "$urls_file"; then
+        local history_targets="$subdomains_file"
+        if [ "${MODE:-medium}" = "light" ]; then
+            history_targets=$(mktemp -p "$output_dir" history_targets.XXXXXX) || return 1
+            register_cleanup "$history_targets"
+            printf '%s\n' "$domain" > "$history_targets"
+        fi
+        if ! run_tool gau gau < "$history_targets" > "$urls_file"; then
             log_warn "gau failed"
             touch "$urls_file"
         fi

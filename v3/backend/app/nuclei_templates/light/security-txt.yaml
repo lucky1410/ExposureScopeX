@@ -1,0 +1,18 @@
+id: esx-light-security-txt
+
+info:
+  name: Public security contact file observed
+  author: ExposureScopeX
+  severity: info
+  description: Records whether the exact declared origin publishes an RFC 9116 security contact file.
+  tags: esx,light,passive
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.well-known/security.txt"
+    redirects: false
+    matchers:
+      - type: status
+        status:
+          - 200

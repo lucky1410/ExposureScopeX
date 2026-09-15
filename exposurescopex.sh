@@ -9,18 +9,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ──────────────────────────────────────────────────────────────────────────────
 # Bootstrap configuration
 # ──────────────────────────────────────────────────────────────────────────────
-if [ ! -f "${SCRIPT_DIR}/config/exposurescopex.conf" ]; then
+CONFIG_FILE="${EXPOSURESCOPEX_CONFIG_FILE:-${SCRIPT_DIR}/config/exposurescopex.conf}"
+if [ ! -f "$CONFIG_FILE" ]; then
     if [ -f "${SCRIPT_DIR}/config/exposurescopex.conf.template" ]; then
-        echo "Config not found — creating from template: config/exposurescopex.conf"
-        cp "${SCRIPT_DIR}/config/exposurescopex.conf.template" \
-           "${SCRIPT_DIR}/config/exposurescopex.conf"
-        echo "Edit config/exposurescopex.conf to add API keys (do not commit this file)."
+        if [ -w "${SCRIPT_DIR}/config" ]; then
+            echo "Config not found - creating from template: config/exposurescopex.conf"
+            cp "${SCRIPT_DIR}/config/exposurescopex.conf.template" "$CONFIG_FILE"
+            echo "Edit config/exposurescopex.conf to add API keys (do not commit this file)."
+        else
+            CONFIG_FILE="${SCRIPT_DIR}/config/exposurescopex.conf.template"
+            echo "Config directory is read-only - using the environment-backed template."
+        fi
     else
         echo "Config template missing: config/exposurescopex.conf.template"
     fi
 fi
 
-source "${SCRIPT_DIR}/config/exposurescopex.conf" || true
+if [ -f "$CONFIG_FILE" ]; then
+    # The template reads secrets and runtime paths from environment variables.
+    source "$CONFIG_FILE"
+else
+    echo "No ExposureScopeX configuration is available." >&2
+    exit 2
+fi
 
 # Core utilities load first (other modules depend on log_* and validate_*)
 source "${SCRIPT_DIR}/modules/utils.sh"
@@ -38,18 +49,18 @@ source "${SCRIPT_DIR}/modules/dns_recon.sh"
 source "${SCRIPT_DIR}/modules/port_scan.sh"
 source "${SCRIPT_DIR}/modules/ssl_check.sh"
 source "${SCRIPT_DIR}/modules/crawler.sh"
+source "${SCRIPT_DIR}/modules/web_auth.sh"
+source "${SCRIPT_DIR}/modules/safe_web_validation.sh"
 source "${SCRIPT_DIR}/modules/web_test.sh"
 source "${SCRIPT_DIR}/modules/screenshot.sh"
 source "${SCRIPT_DIR}/modules/api_security.sh"
 source "${SCRIPT_DIR}/modules/vuln_scan.sh"
 source "${SCRIPT_DIR}/modules/cvematch.sh"
-source "${SCRIPT_DIR}/modules/exploitation.sh"
 source "${SCRIPT_DIR}/modules/osint.sh"
 source "${SCRIPT_DIR}/modules/cloud.sh"
 source "${SCRIPT_DIR}/modules/findings_db.sh"
 source "${SCRIPT_DIR}/modules/reporting.sh"
 source "${SCRIPT_DIR}/modules/integrations.sh"
-source "${SCRIPT_DIR}/modules/agent.sh"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Runtime variables
@@ -60,7 +71,6 @@ TARGET_TYPE=""        # auto-detected: domain | url | ip | cidr | file
 SCOPE_CONF=""
 RUN_ENUM=false
 RUN_SCAN=false
-RUN_EXPLOIT=false
 RUN_CLOUD=false
 RUN_REPORT=false
 RUN_DIFF=false
@@ -71,7 +81,6 @@ RUN_PASSIVE=false      # --passive-only: zero-packet recon only
 RUN_SCREENSHOTS=false  # --screenshots: capture visual snapshots of web targets
 RUN_CVE_MATCH=false    # --cve        : correlate fingerprints with NVD
 RUN_CRAWL=false        # --crawl      : run dedicated deep crawler phase
-RUN_AGENT=false        # --agent      : autonomous AI-driven assessment
 OUTPUT_FILE=""
 MODE="medium"
 AUTO_MODE=false
@@ -101,14 +110,7 @@ SCAN PHASES
   -e, --enum                Subdomain enumeration + DNS recon
   -s, --scan                Port scan + SSL/TLS + web test + API + vuln scan
   -c, --cloud               Cloud misconfiguration + bucket enumeration
-  -x, --exploit             Exploitation (Hydra SSH, Metasploit) — CAUTION
   -r, --report              Generate MD / HTML / PDF / SARIF report
-
-AUTONOMOUS AGENT
-      --agent               AI-driven adaptive assessment (requires ANTHROPIC_API_KEY)
-                            Claude plans + executes its own enumeration strategy
-      --agent-model MODEL   Claude model to use (default: claude-opus-4-6)
-      --agent-max-steps N   Max agentic iterations (default: 25)
 
 SCAN OPTIONS
   -m, --mode   LEVEL        Scan speed: light | medium | aggressive (default: medium)
@@ -142,12 +144,6 @@ CI/CD EXIT CODES (when --ci is set)
   2 = CRITICAL findings present
 
 EXAMPLES
-  # Autonomous AI agent — adapts its own enumeration strategy
-  ./exposurescopex.sh -d example.com --agent
-
-  # Agent in passive-only mode (no packets to target)
-  ./exposurescopex.sh -d example.com --agent --passive-only
-
   # Full one-time scan with report
   ./exposurescopex.sh -d example.com -e -s -c -r
 
@@ -184,7 +180,7 @@ while [[ "$#" -gt 0 ]]; do
         -f|--file)          TARGET_FILE="$2";    shift ;;
         -e|--enum)          RUN_ENUM=true ;;
         -s|--scan)          RUN_SCAN=true ;;
-        -x|--exploit)       RUN_EXPLOIT=true ;;
+        -x|--exploit)       log_error "Exploitation is not supported by ExposureScopeX"; exit 2 ;;
         -c|--cloud)         RUN_CLOUD=true ;;
         -o|--output)        OUTPUT_FILE="$2";    shift ;;
         -m|--mode)          MODE="$2";           shift ;;
@@ -200,9 +196,10 @@ while [[ "$#" -gt 0 ]]; do
         --screenshots)      RUN_SCREENSHOTS=true ;;
         --cve)              RUN_CVE_MATCH=true ;;
         --crawl)            RUN_CRAWL=true ;;
-        --agent)            RUN_AGENT=true ;;
-        --agent-model)      AGENT_MODEL="$2";         shift ;;
-        --agent-max-steps)  AGENT_MAX_ITERATIONS="$2"; shift ;;
+        --agent|--agent-model|--agent-max-steps)
+            log_error "AI-directed scanning is not supported; scans use deterministic profiles"
+            exit 2
+            ;;
         --stealth)          STEALTH_MODE=true ;;
         --stealth-min)      STEALTH_DELAY_MIN="$2"; shift ;;
         --stealth-max)      STEALTH_DELAY_MAX="$2"; shift ;;
@@ -391,14 +388,13 @@ main() {
 
     # ── Auto-select phases when none were specified explicitly ─────────────
     if [ "$RUN_ENUM" = false ] && [ "$RUN_SCAN" = false ] && \
-       [ "$RUN_CLOUD" = false ] && [ "$RUN_REPORT" = false ] && \
-       [ "$RUN_EXPLOIT" = false ]; then
+       [ "$RUN_CLOUD" = false ] && [ "$RUN_REPORT" = false ]; then
         auto_select_phases "$TARGET_TYPE"
     fi
 
     # ── Scope loading ──────────────────────────────────────────────────────
     if [ -n "$SCOPE_CONF" ]; then
-        load_scope "$SCOPE_CONF" || log_warn "Scope load failed — proceeding without enforcement"
+        load_scope "$SCOPE_CONF" || log_fatal "Scope load failed; refusing to run without enforcement"
         print_scope
         if [ -n "$TARGET_DOMAIN" ]; then
             assert_in_scope "$TARGET_DOMAIN" || log_fatal "Primary target is out of scope"
@@ -407,7 +403,7 @@ main() {
 
     # ── Passive-only mode: block any active phases ─────────────────────────
     if [ "$RUN_PASSIVE" = true ]; then
-        RUN_SCAN=false; RUN_EXPLOIT=false; RUN_CLOUD=false
+        RUN_SCAN=false; RUN_CLOUD=false
         log_info "[passive-only] Active scan phases disabled — running passive recon only"
     fi
 
@@ -445,27 +441,18 @@ main() {
     db_init
     db_register_scan "${TARGET_DOMAIN:-${TARGET_FILE:-batch}}" "$SESSION_DIR" "$MODE"
 
-    # ── Agent mode: hand control to the autonomous AI agent ───────────────
-    # Must be after SESSION_DIR and db_init so output files have a real path.
-    if [ "$RUN_AGENT" = true ]; then
-        run_agent "${TARGET_DOMAIN:-${TARGET_FILE:-batch}}" "$SESSION_DIR"
-        [ "$RUN_REPORT" = true ] && generate_report "$SESSION_DIR"
-        log_success "ExposureScopeX agent session complete: $SESSION_DIR"
-        exit 0
-    fi
-
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 0 — Passive Reconnaissance (zero-packet)
     # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_PASSIVE" = true ] || [ "$RUN_ENUM" = true ]; then
-        _run_per_domain run_passive_recon domain
+        run_bounded_stage passive_recon 120 _run_per_domain run_passive_recon domain
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 1 — Enumeration
     # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_ENUM" = true ]; then
-        _run_per_domain run_enumeration domain
+        run_bounded_stage enumeration 240 _run_per_domain run_enumeration domain
         if [ -n "$SCOPE_CONF" ] && [ -f "${SESSION_DIR}/subdomains.txt" ]; then
             filter_by_scope "${SESSION_DIR}/subdomains.txt" "${SESSION_DIR}/subdomains_inscope.txt"
             mv "${SESSION_DIR}/subdomains_inscope.txt" "${SESSION_DIR}/subdomains.txt"
@@ -479,78 +466,106 @@ main() {
     # PHASE 2 — DNS Reconnaissance
     # ──────────────────────────────────────────────────────────────────────
     if { [ "$RUN_ENUM" = true ] || [ "$RUN_SCAN" = true ]; }; then
-        _run_per_domain run_dns_recon domain
+        run_bounded_stage dns_recon 120 _run_per_domain run_dns_recon domain
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 3 — OSINT (runs per-domain for both -d and -f)
     # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_OSINT" = true ]; then
-        _run_per_domain run_osint domain
+        run_bounded_stage osint 120 _run_per_domain run_osint domain
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 4 — Port Scanning
     # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_SCAN" = true ]; then
-        run_port_scan "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
+        run_bounded_stage port_scan 300 run_port_scan "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 5 — SSL/TLS + HTTP Headers + Email Security (per-domain)
     # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_SCAN" = true ]; then
-        _run_per_domain run_ssl_check domain
-        _run_per_domain run_email_security_check domain
+        _run_ssl_security_stage() {
+            _run_per_domain run_ssl_check domain
+            _run_per_domain run_email_security_check domain
+        }
+        run_bounded_stage ssl_tls 180 _run_ssl_security_stage
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 6 — Cloud Security (runs per-domain for both -d and -f)
     # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_CLOUD" = true ]; then
-        _run_per_domain run_cloud_scan domain
+        run_bounded_stage cloud 180 _run_per_domain run_cloud_scan domain
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 6b — Deep Web Crawler
     # ──────────────────────────────────────────────────────────────────────
+    if [ -n "${EXPOSURESCOPEX_WEB_AUTH_JSON:-}" ]; then
+        run_bounded_stage authentication 60 establish_web_auth_session "$SESSION_DIR"
+        if [ ! -s "${SESSION_DIR}/web-auth-storage-state.json" ]; then
+            local auth_failure="configured authentication did not produce a verified browser session; authenticated stages were not run"
+            log_error "[stage-failed] authentication: ${auth_failure}"
+            printf '%s\t%s\t%s\n' "authentication" "failed" "$auth_failure" >> "${SESSION_DIR}/coverage_exceptions.tsv"
+            return 1
+        fi
+    fi
     if [ "$RUN_SCAN" = true ] || [ "$RUN_CRAWL" = true ]; then
-        run_crawler "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
+        crawler_timeout=600
+        [ "$MODE" = "light" ] && crawler_timeout=180
+        [ "$MODE" = "aggressive" ] && crawler_timeout=1200
+        run_bounded_stage crawler "$crawler_timeout" run_crawler "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
+    fi
+
+    if [ "$RUN_SCAN" = true ]; then
+        validation_timeout=600
+        [ "$MODE" = "light" ] && validation_timeout=180
+        [ "$MODE" = "aggressive" ] && validation_timeout=1200
+        run_bounded_stage safe_validation "$validation_timeout" run_safe_web_validation "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 7 — Web Application Testing
     # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_SCAN" = true ]; then
-        run_web_test "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
+        web_testing_timeout=900
+        [ "$MODE" = "light" ] && web_testing_timeout=180
+        [ "$MODE" = "aggressive" ] && web_testing_timeout=1800
+        run_bounded_stage web_testing "$web_testing_timeout" run_web_test "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 8 — API Security Testing (per-domain)
     # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_SCAN" = true ]; then
-        _run_per_domain run_api_security domain
+        run_bounded_stage api_security 180 _run_per_domain run_api_security domain
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 8b — Screenshot Capture
     # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_SCREENSHOTS" = true ] || [ "$RUN_SCAN" = true ]; then
-        run_screenshots "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
+        run_bounded_stage screenshots 120 run_screenshots "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 9 — Vulnerability Scanning (Nuclei — aggregates all prior output)
     # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_SCAN" = true ]; then
-        run_vuln_scan "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
+        nuclei_stage_timeout="${NUCLEI_STAGE_TIMEOUT_MEDIUM:-3660}"
+        [ "$MODE" = "light" ] && nuclei_stage_timeout="${NUCLEI_STAGE_TIMEOUT_LIGHT:-1860}"
+        [ "$MODE" = "aggressive" ] && nuclei_stage_timeout="${NUCLEI_STAGE_TIMEOUT_AGGRESSIVE:-7260}"
+        run_bounded_stage nuclei "$nuclei_stage_timeout" run_vuln_scan "${TARGET_FILE:-$TARGET_DOMAIN}" "$SESSION_DIR"
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 9b — CVE Correlation
     # ──────────────────────────────────────────────────────────────────────
     if [ "$RUN_CVE_MATCH" = true ] || [ "$RUN_SCAN" = true ]; then
-        run_cve_match "${TARGET_DOMAIN:-batch}" "$SESSION_DIR"
+        run_bounded_stage cve_correlation 120 run_cve_match "${TARGET_DOMAIN:-batch}" "$SESSION_DIR"
     fi
 
     # ──────────────────────────────────────────────────────────────────────
@@ -560,46 +575,35 @@ main() {
     db_print_summary
 
     # ──────────────────────────────────────────────────────────────────────
-    # PHASE 10 — Exploitation
-    # ──────────────────────────────────────────────────────────────────────
-    if [ "$RUN_EXPLOIT" = true ]; then
-        _run_per_domain run_exploitation domain,ip
-    fi
-
-    # ──────────────────────────────────────────────────────────────────────
     # PHASE 11 — State save + change detection + baseline filter
     # ──────────────────────────────────────────────────────────────────────
-    if [ -n "$TARGET_DOMAIN" ]; then
-        # Diff before baseline filter so changes.md shows full picture
+    _finalize_scan_state() {
+        [ -n "$TARGET_DOMAIN" ] || return 0
         if [ "$RUN_DIFF" = true ] && [ -n "$PREV_STATE_FILE" ]; then
             diff_states "$PREV_STATE_FILE" "$SESSION_DIR"
         fi
-
-        # Baseline: strip known findings from nuclei_results.txt before report
         if [ "$RUN_BASELINE" = true ]; then
             _apply_baseline "$SESSION_DIR" "$PREV_STATE_FILE"
         fi
-
         save_state "$TARGET_DOMAIN" "$SESSION_DIR"
         update_latest_symlink "$TARGET_DOMAIN" "$SESSION_DIR"
+    }
+    if [ "$RUN_DIFF" = true ]; then
+        run_bounded_stage historical_diff 120 _finalize_scan_state
+    else
+        _finalize_scan_state
     fi
 
     # ──────────────────────────────────────────────────────────────────────
     # PHASE 12 — Reporting + notifications
     # ──────────────────────────────────────────────────────────────────────
     _do_report_and_notify() {
-        generate_report "$SESSION_DIR"
         local label="${TARGET_DOMAIN:-batch}"
-        [ "$SLACK_NOTIFY" = true ] && \
-            send_slack_notification "ExposureScopeX complete: $label" "${SESSION_DIR}/report.pdf"
-        [ "$TEAMS_NOTIFY" = true ] && \
-            send_teams_notification "ExposureScopeX complete: $label"
-        [ "$SIEM_NOTIFY"  = true ] && \
-            send_siem_log "Scan complete for $label" "INFO"
+        generate_report_and_notify "$SESSION_DIR" "$label"
     }
 
     if [ "$RUN_REPORT" = true ]; then
-        _do_report_and_notify
+        run_bounded_stage reporting 120 _do_report_and_notify
     elif [ "$RUN_SCAN" = true ] && [ "$AUTO_MODE" = false ]; then
         read -rp "Scan finished. Generate report? (y/n) " choice
         [[ "$choice" =~ ^[Yy]$ ]] && _do_report_and_notify
@@ -613,8 +617,8 @@ main() {
     if [ "$RUN_CI" = true ]; then
         local critical_count=0 high_count=0
         if [ -f "${SESSION_DIR}/nuclei_results.txt" ]; then
-            critical_count=$(grep -ci "\[critical\]" "${SESSION_DIR}/nuclei_results.txt" 2>/dev/null || echo 0)
-            high_count=$(grep -ci "\[high\]"         "${SESSION_DIR}/nuclei_results.txt" 2>/dev/null || echo 0)
+            critical_count=$(grep -ci "\[critical\]" "${SESSION_DIR}/nuclei_results.txt" 2>/dev/null || true)
+            high_count=$(grep -ci "\[high\]"         "${SESSION_DIR}/nuclei_results.txt" 2>/dev/null || true)
         fi
         if [ "$critical_count" -gt 0 ]; then
             log_warn "CI: $critical_count CRITICAL finding(s) — exit 2"

@@ -19,6 +19,7 @@ class Organization(TimestampMixin, Base):
     assessments = relationship("Assessment", back_populates="organization", lazy="selectin")
     api_keys = relationship("ApiKey", back_populates="organization", lazy="selectin")
     investigations = relationship("Investigation", back_populates="organization", lazy="selectin")
+    operation_workspaces = relationship("OperationWorkspace", back_populates="organization", lazy="selectin")
     scan_authorizations = relationship(
         "ScanAuthorization", back_populates="organization", lazy="selectin"
     )
@@ -41,3 +42,4 @@ class User(TimestampMixin, Base):
     notifications = relationship("Notification", back_populates="user", lazy="selectin")
     audit_logs = relationship("AuditLog", back_populates="user", lazy="selectin")
     favorites = relationship("UserFavorite", back_populates="user", lazy="selectin")
+    operation_workspaces = relationship("OperationWorkspace", back_populates="owner", foreign_keys="OperationWorkspace.created_by", lazy="selectin")

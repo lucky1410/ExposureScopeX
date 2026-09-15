@@ -6,7 +6,9 @@ cd "$ROOT"
 
 echo "[1/6] Repository hygiene"
 git diff --check
-if git ls-files | grep -Eq '(^|/)\.env($|\.)|^config/exposurescopex\.conf$|^results/'; then
+if git ls-files \
+  | grep -Ev '(^|/)\.env\.example$' \
+  | grep -Eq '(^|/)\.env($|\.)|^config/exposurescopex\.conf$|^results/'; then
   echo "Sensitive runtime files are tracked by Git" >&2
   exit 1
 fi

@@ -38,7 +38,7 @@ class RuntimeManifestTests(unittest.TestCase):
         self.assertEqual(statuses["port_scan"], "skipped")
         self.assertEqual(statuses["reporting"], "pending")
 
-    def test_advancing_stage_completes_preceding_planned_work(self):
+    def test_advancing_stage_does_not_infer_preceding_success(self):
         metadata = {"execution_manifest": build_execution_manifest({
             "phases": {"enum": True, "scan": True, "cloud": False, "exploit": False, "report": True},
             "flags": {"crawl": True, "screenshots": False, "cve": True},
@@ -47,7 +47,7 @@ class RuntimeManifestTests(unittest.TestCase):
         now = datetime(2026, 8, 30, tzinfo=timezone.utc)
         updated = advance_execution_manifest(metadata, "port_scan", now=now)
         stages = {item["id"]: item for item in updated["execution_manifest"]}
-        self.assertEqual(stages["enumeration"]["status"], "completed")
+        self.assertEqual(stages["enumeration"]["status"], "pending")
         self.assertEqual(stages["port_scan"]["status"], "running")
         self.assertEqual(stages["port_scan"]["attempts"], 1)
 
@@ -111,6 +111,7 @@ class GraphAndRiskTests(unittest.TestCase):
             findings = _collect_specialized_findings(root, "github.com/acme/repo")
             self.assertEqual(len(findings), 1)
             self.assertEqual(findings[0]["source"], "gitleaks")
+            self.assertEqual(findings[0]["_artifact_path"], "gitleaks.json")
             self.assertNotIn("must-not-be-ingested", json.dumps(findings))
 
 

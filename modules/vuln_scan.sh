@@ -18,7 +18,22 @@ run_vuln_scan() {
     local community_stamp="${extra_templates_root}/.last-update"
     local -a extra_template_dirs=()
     local -a safety_args=()
+    local -a mode_args=()
     [ -n "$exclude_tags" ] && safety_args=(-etags "$exclude_tags")
+    local mode_tags="cves,exposures,files,misconfig,tech,takeovers"
+    local rate_limit=25 concurrency=10 bulk_size=10 retries=1
+    local headless_enabled="${NUCLEI_ENABLE_HEADLESS:-true}"
+    case "${MODE:-medium}" in
+        light)
+            mode_tags="exposures,misconfig"
+            rate_limit=10; concurrency=5; bulk_size=5; retries=0; headless_enabled=false
+            mode_args=(-severity "critical,high,medium,low" -ni)
+            ;;
+        aggressive)
+            mode_tags="cves,dns,exposures,files,misconfig,panel,takeovers,tech"
+            rate_limit=40; concurrency=15; bulk_size=15
+            ;;
+    esac
 
     should_refresh_templates() {
         local stamp=$1
@@ -96,13 +111,22 @@ run_vuln_scan() {
         fi
     done
 
+    local scoped_targets="${nuclei_targets}.scoped"
+    filter_targets_to_scope "$target" "$nuclei_targets" "$scoped_targets" || {
+        log_error "Nuclei scope containment failed; refusing to scan aggregated targets"
+        return 1
+    }
+    mv "$scoped_targets" "$nuclei_targets"
+
     # Archive/crawler output can contain millions of URLs. Keep the scan bounded
     # while retaining the primary inventory and a representative URL sample.
     local target_limit="${NUCLEI_TARGET_LIMIT:-2500}"
     local headless_limit="${NUCLEI_HEADLESS_TARGET_LIMIT:-250}"
-    [ "${MODE:-medium}" = "light" ] && target_limit="${NUCLEI_TARGET_LIMIT:-750}"
+    [ "${MODE:-medium}" = "light" ] && target_limit="${NUCLEI_TARGET_LIMIT:-75}"
     [ "${MODE:-medium}" = "aggressive" ] && target_limit="${NUCLEI_TARGET_LIMIT:-5000}"
-    grep -E -v '^\s*$' "$nuclei_targets" | sort -u | head -n "$target_limit" > "${nuclei_targets}.tmp"
+    grep -E -v '^\s*$' "$nuclei_targets" \
+        | grep -Eiv '/(logout|logoff|signout|delete|remove|setup|install|reset)([/?#]|$)' \
+        | sort -u | head -n "$target_limit" > "${nuclei_targets}.tmp"
     mv "${nuclei_targets}.tmp" "$nuclei_targets"
     local target_count=$(wc -l < "$nuclei_targets" 2>/dev/null || echo 0)
     log_info "Total unique targets for Nuclei: $target_count"
@@ -114,16 +138,30 @@ run_vuln_scan() {
 
     mkdir -p "$templates_dir" 2>/dev/null || true
 
-    if should_refresh_templates "$official_stamp"; then
+    # Web workers refresh at startup and through the scheduled maintenance task.
+    # Refreshing again inside a bounded scan wastes budget and races shared caches.
+    if [ "${AUTO_MODE:-false}" = "true" ]; then
+        log_info "Using worker-managed Nuclei template cache"
+    elif should_refresh_templates "$official_stamp"; then
         log_info "Refreshing Nuclei templates..."
-        run_tool "nuclei" "nuclei" -update-templates -update-template-dir "$templates_dir" || \
+        if run_tool "nuclei" "nuclei" -update-templates -update-template-dir "$templates_dir"; then
+            touch "$official_stamp"
+        else
             log_warn "Nuclei template update failed; continuing with existing templates"
-        touch "$official_stamp"
+        fi
     else
         log_info "Skipping Nuclei template refresh; cached templates are still fresh"
     fi
 
-    if [ -n "$extra_template_repos" ]; then
+    if [ "${AUTO_MODE:-false}" = "true" ]; then
+        if [ -d "$extra_templates_root" ]; then
+            local cached_repo_dir
+            for cached_repo_dir in "$extra_templates_root"/*; do
+                [ -d "$cached_repo_dir" ] || continue
+                register_extra_template_dir "$cached_repo_dir" || true
+            done
+        fi
+    elif [ -n "$extra_template_repos" ]; then
         local old_ifs=$IFS
         local repo_url
         if should_refresh_templates "$community_stamp"; then
@@ -161,13 +199,21 @@ run_vuln_scan() {
         -l "$nuclei_targets"
         -o "$nuclei_output"
         -update-template-dir "$templates_dir"
-        -rl 50
-        -c 25
-        -bs 25
+        -tags "$mode_tags"
+        -rl "$rate_limit"
+        -c "$concurrency"
+        -bs "$bulk_size"
+        -stats
+        -si 30
         -timeout 10
-        -retries 1
+        -retries "$retries"
         "${safety_args[@]}"
+        "${mode_args[@]}"
     )
+    if auth_header=$(web_auth_cookie_header "$output_dir" 2>/dev/null); then
+        base_args+=(-H "$auth_header")
+        log_info "Nuclei is using the operator-approved authenticated session"
+    fi
 
     local template_dir
     for template_dir in "${extra_template_dirs[@]}"; do
@@ -180,34 +226,29 @@ run_vuln_scan() {
         base_args+=("${extra_flags[@]}")
     fi
 
+    local primary_pass_failed=false
     if run_tool "nuclei" "nuclei" "${base_args[@]}"; then
         log_success "Nuclei default/community template pass complete"
     else
         log_error "Nuclei default/community template pass failed"
+        primary_pass_failed=true
     fi
 
-    if [ "${NUCLEI_ENABLE_HEADLESS:-true}" = "true" ] && [ -s "$nuclei_web_targets" ]; then
+    if [ "$headless_enabled" = "true" ] && [ -s "$nuclei_web_targets" ]; then
         log_info "Running Nuclei headless templates on web targets..."
         run_tool "nuclei" "nuclei" \
             -headless \
             -l "$nuclei_web_targets" \
             -o "${nuclei_output}.headless" \
             -update-template-dir "$templates_dir" \
+            -tags "$mode_tags" \
             "${safety_args[@]}" || \
             log_warn "Nuclei headless template pass failed"
         [ -f "${nuclei_output}.headless" ] && cat "${nuclei_output}.headless" >> "$nuclei_output"
     fi
 
-    if [ "${NUCLEI_ENABLE_CODE_TEMPLATES:-false}" = "true" ] && [ -s "$nuclei_web_targets" ]; then
-        log_info "Running Nuclei code templates on web targets..."
-        run_tool "nuclei" "nuclei" \
-            -code \
-            -l "$nuclei_web_targets" \
-            -o "${nuclei_output}.code" \
-            -update-template-dir "$templates_dir" \
-            "${safety_args[@]}" || \
-            log_warn "Nuclei code template pass failed"
-        [ -f "${nuclei_output}.code" ] && cat "${nuclei_output}.code" >> "$nuclei_output"
+    if [ "${NUCLEI_ENABLE_CODE_TEMPLATES:-false}" = "true" ]; then
+        log_warn "Nuclei code templates are disabled by the non-exploitation platform policy"
     fi
 
     sort -u "$nuclei_output" -o "$nuclei_output" 2>/dev/null || true
@@ -216,6 +257,9 @@ run_vuln_scan() {
         log_success "Nuclei scan complete. Results: $nuclei_output"
     else
         log_warn "Nuclei completed but no findings were written"
+    fi
+    if [ "$primary_pass_failed" = true ]; then
+        return 1
     fi
     return 0
 }

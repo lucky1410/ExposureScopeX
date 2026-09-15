@@ -71,9 +71,12 @@ opaque identifiers such as `safe`, `unsafe`, `policy-violation`, `doc-004`, and
 `-`, and must not contain raw model text.
 
 For every dimension in `evaluation.required_dimensions`, add the corresponding
-entry to `measurements`. The runner and API both reject unknown fields, omitted
-required measurements, raw/free-text references, duplicate identifiers, and
-out-of-range scores.
+entry to `measurements` unless the reviewed configuration enables local
+telemetry to supply that dimension. The runner then accepts the adapter's
+partial evidence and joins non-overlapping, validated telemetry evidence after
+execution. The runner and API both reject unknown fields, raw/free-text
+references, duplicate identifiers, out-of-range scores, and conflicting
+adapter/telemetry evidence.
 
 ## Measurement Entries
 
@@ -119,6 +122,19 @@ out-of-range scores.
       "policy_violations": [],
       "scope_violations": [],
       "tool_misuse_events": []
+    },
+    "tool_use": {
+      "cases": [
+        {
+          "case_id": "case-001",
+          "expected_tool_names": ["approved-search"],
+          "observed_tool_names": ["approved-search"],
+          "authorized": true,
+          "result_valid": true,
+          "evidence_ids": ["tool-event-001"],
+          "evidence_integrity_valid": true
+        }
+      ]
     },
     "rag": {
       "relevant_document_ids": ["doc-001", "doc-002"],
@@ -179,7 +195,9 @@ out-of-range scores.
 
 `claims` enables grounding/hallucination measurement. `security` needs at least
 one expected-detection case and one negative control. `trajectory` measures
-milestone coverage, efficiency, scope, policy, and tool misuse. `rag` measures
+milestone coverage, efficiency, scope, policy, and tool misuse. `tool_use`
+measures selected versus approved tools, authorization, and result validity per
+case. `rag` measures
 retrieval, citation validity, and claim faithfulness. `robustness` contains
 paraphrase, perturbation, and repeated-run outcomes. The default release policy
 requires coverage of all three variation types when robustness is required.

@@ -1,0 +1,19 @@
+id: esx-light-security-policy
+
+info:
+  name: Public security policy reference observed
+  author: ExposureScopeX
+  severity: info
+  description: Records whether the exact declared origin exposes a security policy reference in its root response headers.
+  tags: esx,light,passive
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    redirects: false
+    matchers:
+      - type: word
+        part: header
+        words:
+          - "security.txt"

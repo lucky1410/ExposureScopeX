@@ -7,6 +7,12 @@ from typing import Any
 
 from app.services.scan_profiles import merge_scan_inputs
 
+
+# ExposureScopeX is assessment-only. These tools and Nuclei classes can perform
+# credential attacks, exploitation, or disruptive validation and are never planned.
+FORBIDDEN_EXECUTION_UTILITIES = {"hydra", "metasploit", "msfconsole", "sqlmap"}
+FORBIDDEN_NUCLEI_TAGS = {"default-login", "dos", "fuzz", "intrusive", "workflow"}
+
 SCAN_INTENT_PRESETS: dict[str, dict[str, Any]] = {
     "passive": {
         "phases": {"enum": True, "scan": False, "cloud": False, "exploit": False, "report": True},
@@ -68,7 +74,11 @@ def build_scan_plan(
         combined_tags.extend(preset["nuclei_tags"])
 
     if requested_utilities:
-        combined_utilities.extend([utility.strip() for utility in requested_utilities if utility.strip()])
+        combined_utilities.extend([
+            utility.strip()
+            for utility in requested_utilities
+            if utility.strip().lower() not in FORBIDDEN_EXECUTION_UTILITIES
+        ])
     if nuclei_tags:
         combined_tags.extend([tag.strip() for tag in nuclei_tags if tag.strip()])
 
@@ -80,7 +90,13 @@ def build_scan_plan(
         plan["flags"]["crawl"] = False
         plan["flags"]["screenshots"] = False
 
-    plan["utilities"] = sorted(set(combined_utilities))
-    plan["nuclei_tags"] = sorted(set(combined_tags))
+    plan["utilities"] = sorted({
+        utility for utility in combined_utilities
+        if utility.lower() not in FORBIDDEN_EXECUTION_UTILITIES
+    })
+    plan["nuclei_tags"] = sorted({
+        tag for tag in combined_tags
+        if tag.lower() not in FORBIDDEN_NUCLEI_TAGS
+    })
     plan["requested_scans"] = requested_scans
     return plan

@@ -138,14 +138,14 @@ farms require their own approved credentials and infrastructure.
 | **SSL / TLS** | testssl.sh or openssl fallback; cert expiry; weak protocols/ciphers; 7 HTTP security headers; CORS; info disclosure |
 | **Email Security** | SPF, DMARC, DKIM (12 selectors), MX, MTA-STS |
 | **Web Crawler** | katana → built-in bash crawler (zero-dependency fallback); extracts API endpoints, JS files, admin pages, interesting file types |
-| **Web App Testing** | Feroxbuster/Dirsearch; SQLMap; WhatWeb; Wapiti; Dalfox (XSS); Arjun; Nikto |
+| **Web App Testing** | Feroxbuster/Dirsearch; WhatWeb; Wapiti; Dalfox (XSS); Arjun; Nikto |
 | **API Security** | OpenAPI/Swagger discovery; GraphQL introspection; JS secret scanning; cloud metadata SSRF probes |
 | **Screenshot Capture** | gowitness → EyeWitness → built-in HTML gallery (works even with no tools installed) |
 | **CVE Correlation** | Extracts product+version from nmap/WhatWeb output → queries NVD API (free, no key needed) → `cve_matches.txt` |
 | **Vulnerability Scanning** | Nuclei with template aggregation across all prior outputs; Nikto |
 | **OSINT** | Shodan (host + search, resolves domain→IP); VirusTotal; Censys; HIBP; theHarvester; trufflehog/gitleaks |
 | **Cloud Security** | Nuclei cloud tags; S3/GCS/Azure bucket enumeration (30+ patterns); Kubernetes API exposure |
-| **Autonomous Agent** | Claude AI (claude-opus-4-6) adaptively plans and executes its own enumeration strategy; agentic loop with tool-use; passive-only mode respected |
+| **Deterministic Profiles** | Versioned light, medium, and aggressive plans define tools, limits, retries, timeouts, and non-exploitative safety policy before execution |
 | **Findings Database** | SQLite store with `ON CONFLICT` deduplication across scans; false-positive/remediated tagging; cross-target rollup; TSV fallback |
 | **Scope Enforcement** | Allowlist by exact domain, wildcard (`*.example.com`), IPv4 CIDR, or exact IP; pure-bash CIDR math |
 | **Stealth Mode** | Randomised inter-tool delays (configurable min/max) to reduce WAF/IDS detection fingerprint |
@@ -194,7 +194,6 @@ nano config/exposurescopex.conf   # add API keys
 ### Configuration Keys
 
 ```bash
-ANTHROPIC_API_KEY=""     # for --agent mode (get key at console.anthropic.com)
 SHODAN_API_KEY=""
 VIRUSTOTAL_API_KEY=""
 CENSYS_API_ID=""
@@ -322,33 +321,12 @@ example.com
 # Exit 0: clean   Exit 1: HIGH findings   Exit 2: CRITICAL findings
 ```
 
-### Autonomous AI Agent
+### Deterministic Scan Policy
 
-The `--agent` flag hands control to an embedded Claude AI (claude-opus-4-6). Instead of following a fixed phase order, the agent reasons about the target, decides which tools to call, interprets their results, and adapts its strategy — just like a human analyst would.
-
-```bash
-# Full autonomous assessment
-./exposurescopex.sh -d example.com --agent
-
-# Passive-only agent (zero packets to target)
-./exposurescopex.sh -d example.com --agent --passive-only
-
-# With final report generation
-./exposurescopex.sh -d example.com --agent -r
-
-# Adjust model or iteration cap
-./exposurescopex.sh -d example.com --agent --agent-model claude-opus-4-6 --agent-max-steps 40
-```
-
-**Requires**: `ANTHROPIC_API_KEY` in `config/exposurescopex.conf` or environment.
-
-The agent follows a 4-phase methodology (passive → enumeration → web surface → vuln assessment) with adaptive decision rules — e.g. if port 9200 is open it immediately calls `web_test` on that port for Elasticsearch; if a CMS version is detected it calls `cve_match`. It produces three output files:
-
-| File | Description |
-|---|---|
-| `agent_summary.md` | Human-readable step-by-step reasoning + findings |
-| `agent_session.json` | Full API conversation (for audit/replay) |
-| `agent_tool_outputs.txt` | Raw output from every tool the agent called |
+Scanning is driven only by versioned profiles and explicit operator inputs. AI
+cannot select targets, tools, templates, retries, or actions. The scanner also
+rejects exploitation, credential attacks, and destructive validation. AI may be
+used separately after a scan to explain retained evidence or draft remediation.
 
 ### Findings Database Queries
 
@@ -380,16 +358,7 @@ sqlite3 results/findings.db "SELECT title, count(DISTINCT target) targets FROM f
 | `-e, --enum` | Subdomain enumeration + DNS recon |
 | `-s, --scan` | Port scan + SSL + crawler + web + API + screenshots + vuln + CVE |
 | `-c, --cloud` | Cloud misconfiguration + bucket enumeration + K8s exposure |
-| `-x, --exploit` | Exploitation — Hydra SSH, Metasploit *(requires authorization)* |
 | `-r, --report` | Generate MD / HTML / PDF / SARIF report |
-
-### Autonomous Agent
-
-| Flag | Description |
-|---|---|
-| `--agent` | AI-driven adaptive assessment (requires `ANTHROPIC_API_KEY`) |
-| `--agent-model MODEL` | Claude model (default: `claude-opus-4-6`) |
-| `--agent-max-steps N` | Max agentic iterations (default: `25`) |
 
 ### Scan Options
 
@@ -471,16 +440,14 @@ modules/
   ssl_check.sh      — TLS/SSL, HTTP headers, SPF/DMARC/DKIM
   cloud.sh          — nuclei cloud tags, bucket enum, K8s exposure
   crawler.sh        — katana/bash crawler; API/JS/admin/file extraction
-  web_test.sh       — feroxbuster, sqlmap, whatweb, wapiti, dalfox, arjun, nikto
+  web_test.sh       — feroxbuster, whatweb, wapiti, dalfox, arjun, nikto
   screenshot.sh     — gowitness/eyewitness/HTML gallery fallback
   api_security.sh   — OpenAPI, GraphQL, JS secrets, SSRF
   vuln_scan.sh      — nuclei template aggregation
   cvematch.sh       — nmap+whatweb fingerprints → NVD API → cve_matches.txt
-  exploitation.sh   — Hydra SSH, Metasploit
   findings_db.sh    — SQLite findings store with dedup, tagging, cross-scan queries
   reporting.sh      — MD + HTML (Chart.js) + PDF (pandoc) + SARIF
   integrations.sh   — Slack, Teams, Splunk HEC, syslog
-  agent.sh          — Autonomous AI agent (Claude API + agentic loop, 13 tools)
 tests/
   run_tests.sh      — 15-test unit suite
 results/
@@ -510,7 +477,6 @@ results/
 | 9 | `vuln_scan.sh` | Nuclei across all outputs |
 | 9b | `cvematch.sh` | NVD CVE correlation |
 | 9c | `findings_db.sh` | DB import + cross-scan summary |
-| 10 | `exploitation.sh` | Hydra, Metasploit (explicit `-x` only) |
 | 11 | `continuous.sh` | State save, diff, baseline filter |
 | 12 | `reporting.sh` + `integrations.sh` | Reports + notifications |
 
@@ -543,9 +509,6 @@ results/
 | `changes.md` | Diff report vs previous scan (`--diff`) |
 | `report.md` / `.html` / `.pdf` / `.sarif` | Final reports |
 | `exposurescopex.log` | Full session log |
-| `agent_summary.md` | Agent step-by-step reasoning + findings (`--agent`) |
-| `agent_session.json` | Agent full API conversation for audit/replay |
-| `agent_tool_outputs.txt` | Agent raw tool output log |
 | `results/findings.db` | SQLite findings store (cross-scan) |
 
 ---
@@ -564,8 +527,6 @@ results/
 | CI/CD pipeline gate | `./exposurescopex.sh -d staging.example.com -s --ci --baseline --auto` |
 | MSSP monthly report | `./exposurescopex.sh -f clients.txt -r --baseline --slack` |
 | Vendor risk assessment | `./exposurescopex.sh -d vendor.com --passive-only --no-osint` |
-| **Autonomous AI assessment** | `./exposurescopex.sh -d target.com --agent -r` |
-| **Agent passive-only (no auth needed)** | `./exposurescopex.sh -d vendor.com --agent --passive-only` |
 
 ---
 

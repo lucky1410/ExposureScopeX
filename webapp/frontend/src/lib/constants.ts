@@ -24,6 +24,7 @@ import {
   Waypoints,
   ListChecks,
   Gauge,
+  Flag,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -48,12 +49,11 @@ export const SCAN_PHASES = [
   { id: 'ssl', label: 'SSL/TLS', icon: 'Lock', description: 'Certificate & header analysis' },
   { id: 'cloud', label: 'Cloud', icon: 'Cloud', description: 'Cloud misconfiguration detection' },
   { id: 'crawler', label: 'Deep Crawler', icon: 'Spider', description: 'Web crawling & discovery' },
-  { id: 'web', label: 'Web Testing', icon: 'Globe', description: 'Directory brute-force, SQLi, XSS' },
+  { id: 'web', label: 'Web Testing', icon: 'Globe', description: 'Non-destructive content and configuration checks' },
   { id: 'api', label: 'API Security', icon: 'Code', description: 'OpenAPI, GraphQL, secrets' },
   { id: 'screenshots', label: 'Screenshots', icon: 'Camera', description: 'Visual web snapshots' },
   { id: 'vuln', label: 'Vuln Scan', icon: 'ShieldAlert', description: 'Nuclei template scanning' },
   { id: 'cve', label: 'CVE Match', icon: 'Database', description: 'NVD CVE correlation' },
-  { id: 'exploit', label: 'Exploitation', icon: 'Zap', description: 'Hydra SSH brute-force' },
 ] as const
 
 export interface NavItem {
@@ -76,7 +76,8 @@ export const NAV_ITEMS: NavSection[] = [
       { label: 'ASM', href: '/asm', icon: Radar },
       { label: 'Assessments', href: '/assessments', icon: Crosshair },
       { label: 'Scans', href: '/scans', icon: Activity },
-      { label: 'Operations', href: '/operations', icon: Gauge },
+      { label: 'Operations', href: '/operations', icon: Flag },
+      { label: 'Runtime', href: '/runtime', icon: Gauge },
       { label: 'Assets', href: '/assets', icon: Server },
       { label: 'Exposure Graph', href: '/attack-surface', icon: Waypoints },
       { label: 'Coverage', href: '/coverage', icon: ListChecks },
@@ -129,4 +130,4 @@ export const SCAN_MODES = [
   { value: 'aggressive', label: 'Aggressive', description: 'Full coverage, slower' },
 ] as const
 
-export const SCAN_STATUSES = ['pending', 'running', 'completed', 'failed', 'cancelled'] as const
+export const SCAN_STATUSES = ['pending', 'running', 'completed', 'partial', 'failed', 'cancelled'] as const

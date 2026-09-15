@@ -2,7 +2,7 @@
 
 **Reconciled:** 2026-09-09
 **Current release:** 2.2.0
-**Status source:** executable code, automated checks, and schema `015_scan_schedules`
+**Status source:** executable code, automated checks, and schema `018_operation_control_plane`
 
 This is the current product backlog. `docs/BACKLOG.md` is historical story
 evidence and must not be used as completion truth. Current product status is in
@@ -15,6 +15,18 @@ Status meanings:
 - **Next:** required for a dependable production security platform.
 - **Later:** valuable after the Next work is complete.
 - **Conditional:** requires an external adapter, cloud account, or production service to validate fully.
+
+## P0 Architecture Baseline
+
+- [ ] **P0 Governing reference architecture:** maintain the editable layered system view, current/target deployment mappings, capability boundary, trust boundaries, end-to-end transaction, delivery increments, and unresolved ADR decisions in `docs/REFERENCE_ARCHITECTURE.md`; architecture review is required before adding a service, queue, data store, model, scanner class, external trust boundary, or cloud dependency.
+- [ ] **P0 Architecture contract tests:** enforce deterministic scan planning, forbidden exploitation utilities/templates, fail-closed scope at every boundary, tenant ownership, bounded stages, and evidence-gated report finality in unit, integration, and deployed journey tests.
+- [ ] **P0 Evidence acquisition reliability:** make finding-specific Playwright capture network-equivalent to scanner execution, retry bounded connection failures, persist capture diagnostics, and prevent error-state images from satisfying evidence coverage.
+- [ ] **P0 Report control plane:** guarantee terminal scans enqueue DOCX, PDF, and evidence bundles exactly once; add idempotent retry, queue timeout/recovery, stuck-job reconciliation, report versioning, and explicit Partial/Final evidence-gate state in API and UI.
+- [ ] **P0 Profile specification:** version 1.0 executable Light, Medium, and Aggressive breadth/depth contracts and quality gates are published by the API; complete immutable persistence per scan, expected-duration calibration, saved-profile migration, and full acceptance-fixture coverage.
+- [ ] **P0 Documentation-driven Nuclei profiles:** review the version-pinned official Nuclei documentation and derive measurable Light, Medium, and Aggressive template, protocol, headless, concurrency, rate, retry, timeout, and evidence policies; validate each profile against benchmark targets before release (ESX-043).
+- [ ] **P0 Benchmark validation:** deterministic confusion-matrix, evidence, scope, execution-accounting, repeatability gates, CLI scoring, and a smoke fixture are implemented; add digest/commit-pinned OWASP Benchmark, crAPI, Juice Shop, WebGoat, DVWA, negative-control protocol-lab adapters, three-run CI matrices, historical score storage, and release trend UI before claiming industry benchmark certification.
+- [ ] **P0 Architecture conformance:** reconcile architecture, threat model, data model, deployment, scan lifecycle, support matrix, and roadmap with executable code; CI must reject stale schema heads, forbidden capability claims, and undocumented boundary changes.
+- [ ] **P0 Production reference architecture:** define single-node and Kubernetes topologies, trust zones, queue isolation, worker images, egress controls, secrets, immutable storage, observability, RPO/RTO, sizing, and failure-mode acceptance tests.
 
 ## Delivered
 
@@ -42,7 +54,7 @@ Status meanings:
 - [x] Asynchronous report generation with a dedicated queue, durable states, cancellation, bounded output, integrity checks, quota enforcement, and audit events
 - [x] Recurring assessment schedules with IANA time zones, maintenance windows, missed-run policy, overlap prevention, pause/resume, and durable run history
 - [x] Searchable organization audit log UI/API, CSV export, correlation IDs, and broad mutation coverage
-- [x] Canonical product, architecture, deployment, API, lifecycle, data-model, threat-model, runbook, support, release, ADR, contribution, and changelog documentation
+- [ ] Canonical architecture conformance is being re-baselined against runtime behavior and the accepted deterministic-scanning and evidence-gate invariants.
 
 ## Next: Production Control Plane
 
@@ -58,6 +70,7 @@ Status meanings:
 
 ## Next: Practitioner Workflows
 
+- [ ] **P1 Enterprise command dashboard and navigation:** deliver a professional, Seven AI-level product experience with a role-aware command center, progressive disclosure, interactive security visualizations, and consistent navigation across red-team, ASM, risk, and purple-team workflows. Acceptance requires configurable KPI/risk/exposure cards; live scan and worker health; severity, trend, attack-path, coverage, and remediation views with drill-down and cross-filtering; saved views and time ranges; global search and command palette; actionable empty/loading/error states; persistent context and breadcrumbs; responsive desktop/tablet/mobile layouts; keyboard navigation and WCAG 2.1 AA validation; reusable documented design-system components; and browser journey tests for the primary analyst and executive paths.
 - [ ] **P0 Profile completion:** built-in light/medium/aggressive and saved custom profiles work; add immutable profile versions, dedicated stealth/MCP/CSPM presets, migration and cost history.
 - [x] **P0 Execution preview completion:** target/tool/queue/policy, template, wordlist, adapter prerequisites, safety tier, exclusions, and confidence are exposed before dispatch.
 - [ ] **P0 Recovery workspace completion:** retry and clone-draft foundations work; add targeted stage reruns, bounded automatic retries, configuration diff, and safe resume where supported.
@@ -71,6 +84,7 @@ Status meanings:
 
 ## Next: MCP And AI Security
 
+- [ ] **P1 Programmatic mitigation blueprints for every vulnerability:** generate an implementation-ready remediation package for each surfaced finding, including indirect prompt injection and other AI/MCP failures. Select the blueprint from the affected technology, trust boundary, evidence, exploit path, and deployment context; provide concrete input/output validation code, system/developer prompt hardening, tool and resource allowlists, authorization checks, sandbox/egress policy, API gateway throttling, secret handling, logging, and detection rules where applicable. Every package must include exact target files or configuration surfaces, safe patch/config snippets, prerequisites, security tradeoffs, rollback guidance, unit/integration/adversarial regression tests, expected post-fix behavior, residual risk, confidence and applicability scores, standards mappings, and citations to immutable finding evidence. Generated changes remain operator-review gated, must never claim remediation until validation passes, and must redact secrets and unsafe payload details from exports.
 - [ ] **P0 Saved MCP profiles and replay:** baseline, expanded, local-config, and destructive-lab profiles with non-secret reusable configuration.
 - [ ] **P0 MCP prerequisite assistant:** validate auth, disposable task IDs, canaries, allowlisted tools/resources, and destructive-test consent before dispatch.
 - [ ] **P1 MCP exchange inspector:** grouped conversations, request/response diffs, search, jump-to-finding, selected export, and redaction review.
@@ -82,6 +96,7 @@ Status meanings:
 
 ## Later: Platform And Ecosystem
 
+- [ ] **P2 Scoped Blue Team SOC AI integration:** preserve a versioned, tenant-aware extension point for the existing SOC AI platform, but do not place it on the current critical path. When prioritized, exchange authorized findings, evidence, ATT&CK context, detection coverage, incidents, and remediation state through authenticated, signed, idempotent contracts with replay protection, auditability, redaction, retries, dead-letter recovery, canonical cross-platform identifiers, and operator approval for response actions.
 - [ ] OIDC/SAML SSO, MFA, SCIM, just-in-time provisioning, custom roles, service accounts, and emergency-access controls
 - [ ] Organization onboarding, tenant feature flags, usage metering, billing, client workspaces, regional residency, and tenant retention policies
 - [ ] Public API lifecycle: scoped API tokens, idempotency keys, cursor pagination, versioning policy, SDK generation, webhook signing, and deprecation telemetry

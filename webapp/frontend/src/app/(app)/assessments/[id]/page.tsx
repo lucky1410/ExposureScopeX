@@ -22,6 +22,7 @@ function statusTone(status: string): 'running' | 'idle' | 'error' | 'success' | 
     created: 'pending',
     running: 'running',
     completed: 'success',
+    partial: 'pending',
     failed: 'error',
     pending: 'pending',
     cancelled: 'idle',

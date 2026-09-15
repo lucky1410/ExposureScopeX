@@ -2,19 +2,20 @@
 
 import React, { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
+import axios from 'axios'
 import { Crosshair, Loader2, Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { Switch } from '@/components/ui/switch'
 import { useToast } from '@/components/ui/use-toast'
 import { PageHeader } from '@/components/shared/page-header'
 import { SCAN_MODES, SCAN_PHASES } from '@/lib/constants'
-import { createAssessment, getSavedScanProfiles, getScanProfiles, previewAssessment, saveScanProfile } from '@/lib/api'
-import type { Assessment, ExecutionPreview, ImportedAssessmentTarget, SavedScanProfile, ScanProfile } from '@/lib/types'
+import { createAssessment, getOperationWorkspaces, getSavedScanProfiles, getScanProfiles, previewAssessment, saveScanProfile } from '@/lib/api'
+import type { Assessment, ExecutionPreview, ImportedAssessmentTarget, OperationWorkspace, SavedScanProfile, ScanProfile } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 type AssessmentTargetType = Assessment['target_type']
@@ -71,6 +72,51 @@ function splitMultiValueInput(input: string): string[] {
     .filter(Boolean)
 }
 
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (!axios.isAxiosError(error)) return fallback
+
+  const detail = error.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null
+        const message = 'msg' in item && typeof item.msg === 'string' ? item.msg : null
+        const location = Array.isArray((item as { loc?: unknown }).loc)
+          ? (item as { loc: unknown[] }).loc
+              .filter((part) => typeof part === 'string' || typeof part === 'number')
+              .join('.')
+          : null
+        if (message && location) return `${location}: ${message}`
+        return message
+      })
+      .filter((message): message is string => Boolean(message))
+
+    if (messages.length > 0) return messages.join(' | ')
+  }
+
+  if (detail && typeof detail === 'object') {
+    const structured = detail as { message?: unknown; uncovered_targets?: unknown }
+    const message = typeof structured.message === 'string' ? structured.message : null
+    const targets = Array.isArray(structured.uncovered_targets)
+      ? structured.uncovered_targets.filter((item): item is string => typeof item === 'string')
+      : []
+    if (message) return targets.length > 0 ? `${message} Authorize: ${targets.join(', ')}` : message
+  }
+
+  return error.message || fallback
+}
+
+function getUncoveredAuthorizationTarget(error: unknown): string | null {
+  if (!axios.isAxiosError(error)) return null
+  const detail = error.response?.data?.detail
+  if (!detail || typeof detail !== 'object') return null
+  const structured = detail as { code?: unknown; uncovered_targets?: unknown }
+  if (structured.code !== 'SCAN_AUTHORIZATION_REQUIRED' || !Array.isArray(structured.uncovered_targets)) return null
+  return structured.uncovered_targets.find((item): item is string => typeof item === 'string') || null
+}
+
 function buildAssessmentTargetBatch(
   primaryTarget: string,
   importedTargets: ImportedAssessmentTarget[],
@@ -111,6 +157,7 @@ export default function NewAssessmentPage() {
   const [scanMode, setScanMode] = useState('medium')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [authorizationTarget, setAuthorizationTarget] = useState<string | null>(null)
   const [scanProfiles, setScanProfiles] = useState<ScanProfile[]>([])
   const [savedProfiles, setSavedProfiles] = useState<SavedScanProfile[]>([])
   const [profileName, setProfileName] = useState('')
@@ -123,6 +170,18 @@ export default function NewAssessmentPage() {
   const [requestedUtilitiesInput, setRequestedUtilitiesInput] = useState('')
   const [nucleiTagsInput, setNucleiTagsInput] = useState('')
   const [targetTypeOverride, setTargetTypeOverride] = useState<AssessmentTargetType | 'auto'>('auto')
+  const [operations, setOperations] = useState<OperationWorkspace[]>([])
+  const [operationId, setOperationId] = useState('none')
+  const [webAuthEnabled, setWebAuthEnabled] = useState(false)
+  const [webAuthLoginUrl, setWebAuthLoginUrl] = useState('')
+  const [webAuthUsername, setWebAuthUsername] = useState('')
+  const [webAuthPassword, setWebAuthPassword] = useState('')
+  const [webAuthSuccessPattern, setWebAuthSuccessPattern] = useState('')
+  const [clientOrganization, setClientOrganization] = useState('')
+  const [contactName, setContactName] = useState('')
+  const [contactRole, setContactRole] = useState('')
+  const [contactEmail, setContactEmail] = useState('')
+  const [classification, setClassification] = useState('Confidential')
 
   const [phases, setPhases] = useState<Record<string, boolean>>({
     enum: true,
@@ -184,6 +243,12 @@ export default function NewAssessmentPage() {
     } catch {
       sessionStorage.removeItem(IMPORT_DRAFT_STORAGE_KEY)
     }
+  }, [])
+
+  useEffect(() => {
+    getOperationWorkspaces()
+      .then((items) => setOperations(items.filter((item) => !['completed', 'stopped', 'archived'].includes(item.status))))
+      .catch(() => setOperations([]))
   }, [])
 
   useEffect(() => {
@@ -264,21 +329,49 @@ export default function NewAssessmentPage() {
     e.preventDefault()
     setLoading(true)
     setError(null)
+    setAuthorizationTarget(null)
 
     try {
+      if (!target.trim()) {
+        throw new Error('Add at least one target before creating the assessment.')
+      }
+      if (webAuthEnabled && (!webAuthLoginUrl.trim() || !webAuthUsername.trim() || !webAuthPassword)) {
+        throw new Error('Login URL, username, and password are required for authenticated scanning.')
+      }
+
+      const assessmentName =
+        name.trim() ||
+        (assessmentTargets[0]?.name?.trim() || assessmentTargets[0]?.target?.trim() || target.trim())
+
       const assessment = await createAssessment({
-        name: name.trim(),
+        operation_id: operationId === 'none' ? undefined : operationId,
+        name: assessmentName,
         description: description.trim() || undefined,
         target: target.trim(),
         target_type: effectiveTargetType,
         scan_mode: scanMode as 'light' | 'medium' | 'aggressive',
         phases,
-        flags,
+        flags: {
+          ...flags,
+          report_context: {
+            organization: clientOrganization.trim() || undefined,
+            contact_name: contactName.trim() || undefined,
+            contact_role: contactRole.trim() || undefined,
+            contact_email: contactEmail.trim() || undefined,
+            classification,
+          },
+        },
         requested_scans: splitMultiValueInput(requestedScansInput),
         requested_utilities: splitMultiValueInput(requestedUtilitiesInput),
         nuclei_tags: splitMultiValueInput(nucleiTagsInput),
         imported_targets: assessmentTargets,
         auto_start: autoStart,
+        web_authentication: webAuthEnabled ? {
+          login_url: webAuthLoginUrl.trim(),
+          username: webAuthUsername.trim(),
+          password: webAuthPassword,
+          success_url_pattern: webAuthSuccessPattern.trim() || undefined,
+        } : undefined,
       })
       if (typeof window !== 'undefined') {
         sessionStorage.removeItem(IMPORT_DRAFT_STORAGE_KEY)
@@ -290,15 +383,12 @@ export default function NewAssessmentPage() {
 
       router.push('/assessments')
     } catch (err) {
-      const message =
-        typeof err === 'object' &&
-        err !== null &&
-        'response' in err &&
-        typeof (err as { response?: { data?: { detail?: string } } }).response?.data?.detail === 'string'
-          ? (err as { response?: { data?: { detail?: string } } }).response!.data!.detail!
-          : 'Unable to create the assessment. Please verify the API connection and try again.'
+      const message = err instanceof Error && !axios.isAxiosError(err)
+        ? err.message
+        : getApiErrorMessage(err, 'Unable to create the assessment. Please verify the API connection and try again.')
 
       setError(message)
+      setAuthorizationTarget(getUncoveredAuthorizationTarget(err))
       toast({
         title: 'Assessment creation failed',
         description: message,
@@ -310,10 +400,17 @@ export default function NewAssessmentPage() {
   }
 
   const loadPreview = async () => {
-    setLoading(true); setError(null)
-    try { setPreview(await previewAssessment({ name: name.trim() || 'Preview', description: description || undefined, target: target.trim(), target_type: effectiveTargetType,
+    setLoading(true); setError(null); setAuthorizationTarget(null)
+    try {
+      if (!target.trim()) {
+        throw new Error('Add at least one target before generating an execution preview.')
+      }
+      setPreview(await previewAssessment({ operation_id: operationId === 'none' ? undefined : operationId, name: name.trim() || 'Preview', description: description || undefined, target: target.trim(), target_type: effectiveTargetType,
       scan_mode: scanMode as Assessment['scan_mode'], phases, flags, requested_scans: splitMultiValueInput(requestedScansInput), requested_utilities: splitMultiValueInput(requestedUtilitiesInput), nuclei_tags: splitMultiValueInput(nucleiTagsInput), imported_targets: assessmentTargets, auto_start: false })) }
-    catch (error) { setError(error instanceof Error ? error.message : 'Execution preview failed') }
+    catch (error) {
+      setError(error instanceof Error && !axios.isAxiosError(error) ? error.message : getApiErrorMessage(error, 'Execution preview failed'))
+      setAuthorizationTarget(getUncoveredAuthorizationTarget(error))
+    }
     finally { setLoading(false) }
   }
 
@@ -339,6 +436,14 @@ export default function NewAssessmentPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="operation">Operation Workspace</Label>
+              <select id="operation" className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={operationId} onChange={(event) => setOperationId(event.target.value)}>
+                <option value="none">Standalone assessment</option>
+                {operations.map((operation) => <option key={operation.id} value={operation.id}>{operation.name} ({operation.status})</option>)}
+              </select>
+              <p className="text-xs text-muted-foreground">Linked assessments can run only while their operation is active and inside its approved time window.</p>
+            </div>
             <div className="space-y-2">
               <Label htmlFor="name">Assessment Name</Label>
               <Input
@@ -484,6 +589,20 @@ export default function NewAssessmentPage() {
 
         <Card>
           <CardHeader>
+            <CardTitle className="text-base">Client Report Details</CardTitle>
+            <CardDescription>These details appear in every automatic PDF and Word deliverable for this assessment.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2"><Label htmlFor="client-organization">Client organization</Label><Input id="client-organization" value={clientOrganization} onChange={(event) => setClientOrganization(event.target.value)} placeholder="Organization name" /></div>
+            <div className="space-y-2"><Label htmlFor="classification">Classification</Label><select id="classification" className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={classification} onChange={(event) => setClassification(event.target.value)}><option>Confidential</option><option>Restricted</option><option>Internal</option></select></div>
+            <div className="space-y-2"><Label htmlFor="contact-name">Point of contact</Label><Input id="contact-name" value={contactName} onChange={(event) => setContactName(event.target.value)} placeholder="Full name" /></div>
+            <div className="space-y-2"><Label htmlFor="contact-role">Role</Label><Input id="contact-role" value={contactRole} onChange={(event) => setContactRole(event.target.value)} placeholder="Security lead" /></div>
+            <div className="space-y-2 sm:col-span-2"><Label htmlFor="contact-email">Contact email</Label><Input id="contact-email" type="email" value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} placeholder="security@example.com" /></div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle className="text-base">Advanced Tooling</CardTitle>
             <CardDescription>
               Add focused scan packs or utilities when you want more coverage without changing the whole profile.
@@ -506,7 +625,7 @@ export default function NewAssessmentPage() {
               <Label htmlFor="requested-utilities">Requested Utilities</Label>
               <Input
                 id="requested-utilities"
-                placeholder="e.g., ffuf, arjun, nikto, sqlmap, scoutsuite"
+                placeholder="e.g., ffuf, arjun, nikto, scoutsuite"
                 value={requestedUtilitiesInput}
                 onChange={(e) => setRequestedUtilitiesInput(e.target.value)}
               />
@@ -523,20 +642,6 @@ export default function NewAssessmentPage() {
                 onChange={(e) => setNucleiTagsInput(e.target.value)}
               />
             </div>
-            {(effectiveTargetType === 'domain' || effectiveTargetType === 'url' || effectiveTargetType === 'file') ? (
-              <div className="flex items-center justify-between rounded-lg border border-border/70 bg-muted/20 p-4">
-                <div>
-                  <p className="text-sm font-medium">Authorized active validation</p>
-                  <p className="text-xs text-muted-foreground">
-                    Enables guarded tooling like `sqlmap`. Leave this off unless the scope explicitly allows active exploit validation.
-                  </p>
-                </div>
-                <Switch
-                  checked={Boolean(flags.allow_active_validation)}
-                  onCheckedChange={(checked) => setFlags((current) => ({ ...current, allow_active_validation: checked }))}
-                />
-              </div>
-            ) : null}
           </CardContent>
         </Card>
 
@@ -604,12 +709,11 @@ export default function NewAssessmentPage() {
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {SCAN_PHASES.filter((p) => ['enumeration', 'port_scan', 'cloud', 'exploit', 'vuln'].includes(p.id)).map((phase) => {
+              {SCAN_PHASES.filter((p) => ['enumeration', 'port_scan', 'cloud', 'vuln'].includes(p.id)).map((phase) => {
                 const phaseIdMap: Record<string, string> = {
                   enumeration: 'enum',
                   port_scan: 'scan',
                   cloud: 'cloud',
-                  exploit: 'exploit',
                   vuln: 'report',
                 }
                 const mappedId = phaseIdMap[phase.id] || phase.id
@@ -664,7 +768,7 @@ export default function NewAssessmentPage() {
               { key: 'no_osint', label: 'Skip OSINT', desc: 'Skip OSINT API calls (Shodan, VirusTotal, etc.).' },
               { key: 'diff', label: 'Diff Mode', desc: 'Compare results against previous scan.' },
               { key: 'baseline', label: 'Baseline Filter', desc: 'Only report new findings (implies diff).' },
-              { key: 'agent', label: 'AI Agent', desc: 'Autonomous AI-driven assessment (requires Anthropic API key).' },
+              { key: 'allow_active_validation', label: 'Safe Active Validation', desc: 'Allow bounded, non-destructive application checks. No exploitation or attack simulation.' },
             ].map((flag) => (
               <div key={flag.key} className="flex items-center justify-between">
                 <div>
@@ -677,6 +781,45 @@ export default function NewAssessmentPage() {
                 />
               </div>
             ))}
+
+            {(effectiveTargetType === 'url' || effectiveTargetType === 'domain') && !isBatchAssessment ? (
+              <div className="space-y-4 rounded-lg border border-border/70 bg-muted/20 p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium">Authenticated Web Coverage</p>
+                    <p className="text-xs text-muted-foreground">Use an approved test account for discovery, validation, and evidence capture.</p>
+                  </div>
+                  <Switch
+                    checked={webAuthEnabled}
+                    onCheckedChange={(checked) => {
+                      setWebAuthEnabled(checked)
+                      if (checked) setFlags((current) => ({ ...current, allow_active_validation: true }))
+                    }}
+                  />
+                </div>
+                {webAuthEnabled ? (
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2 sm:col-span-2">
+                      <Label htmlFor="web-auth-login-url">Login URL</Label>
+                      <Input id="web-auth-login-url" type="url" placeholder="http://dvwa.localhost/login.php" value={webAuthLoginUrl} onChange={(event) => setWebAuthLoginUrl(event.target.value)} autoComplete="off" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="web-auth-username">Test Username</Label>
+                      <Input id="web-auth-username" value={webAuthUsername} onChange={(event) => setWebAuthUsername(event.target.value)} autoComplete="off" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="web-auth-password">Test Password</Label>
+                      <Input id="web-auth-password" type="password" value={webAuthPassword} onChange={(event) => setWebAuthPassword(event.target.value)} autoComplete="new-password" />
+                    </div>
+                    <div className="space-y-2 sm:col-span-2">
+                      <Label htmlFor="web-auth-success-pattern">Successful URL Pattern (optional)</Label>
+                      <Input id="web-auth-success-pattern" placeholder="/index\\.php$" value={webAuthSuccessPattern} onChange={(event) => setWebAuthSuccessPattern(event.target.value)} autoComplete="off" />
+                    </div>
+                    <p className="text-xs text-muted-foreground sm:col-span-2">Credentials are encrypted at rest, supplied only to the assigned worker, and reusable cookies are deleted before artifacts are sealed.</p>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -684,7 +827,7 @@ export default function NewAssessmentPage() {
 
         {/* Submit */}
         <div className="flex justify-end gap-3">
-          {error ? <p className="mr-auto text-sm text-destructive">{error}</p> : null}
+          {error ? <div className="mr-auto space-y-2"><p className="text-sm text-destructive">{error}</p>{authorizationTarget ? <Button type="button" size="sm" variant="outline" onClick={() => window.open(`/settings/scan-authorizations?target=${encodeURIComponent(authorizationTarget)}`, '_blank', 'noopener,noreferrer')}>Authorize this target</Button> : null}</div> : null}
           <Button type="button" variant="outline" onClick={() => router.push('/assessments')}>
             Cancel
           </Button>

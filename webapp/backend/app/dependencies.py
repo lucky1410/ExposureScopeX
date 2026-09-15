@@ -2,6 +2,7 @@
 
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -9,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session_factory
+from app.models.auth_session import AuthSession
 from app.models.user import User
 from app.security import decode_token
 
@@ -104,6 +106,30 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is deactivated",
+        )
+
+    try:
+        session_id = uuid.UUID(str(payload.get("sid")))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Access token is not associated with an active session",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    auth_session = await db.scalar(
+        select(AuthSession.id).where(
+            AuthSession.id == session_id,
+            AuthSession.user_id == user.id,
+            AuthSession.org_id == user.org_id,
+            AuthSession.revoked_at.is_(None),
+            AuthSession.expires_at > datetime.now(timezone.utc),
+        )
+    )
+    if auth_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session is expired or revoked",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     return user

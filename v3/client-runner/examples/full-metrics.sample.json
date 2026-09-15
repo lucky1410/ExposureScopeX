@@ -7,7 +7,7 @@
     "subject_type": "multi_agent_system",
     "project_key": "default",
     "dataset_version": "customer-prompt-safety-1.0",
-    "required_dimensions": ["classification", "confidence", "groundedness", "security", "trajectory", "rag", "robustness", "judge_agreement", "reproducibility", "cost_efficiency"]
+    "required_dimensions": ["classification", "confidence", "groundedness", "security", "trajectory", "tool_use", "rag", "robustness", "judge_agreement", "reproducibility", "cost_efficiency"]
   },
   "dataset": {
     "version": "customer-prompt-safety-1.0",

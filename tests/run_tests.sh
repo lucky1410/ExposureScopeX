@@ -20,6 +20,7 @@ source "${SCRIPT_DIR}/modules/continuous.sh"
 
 # reporting.sh needs log_* from utils.sh; we source it for format_nmap_results
 source "${SCRIPT_DIR}/modules/reporting.sh"
+source "${SCRIPT_DIR}/modules/crawler.sh"
 
 # ── Test framework ────────────────────────────────────────────────────────────
 test_count=0
@@ -87,6 +88,102 @@ test_sanitize_filename() {
 
     return 0
 }
+
+test_profile_tool_timeouts() {
+    MODE=light
+    [ "$(tool_timeout_seconds waybackurls)" -eq 120 ] || return 1
+    [ "$(tool_timeout_seconds katana)" -eq 120 ] || return 1
+    [ "$(tool_timeout_seconds nuclei)" -eq 1800 ] || return 1
+    MODE=medium
+    [ "$(tool_timeout_seconds nuclei)" -eq 3600 ] || return 1
+    MODE=aggressive
+    [ "$(tool_timeout_seconds nuclei)" -eq 7200 ] || return 1
+    MODE=medium
+    return 0
+}
+
+test_katana_fallback_deduplication() (
+    local tmp out calls
+    tmp=$(mktemp -d)
+    out="$tmp/crawl.txt"
+    calls="$tmp/calls.txt"
+    local -a urls=("https://example.com" "http://example.com")
+    MODE=light
+    run_tool() {
+        local output=""
+        while [ "$#" -gt 0 ]; do
+            if [ "$1" = "-o" ]; then output=$2; break; fi
+            shift
+        done
+        echo called >> "$calls"
+        echo "https://example.com/" > "$output"
+        return 0
+    }
+
+    _crawl_katana urls "$out" true >/dev/null
+    [ "$(wc -l < "$calls")" -eq 1 ] || return 1
+
+    : > "$calls"
+    : > "$out"
+    _crawl_katana urls "$out" false >/dev/null
+    [ "$(wc -l < "$calls")" -eq 2 ] || return 1
+    rm -rf "$tmp"
+)
+
+test_profile_crawl_depths() (
+    unset CRAWL_MAX_DEPTH
+    MODE=light; [ "$(_crawl_depth)" -eq 1 ] || return 1
+    MODE=medium; [ "$(_crawl_depth)" -eq 3 ] || return 1
+    MODE=aggressive; [ "$(_crawl_depth)" -eq 5 ] || return 1
+    CRAWL_MAX_DEPTH=7; [ "$(_crawl_depth)" -eq 7 ] || return 1
+)
+
+test_bounded_stage_continues_after_timeout() (
+    local tmp started elapsed output
+    tmp=$(mktemp -d)
+    MODE=light
+    SESSION_DIR=$tmp
+    slow_test_stage() {
+        printf 'fixture-1\tfixture-tool\trunning\t\t2026-09-10T00:00:00Z\t\tfixture-tool\ttool.log\n' > "$SESSION_DIR/tool_runs.tsv"
+        while :; do :; done
+    }
+    started=$SECONDS
+    output=$(run_bounded_stage test_stage 1 slow_test_stage)
+    elapsed=$((SECONDS - started))
+    [ "$elapsed" -lt 8 ] || return 1
+    echo "$output" | grep -q '\[stage-start\] test_stage' || return 1
+    echo "$output" | grep -q '\[stage-timeout\] test_stage' || return 1
+    grep -q $'^test_stage\ttimed_out\t' "$tmp/coverage_exceptions.tsv" || return 1
+    grep -q $'^fixture-1\tfixture-tool\ttimed_out\t124\t' "$tmp/tool_runs.tsv" || return 1
+    rm -rf "$tmp"
+)
+
+test_disabled_notifications_do_not_fail_reporting() (
+    local tmp
+    tmp=$(mktemp -d)
+    SLACK_NOTIFY=false
+    TEAMS_NOTIFY=false
+    SIEM_NOTIFY=false
+    generate_report() {
+        : > "$1/report.md"
+        return 0
+    }
+
+    generate_report_and_notify "$tmp" "fixture" || return 1
+    [ -f "$tmp/report.md" ] || return 1
+    rm -rf "$tmp"
+)
+
+test_required_report_artifact_contract() (
+    local tmp
+    tmp=$(mktemp -d)
+    printf '# report\n' > "$tmp/report.md"
+    printf '{"version":"2.1.0"}\n' > "$tmp/report.sarif"
+    validate_required_report_artifacts "$tmp" || return 1
+    : > "$tmp/report.sarif"
+    if validate_required_report_artifacts "$tmp"; then return 1; fi
+    rm -rf "$tmp"
+)
 
 # ── Group 3: Scope Enforcement ────────────────────────────────────────────────
 
@@ -305,6 +402,12 @@ echo ""
 
 echo "--- Utility Helpers ---"
 run_test "sanitize_filename"            test_sanitize_filename
+run_test "profile-aware tool timeouts"  test_profile_tool_timeouts
+run_test "Katana fallback deduplication" test_katana_fallback_deduplication
+run_test "profile-aware crawl depth"    test_profile_crawl_depths
+run_test "bounded stage timeout recovery" test_bounded_stage_continues_after_timeout
+run_test "disabled notifications preserve report success" test_disabled_notifications_do_not_fail_reporting
+run_test "required report artifact contract" test_required_report_artifact_contract
 echo ""
 
 echo "--- Scope Enforcement ---"

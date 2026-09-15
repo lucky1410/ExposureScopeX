@@ -13,6 +13,7 @@ class Assessment(TimestampMixin, Base):
 
     org_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    operation_id = Column(UUID(as_uuid=True), ForeignKey("operation_workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     target = Column(String(500), nullable=False)
@@ -21,7 +22,7 @@ class Assessment(TimestampMixin, Base):
     )  # domain/ip/cidr/url/file
     status = Column(
         String(20), nullable=False, default="created"
-    )  # created/running/completed/failed/cancelled
+    )  # created/running/completed/partial/failed/cancelled
     scan_mode = Column(
         String(20), nullable=False, default="medium"
     )  # light/medium/aggressive
@@ -33,6 +34,7 @@ class Assessment(TimestampMixin, Base):
     # Relationships
     organization = relationship("Organization", back_populates="assessments")
     created_by_user = relationship("User", back_populates="assessments")
+    operation = relationship("OperationWorkspace", back_populates="assessments")
     scans = relationship(
         "Scan", back_populates="assessment", cascade="all, delete-orphan", lazy="selectin"
     )

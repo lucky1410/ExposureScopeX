@@ -1,8 +1,8 @@
 # ExposureScopeX Documentation
 
-**Verified against source:** 2026-09-09
+**Verified against source:** 2026-09-10
 **Product release:** 2.2.0
-**Database schema:** `016_audit_retention`
+**Database schema:** `018_operation_control_plane`
 
 This index defines the current documentation sources. Runtime OpenAPI, Alembic
 migrations, the worker capability registry, and executable tests take priority
@@ -15,6 +15,7 @@ when a historical document disagrees with current code.
 | Product scope and maturity | [Product status](PRODUCT_STATUS.md) and [PRD](PRD.md) |
 | Operator workflows | [User guide](USER_GUIDE.md) |
 | System design and trust boundaries | [Architecture](ARCHITECTURE.md) |
+| Layered target state and deployment mapping | [Reference architecture](REFERENCE_ARCHITECTURE.md) |
 | Components and user-facing modules | [Module catalog](MODULES.md) |
 | Scanner and integration availability | [Support matrix](SUPPORT_MATRIX.md) |
 | Assessment execution behavior | [Scan lifecycle](SCAN_LIFECYCLE.md) |

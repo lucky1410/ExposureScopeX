@@ -18,9 +18,9 @@ from .assurance import build_assurance_graph, build_coverage_model, build_risk_p
 from .local_metrics import calculate_local_metrics
 from .discovery import discover_repository
 from .report_html import render_local_report
-from .runner import RunnerError, build_package, generate_keypair, read_json, sha256, sign_package
+from .runner import RunnerError, attach_local_measurements, build_package, generate_keypair, read_json, sha256, sign_package
 from .setup import serve_setup
-from .telemetry import serve_collector, telemetry_summary
+from .telemetry import derive_telemetry_measurements, serve_collector, telemetry_summary
 from .workflows import add_candidate_to_config, apply_reusable_pack, export_reusable_pack
 
 
@@ -148,6 +148,19 @@ _FULL_METRIC_MEASUREMENTS_TEMPLATE = '''{
     "scope_violations": [],
     "tool_misuse_events": []
   },
+  "tool_use": {
+    "cases": [
+      {
+        "case_id": "REPLACE_WITH_TOOL_CASE_ID",
+        "expected_tool_names": ["REPLACE_WITH_APPROVED_TOOL"],
+        "observed_tool_names": ["REPLACE_WITH_OBSERVED_TOOL"],
+        "authorized": false,
+        "result_valid": false,
+        "evidence_ids": ["REPLACE_WITH_TOOL_EVIDENCE_ID"],
+        "evidence_integrity_valid": false
+      }
+    ]
+  },
   "rag": {
     "relevant_document_ids": ["REPLACE_WITH_RELEVANT_DOCUMENT_ID"],
     "retrieved_document_ids": ["REPLACE_WITH_RETRIEVED_DOCUMENT_ID"],
@@ -243,6 +256,8 @@ Examples of the information to fill:
   an opaque local evidence ID such as `security-event-104`.
 - `trajectory`: required and observed agent milestones, total actions, and any
   policy, scope, or tool-misuse events.
+- `tool_use`: expected and observed opaque tool names per case, plus whether
+  each executed tool was authorized and produced a valid result.
 - `rag`: opaque IDs for labelled relevant documents, retrieved documents, and
   cited documents.
 - `robustness`: outcomes from paraphrase, perturbation, and repeat cases.
@@ -387,7 +402,7 @@ def init_command(args: argparse.Namespace) -> int:
     required_dimensions = ["classification", "confidence"]
     if args.full_metrics:
         required_dimensions += [
-            "groundedness", "security", "trajectory", "rag", "robustness",
+            "groundedness", "security", "trajectory", "tool_use", "rag", "robustness",
             "judge_agreement", "reproducibility", "cost_efficiency",
         ]
     target.mkdir(parents=True, exist_ok=True)
@@ -416,7 +431,7 @@ def init_command(args: argparse.Namespace) -> int:
         (target / "full_metric_measurements.json").write_text(
             _FULL_METRIC_MEASUREMENTS_TEMPLATE, encoding="utf-8"
         )
-    mode = "all ten metric areas" if args.full_metrics else "classification and confidence"
+    mode = "all eleven metric areas" if args.full_metrics else "classification and confidence"
     (target / "README.md").write_text(
         _starter_readme(args, dataset_version, mode), encoding="utf-8"
     )
@@ -450,6 +465,7 @@ def _print_advanced_metrics(metrics: dict[str, dict[str, object]], dimensions: l
         "groundedness": ("Grounding", [("supported_claim_rate", "supported claims"), ("citation_validity_rate", "valid citations"), ("evidence_integrity_rate", "verified evidence")]),
         "security": ("Security", [("attack_outcome_accuracy", "attack outcome accuracy"), ("detection_rate", "detection rate"), ("false_detection_rate", "false detection rate"), ("evidence_coverage", "evidence coverage")]),
         "trajectory": ("Trajectory and tool policy", [("score", "trajectory score"), ("milestone_coverage", "milestone coverage"), ("action_efficiency", "action efficiency"), ("policy_compliant", "policy compliant")]),
+        "tool_use": ("Tool-use quality", [("selection_f1", "selection F1"), ("authorization_rate", "authorized"), ("result_validity_rate", "valid results"), ("exact_tool_set_rate", "exact tool set")]),
         "rag": ("RAG", [("context_precision", "context precision"), ("recall_at_k", "recall@K"), ("mean_reciprocal_rank", "MRR"), ("faithfulness", "faithfulness"), ("citation_validity", "citation validity")]),
         "robustness": ("Robustness", [("accuracy", "variation accuracy"), ("consistency", "consistency"), ("variation_coverage", "variation coverage"), ("worst_confidence_drop", "worst confidence drop")]),
         "judge_agreement": ("Cross-model judge agreement", [("pairwise_agreement", "pairwise agreement"), ("unanimous_case_rate", "unanimity"), ("judge_count", "judges")]),
@@ -479,19 +495,43 @@ def _print_local_results(config: dict[str, object], package: dict[str, object], 
     print("Status: COMPLETED LOCALLY (not uploaded; not a platform release decision)")
     print(f"Subject: {evaluation['agent_id']} {evaluation['subject_version']}")
     print(f"Dataset: {evaluation['dataset_version']}")
-    print(f"Cases: {classification['sample_size']} | Correct: {correct_count} | Accuracy: {classification['accuracy']:.3f}")
-    print(f"Macro precision: {classification['macro_precision']:.3f} | Macro recall: {classification['macro_recall']:.3f} | Macro F1: {classification['macro_f1']:.3f}")
-    print(f"Brier score: {confidence['correctness_brier_score']:.6f} | Expected calibration error: {confidence['expected_calibration_error']:.6f}")
+    if classification["measurement_status"] == "measured":
+        print(f"Cases: {classification['sample_size']} | Correct: {correct_count} | Accuracy: {classification['accuracy']:.3f}")
+        print(f"Macro precision: {classification['macro_precision']:.3f} | Macro recall: {classification['macro_recall']:.3f} | Macro F1: {classification['macro_f1']:.3f}")
+    else:
+        print(f"Classification: NOT MEASURABLE - {classification['reason']}")
+    if confidence["measurement_status"] == "measured":
+        print(f"Brier score: {confidence['correctness_brier_score']:.6f} | Expected calibration error: {confidence['expected_calibration_error']:.6f}")
+    else:
+        print(f"Confidence: NOT MEASURABLE - {confidence['reason']}")
     print(f"Duration: {execution['duration_ms']} ms | Required metrics: {', '.join(evaluation['required_dimensions'])}")
-    if classification["sample_size"] < 20:
+    if classification.get("sample_size", 0) and classification["sample_size"] < 20:
         print(f"Sample-size note: {classification['sample_size']} cases are valid for local testing. The 20-case minimum applies only to an optional governed ExposureScopeX release decision.")
     _print_advanced_metrics(metrics, evaluation["required_dimensions"])
     if not summary_only:
         dataset = config["dataset"]
         assert isinstance(dataset, dict) and isinstance(dataset["cases"], list)
+        diagnostics = execution.get("browser_case_diagnostics", [])
+        diagnostics_by_case = {
+            item.get("case_id"): item for item in diagnostics
+            if isinstance(item, dict) and isinstance(item.get("case_id"), str)
+        } if isinstance(diagnostics, list) else {}
+        scored_cases = [
+            item for item in dataset["cases"]
+            if isinstance(item, dict) and diagnostics_by_case.get(item.get("case_id"), {}).get("outcome") != "blocked"
+        ]
+        score_by_case = {
+            str(item["case_id"]): (actual, observed, confidence)
+            for item, actual, observed, confidence in zip(scored_cases, expected, predicted, confidences, strict=True)
+        }
         print("\nCASE RESULTS")
-        for item, actual, observed, confidence in zip(dataset["cases"], expected, predicted, confidences):
+        for item in dataset["cases"]:
             assert isinstance(item, dict)
+            diagnostic = diagnostics_by_case.get(item.get("case_id"))
+            if isinstance(diagnostic, dict) and diagnostic.get("outcome") == "blocked":
+                print(f"{item['case_id']}: BLOCKED AT SESSION SETUP | persona={diagnostic.get('persona', 'default')} | reason={diagnostic.get('failure_kind', 'authenticated_session_unavailable')}")
+                continue
+            actual, observed, confidence = score_by_case[str(item["case_id"])]
             outcome = "CORRECT" if actual == observed else "INCORRECT"
             print(f"{item['case_id']}: {outcome} | expected={actual} | predicted={observed} | confidence={confidence:.3f}")
     print("\nNo prompts, model outputs, source files, tool data, environment variables, or credentials were sent to ExposureScopeX.")
@@ -508,17 +548,23 @@ def _print_coverage_model(coverage: dict[str, object], package: dict[str, object
     assert isinstance(executed, dict) and isinstance(measured, dict)
     print("\nCOVERAGE BOUNDARY")
     print(f"Discovered components: {discovered['component_count']} | Approved components: {approved['component_count']}")
-    print(f"Executed cases: {executed['case_count']} | Measured dimensions: {measured['dimension_count']} of {measured['required_dimension_count']}")
+    print(f"Requested cases: {executed.get('requested_case_count', executed['case_count'])} | Executed cases: {executed['case_count']} | Measured dimensions: {measured['dimension_count']} of {measured['required_dimension_count']}")
     execution = package["execution"]
     assert isinstance(execution, dict)
     if execution.get("adapter_type") == "browser_journey":
-        print(f"Browser coverage: {executed['pre_auth_case_count']} pre-auth | {executed['authenticated_case_count']} authenticated | {executed['passed_case_count']} passed | {executed['failed_case_count']} failed")
+        print(f"Browser coverage: {executed['pre_auth_case_count']} pre-auth completed | {executed['authenticated_case_count']} authenticated completed | {executed['blocked_case_count']} blocked at session setup | {executed['passed_case_count']} passed | {executed['failed_case_count']} workflow assertions need review")
+        if executed["blocked_case_count"]:
+            print("Coverage note: Blocked cases did not enter the application workflow. They are not application findings and do not affect quality metrics.")
         for area in coverage.get("capability_areas", []):
             if isinstance(area, dict):
-                print(f"Capability: {area.get('capability_area', 'general')} | discovered={area.get('discovered', 0)} | approved={area.get('approved', 0)} | executed={area.get('executed', 0)} | passed={area.get('passed', 0)} | failed={area.get('failed', 0)}")
+                print(f"Capability: {area.get('capability_area', 'general')} | discovered={area.get('discovered', 0)} | approved={area.get('approved', 0)} | executed={area.get('executed', 0)} | passed={area.get('passed', 0)} | assertion_review={area.get('failed', 0)} | blocked={area.get('blocked', 0)}")
         for item in execution.get("browser_case_diagnostics", []):
-            if isinstance(item, dict) and item.get("outcome") == "failed":
-                print(f"Browser diagnostic: {item['case_id']} [{item.get('persona', 'default')}] failed at {item.get('failed_action', 'authenticated session')} after {item.get('failed_attempt_count', 0)} attempt(s) ({item.get('failure_kind', 'browser_action_failed')})")
+            if not isinstance(item, dict):
+                continue
+            if item.get("outcome") == "blocked":
+                print(f"Browser diagnostic: {item['case_id']} [{item.get('persona', 'default')}] BLOCKED at session setup ({item.get('failure_kind', 'authenticated_session_unavailable')})")
+            elif item.get("outcome") == "failed":
+                print(f"Browser diagnostic: {item['case_id']} [{item.get('persona', 'default')}] ASSERTION NEEDS REVIEW at {item.get('failed_action', 'workflow action')} after {item.get('failed_attempt_count', 0)} attempt(s) ({item.get('failure_kind', 'browser_action_failed')})")
 
 
 def _read_secret_file(path: str | None) -> str | None:
@@ -574,6 +620,19 @@ def run_command(args: argparse.Namespace) -> int:
     except RunnerError:
         append_audit_event(audit_path, "evaluation_failed", {"config_sha256": sha256(config), "failure_category": "runner_error"})
         raise
+    telemetry_path = _workflow_file(config, args.config, getattr(args, "telemetry", None), "telemetry_file", optional=True)
+    telemetry = telemetry_summary(telemetry_path) if telemetry_path else None
+    if telemetry_path:
+        raw_cases = config.get("dataset", {}).get("cases", []) if isinstance(config.get("dataset"), dict) else []
+        case_ids = [item["case_id"] for item in raw_cases if isinstance(item, dict) and isinstance(item.get("case_id"), str)]
+        evidence_policy = config.get("telemetry", {})
+        measurements, provenance = derive_telemetry_measurements(
+            telemetry_path,
+            required_dimensions=package["evaluation"]["required_dimensions"],
+            case_ids=case_ids,
+            policy=evidence_policy if isinstance(evidence_policy, dict) else None,
+        )
+        package = attach_local_measurements(package, measurements, provenance)
     signing = config.get("signing")
     if args.sign and oidc_token is None:
         if not isinstance(signing, dict) or not isinstance(signing.get("identity_id"), str) or not isinstance(signing.get("private_key_path"), str):
@@ -590,8 +649,6 @@ def run_command(args: argparse.Namespace) -> int:
     scope = _optional_json(_workflow_file(config, args.config, getattr(args, "scope", None), "scope_file"))
     plan = _optional_json(_workflow_file(config, args.config, getattr(args, "plan", None), "plan_file"))
     local_metrics = _planned_metrics(calculate_local_metrics(package), plan)
-    telemetry_path = _workflow_file(config, args.config, getattr(args, "telemetry", None), "telemetry_file", optional=True)
-    telemetry = telemetry_summary(telemetry_path) if telemetry_path else None
     assurance_graph = build_assurance_graph(package, local_metrics, discovery=discovery, scope=scope, plan=plan, telemetry=telemetry)
     coverage = build_coverage_model(package, local_metrics, discovery=discovery, scope=scope)
     report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.json")
@@ -686,6 +743,16 @@ def report_command(args: argparse.Namespace) -> int:
     scope_path = _workflow_file(config, config_path, args.scope, "scope_file") if config_path else args.scope
     plan_path = _workflow_file(config, config_path, args.plan, "plan_file") if config_path else args.plan
     telemetry_path = _workflow_file(config, config_path, args.telemetry, "telemetry_file", optional=True) if config_path else args.telemetry
+    if telemetry_path:
+        raw_cases = config.get("dataset", {}).get("cases", []) if isinstance(config.get("dataset"), dict) else []
+        case_ids = [item["case_id"] for item in raw_cases if isinstance(item, dict) and isinstance(item.get("case_id"), str)]
+        measurements, provenance = derive_telemetry_measurements(
+            telemetry_path,
+            required_dimensions=package["evaluation"].get("required_dimensions", []),
+            case_ids=case_ids,
+            policy=config.get("telemetry") if isinstance(config.get("telemetry"), dict) else None,
+        )
+        package = attach_local_measurements(package, measurements, provenance)
     plan = _optional_json(plan_path)
     metrics = _planned_metrics(calculate_local_metrics(package), plan)
     discovery = _optional_json(discovery_path)

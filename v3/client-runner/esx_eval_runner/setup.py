@@ -176,10 +176,17 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
         adapter = {"type": "http_json_target", "url": values["url"], "request_mode": values.get("request_mode", "message"), "response_label_path": values.get("response_label_path", "decision.label"), "response_confidence_path": values.get("response_confidence_path", "decision.confidence"), "timeout_seconds": 60, "allow_remote": bool(values.get("allow_remote")), "target_environment": target_environment, "max_cases": 500, "minimum_delay_ms": 100}
     config = {
         "schema_version": CONFIG_SCHEMA_VERSION,
-        "evaluation": {"name": f"{values['agent_id']} {profile(profile_name)['name'].lower()}", "agent_id": values["agent_id"], "subject_version": values["subject_version"], "subject_type": values.get("subject_type", "agent"), "project_key": values["project_key"], "dataset_version": dataset_version, "required_dimensions": ["classification", "confidence"]},
+        "evaluation": {"name": f"{values['agent_id']} {profile(profile_name)['name'].lower()}", "agent_id": values["agent_id"], "subject_version": values["subject_version"], "subject_type": values.get("subject_type", "agent"), "project_key": values["project_key"], "dataset_version": dataset_version, "required_dimensions": plan["required_dimensions"]},
         "dataset": {"version": dataset_version, "cases": cases},
         "adapter": adapter,
         "source": {"origin": "local"},
+        "telemetry": {
+            "enabled": True,
+            "trajectory": {"required_milestones": []},
+            "tool_use": {"expected_tools_by_case": {}},
+            "rag": {"relevant_document_ids": []},
+            "robustness": {"baseline_case_id": None, "baseline_label": None},
+        },
         "plan": {
             "profile": profile_name,
             "profile_description": (
@@ -296,7 +303,9 @@ This folder already contains `discovery.json`, `assurance-scope.json`, and
 Assurance Graph. The plan expects these dimensions when the confirmed scope
 supports them: {", ".join((plan or {}).get("required_dimensions", ["classification", "confidence"]))}.
 
-Grounding, RAG, tool/trajectory, security detection, robustness, repeatability, judge agreement, and provider cost metrics require redacted telemetry from the application. Use the advanced `command_json_v2` adapter only when those local measurements are available. Missing evidence is reported as `NOT MEASURABLE`, never invented.
+Grounding, RAG, trajectory, tool-use, security detection, robustness, repeatability, judge agreement, and provider cost metrics require redacted local evidence. The generated plan enables local telemetry automatically: when the application emits supported OpenTelemetry or connector metadata, PRE-D derives every complete metric input it can without an adapter. Metrics with incomplete evidence remain `NOT MEASURABLE`, never invented.
+
+For trajectory measurement, add only the product's approved opaque milestone IDs to `telemetry.trajectory.required_milestones` in `esx-eval.json`. For tool-use quality, add approved opaque tool IDs by case to `telemetry.tool_use.expected_tools_by_case`. For robustness, mark one labelled case as `telemetry.robustness.baseline_case_id`, then emit controlled paraphrase, perturbation, or repeat observations. For RAG recall, add only the expected opaque document IDs to `telemetry.rag.relevant_document_ids`. The local report names these fields only when they are needed. Do not add prompt text, answers, or document content.
 
 To capture supported OpenTelemetry JSON metadata locally, run this in a second
 terminal before the evaluation, then configure the test application with the

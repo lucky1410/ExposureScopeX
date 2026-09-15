@@ -1,0 +1,36 @@
+services:
+  dvwa:
+    image: ghcr.io/digininja/dvwa:latest
+    pull_policy: always
+    environment:
+      DB_SERVER: dvwa-db
+    depends_on:
+      - dvwa-db
+    ports:
+      - "127.0.0.1:4280:80"
+    networks:
+      dvwa-lab:
+      egress:
+        aliases:
+          - dvwa.localhost
+    restart: unless-stopped
+
+  dvwa-db:
+    image: docker.io/library/mariadb:10
+    environment:
+      MYSQL_ROOT_PASSWORD: dvwa
+      MYSQL_DATABASE: dvwa
+      MYSQL_USER: dvwa
+      MYSQL_PASSWORD: p@ssw0rd
+    volumes:
+      - dvwa_data:/var/lib/mysql
+    networks:
+      - dvwa-lab
+    restart: unless-stopped
+
+volumes:
+  dvwa_data:
+
+networks:
+  dvwa-lab:
+    internal: true

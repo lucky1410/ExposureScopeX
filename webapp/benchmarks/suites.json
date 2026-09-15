@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "suites": [
+    {"id": "owasp-benchmark", "source": "https://owasp.org/www-project-benchmark/", "pin_required": true},
+    {"id": "owasp-crapi", "source": "https://owasp.org/www-project-crapi/", "pin_required": true},
+    {"id": "owasp-juice-shop", "source": "https://owasp.org/www-project-juice-shop/", "pin_required": true},
+    {"id": "owasp-webgoat", "source": "https://owasp.org/www-project-webgoat/", "pin_required": true},
+    {"id": "dvwa", "source": "https://github.com/digininja/DVWA", "pin_required": true},
+    {"id": "exposurescopex-protocol-lab", "source": "local", "pin_required": true}
+  ]
+}

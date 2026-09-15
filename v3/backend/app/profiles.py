@@ -1,6 +1,6 @@
 from typing import Final
 
-PLAN_VERSION: Final = "2026.09.14.1"
+PLAN_VERSION: Final = "2026.09.15.1"
 
 PROFILES: Final = {
     "light": [
@@ -8,9 +8,14 @@ PROFILES: Final = {
         {"adapter": "subdomain_enumeration", "timeout_seconds": 90, "required": False},
         {"adapter": "http_profile", "timeout_seconds": 60, "required": True},
         {"adapter": "tls_service_discovery", "timeout_seconds": 150, "required": True},
+        {"adapter": "standards_discovery", "timeout_seconds": 90, "required": False},
         {"adapter": "authenticated_crawl", "timeout_seconds": 300, "required": True},
+        {"adapter": "application_surface_inventory", "timeout_seconds": 120, "required": True},
+        {"adapter": "api_contract_review", "timeout_seconds": 90, "required": False},
+        {"adapter": "route_security_policy_review", "timeout_seconds": 120, "required": True},
         {"adapter": "security_headers", "timeout_seconds": 60, "required": True},
-        {"adapter": "nuclei_baseline", "timeout_seconds": 1800, "required": True},
+        {"adapter": "external_web_posture", "timeout_seconds": 60, "required": True},
+        {"adapter": "nuclei_baseline", "timeout_seconds": 120, "required": True},
         {"adapter": "evidence_validation", "timeout_seconds": 60, "required": True},
     ],
     "medium": [

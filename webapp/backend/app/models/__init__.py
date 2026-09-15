@@ -2,6 +2,7 @@
 
 from app.models.base import TimestampMixin
 from app.models.user import Organization, User
+from app.models.operation_workspace import OperationWorkspace
 from app.models.assessment import Assessment
 from app.models.scan import Scan
 from app.models.asset import Asset
@@ -30,6 +31,7 @@ __all__ = [
     "TimestampMixin",
     "Organization",
     "User",
+    "OperationWorkspace",
     "Assessment",
     "Scan",
     "Asset",

@@ -17,7 +17,6 @@ web_tool_enabled() {
     case "$tool" in
         arjun|nikto) [ "${MODE:-medium}" != "light" ] ;;
         ffuf) [ "${MODE:-medium}" = "aggressive" ] ;;
-        sqlmap) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -72,7 +71,10 @@ run_web_test() {
     fi
 
     # Web crawling — per-URL files aggregated into katana_crawl.txt
-    if command -v katana &> /dev/null; then
+    if [ -s "${output_dir}/crawl_results.txt" ]; then
+        log_info "Reusing dedicated crawler results for web testing"
+        cp "${output_dir}/crawl_results.txt" "${output_dir}/katana_crawl.txt"
+    elif command -v katana &> /dev/null; then
         local katana_agg="${output_dir}/katana_crawl.txt"
         : > "$katana_agg"
         log_info "Running Katana crawler..."
@@ -121,31 +123,6 @@ run_web_test() {
         done
     fi
 
-    # SQLMap scanning is intentionally guard-railed behind an explicit active
-    # validation flag so it is never launched just because the binary exists.
-    if command -v sqlmap &> /dev/null && web_tool_enabled "sqlmap"; then
-        if [ "${EXPOSURESCOPEX_ACTIVE_VALIDATION:-false}" = "true" ]; then
-            local sqlmap_targets="${output_dir}/sqlmap_targets.txt"
-            local sqlmap_results="${output_dir}/sqlmap_results.csv"
-            printf '%s\n' "${urls[@]}" > "$sqlmap_targets"
-            log_info "Running SQLMap active validation..."
-            run_tool "sqlmap" "sqlmap" \
-                -m "$sqlmap_targets" \
-                --results-file="$sqlmap_results" \
-                --batch \
-                --crawl=1 \
-                --forms \
-                --smart \
-                --level=1 \
-                --risk=1 \
-                --threads=2 \
-                --output-dir="${output_dir}/sqlmap" || \
-                log_warn "sqlmap failed during active validation"
-        else
-            log_info "Skipping SQLMap because active validation is not enabled for this run"
-        fi
-    fi
-
     # WhatWeb
     if command -v whatweb &> /dev/null; then
         log_info "Running WhatWeb..."
@@ -155,23 +132,8 @@ run_web_test() {
         done
     fi
 
-    # Wapiti
-    if command -v wapiti &> /dev/null; then
-        log_info "Running Wapiti..."
-        for u in "${urls[@]}"; do
-            run_tool "wapiti" "wapiti" -u "$u" --flush-session -o "${output_dir}/wapiti_$(echo "$u" | md5sum | cut -d' ' -f1)" -f html || \
-                log_warn "wapiti failed on $u"
-        done
-    fi
-
-    # Dalfox
-    if command -v dalfox &> /dev/null; then
-        log_info "Running Dalfox..."
-        for u in "${urls[@]}"; do
-            run_tool "dalfox" "dalfox" url "$u" -o "${output_dir}/dalfox_$(echo "$u" | md5sum | cut -d' ' -f1).txt" || \
-                log_warn "dalfox failed on $u"
-        done
-    fi
+    # Payload-injection scanners are intentionally excluded. ExposureScopeX
+    # performs only the bounded, GET-only checks in safe_web_validation.py.
 
     # Nikto
     if command -v nikto &> /dev/null && web_tool_enabled "nikto"; then

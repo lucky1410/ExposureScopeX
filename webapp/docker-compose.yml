@@ -99,9 +99,17 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-development-only-change-me}
       NUCLEI_TEMPLATE_AUTOUPDATE: ${NUCLEI_TEMPLATE_AUTOUPDATE:-true}
       NUCLEI_TEMPLATE_REFRESH_HOURS: ${NUCLEI_TEMPLATE_REFRESH_HOURS:-24}
+      NUCLEI_STAGE_TIMEOUT_LIGHT: ${NUCLEI_STAGE_TIMEOUT_LIGHT:-1860}
+      NUCLEI_STAGE_TIMEOUT_MEDIUM: ${NUCLEI_STAGE_TIMEOUT_MEDIUM:-3660}
+      NUCLEI_STAGE_TIMEOUT_AGGRESSIVE: ${NUCLEI_STAGE_TIMEOUT_AGGRESSIVE:-7260}
+      NUCLEI_TOOL_TIMEOUT_LIGHT: ${NUCLEI_TOOL_TIMEOUT_LIGHT:-1800}
+      NUCLEI_TOOL_TIMEOUT_MEDIUM: ${NUCLEI_TOOL_TIMEOUT_MEDIUM:-3600}
+      NUCLEI_TOOL_TIMEOUT_AGGRESSIVE: ${NUCLEI_TOOL_TIMEOUT_AGGRESSIVE:-7200}
       EXPOSURESCOPEX_RETAIN_REPOSITORY_CHECKOUT: ${EXPOSURESCOPEX_RETAIN_REPOSITORY_CHECKOUT:-false}
-      WORKER_QUEUES: ${WORKER_QUEUES:-scans-web,scans-api,scans-artifact,scans-cloud,scans-mobile,scans,reports,default}
+      WORKER_QUEUES: ${WORKER_QUEUES:-scans-web,scans-api,scans-artifact,scans-cloud,scans-mobile,scans}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      SCAN_STALL_WARNING_SECONDS: ${SCAN_STALL_WARNING_SECONDS:-600}
+      MAX_ENUMERATION_TARGETS: ${MAX_ENUMERATION_TARGETS:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,12 +134,12 @@ services:
     command: >
       celery -A app.services.celery_app:celery_app worker
       --loglevel=info
-      --queues=${WORKER_QUEUES:-scans-web,scans-api,scans-artifact,scans-cloud,scans-mobile,scans,reports,default}
+      --queues=${WORKER_QUEUES:-scans-web,scans-api,scans-artifact,scans-cloud,scans-mobile,scans}
       --concurrency=${WORKER_CONCURRENCY:-2}
       --max-tasks-per-child=10
       --max-memory-per-child=2097152
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.services.celery_app:celery_app inspect ping --timeout=5 | grep -q pong"]
+      test: ["CMD-SHELL", "celery -A app.services.celery_app:celery_app inspect ping --destination=celery@$$HOSTNAME --timeout=5 | grep -q pong"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -139,6 +147,17 @@ services:
     restart: unless-stopped
     stop_grace_period: 45s
     logging: *default-logging
+
+  # Keep reports and control-plane jobs responsive while scan slots are busy.
+  worker-support:
+    extends: { service: worker }
+    environment:
+      WORKER_QUEUES: reports,default
+      WORKER_CONCURRENCY: ${SUPPORT_WORKER_CONCURRENCY:-1}
+    command: >
+      celery -A app.services.celery_app:celery_app worker --loglevel=info
+      --queues=reports,default --concurrency=${SUPPORT_WORKER_CONCURRENCY:-1}
+      --max-tasks-per-child=20 --max-memory-per-child=2097152
 
   worker-web:
     extends: { service: worker }

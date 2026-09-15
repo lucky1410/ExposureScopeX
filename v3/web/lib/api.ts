@@ -1,4 +1,6 @@
-export const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
+// Keep browser requests same-origin. Next.js proxies `/api` to the internal
+// control plane, avoiding browser-specific blocks on a separate local port.
+export const API = "";
 export const EVALUATOR_ORGANIZATION_STORAGE_KEY = "esx.evaluator.organization";
 
 export function setEvaluatorOrganization(organizationId: string | null) {

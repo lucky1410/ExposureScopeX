@@ -1,11 +1,17 @@
+import asyncio
 import socket
 import unittest
+import uuid
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
 from pydantic import ValidationError as PydanticValidationError
 
 from app.config import Settings
+from app.dependencies import get_current_user
+from app.main import _websocket_origin_allowed
 from app.security import create_access_token, decode_token
 from app.api.v1.reports import _generate_pdf_report
 from app.services.celery_app import celery_app, nuclei_template_update_task
@@ -72,6 +78,48 @@ class SecurityPrimitiveTests(unittest.TestCase):
         )
         self.assertTrue(content.startswith(b"%PDF-"))
         self.assertGreater(len(content), 500)
+
+    def test_websocket_origin_rejects_cross_site_browser(self):
+        self.assertTrue(_websocket_origin_allowed("http://localhost:3001"))
+        self.assertTrue(_websocket_origin_allowed(None))
+        self.assertFalse(_websocket_origin_allowed("https://attacker.invalid"))
+
+    def test_revoked_session_invalidates_access_token(self):
+        user_id = uuid.uuid4()
+        org_id = uuid.uuid4()
+        session_id = uuid.uuid4()
+        token = create_access_token({
+            "sub": str(user_id), "org_id": str(org_id), "sid": str(session_id),
+        })
+        user = SimpleNamespace(id=user_id, org_id=org_id, is_active=True)
+        result = SimpleNamespace(scalar_one_or_none=lambda: user)
+        db = SimpleNamespace(execute=AsyncMock(return_value=result), scalar=AsyncMock(return_value=None))
+        request = SimpleNamespace(cookies={})
+        credentials = SimpleNamespace(credentials=token)
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(get_current_user(request, credentials, db))
+        self.assertEqual(raised.exception.status_code, 401)
+        self.assertEqual(raised.exception.detail, "Session is expired or revoked")
+
+    def test_active_session_accepts_access_token(self):
+        user_id = uuid.uuid4()
+        org_id = uuid.uuid4()
+        session_id = uuid.uuid4()
+        token = create_access_token({
+            "sub": str(user_id), "org_id": str(org_id), "sid": str(session_id),
+        })
+        user = SimpleNamespace(
+            id=user_id, org_id=org_id, is_active=True,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        )
+        result = SimpleNamespace(scalar_one_or_none=lambda: user)
+        db = SimpleNamespace(execute=AsyncMock(return_value=result), scalar=AsyncMock(return_value=session_id))
+
+        authenticated = asyncio.run(get_current_user(
+            SimpleNamespace(cookies={}), SimpleNamespace(credentials=token), db,
+        ))
+        self.assertIs(authenticated, user)
 
 
 class SecurityMaintenanceTests(unittest.TestCase):

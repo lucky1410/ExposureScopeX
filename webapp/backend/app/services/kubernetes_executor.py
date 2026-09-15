@@ -89,7 +89,7 @@ def _job_manifest(assessment_id: str, org_id: str, scan_id: str, task_id: str) -
                         "args": [
                             "import sys; from app.services.celery_app import execute_assessment_scan; "
                             "result=execute_assessment_scan(sys.argv[1],sys.argv[2],scan_id=sys.argv[3],task_id=sys.argv[4]); "
-                            "raise SystemExit(0 if result.get('status') in {'completed','cancelled','ignored'} else 1)",
+                            "raise SystemExit(0 if result.get('status') in {'completed','partial','cancelled','ignored'} else 1)",
                             assessment_id,
                             org_id,
                             scan_id,

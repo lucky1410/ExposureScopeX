@@ -19,8 +19,16 @@ webapp/.env.local
 # Python cache (if Python added later)
 __pycache__/
 *.pyc
+webapp/backend/.venv/
 
 # Frontend build artifacts
 webapp/frontend/node_modules/
 webapp/frontend/.next/
+webapp/frontend/.npm-cache/
+webapp/frontend/tsconfig.tsbuildinfo
 webapp/backups/
+
+# Local evaluation credentials and generated artifacts
+secrets/
+tmp/
+my-agent-evaluation/

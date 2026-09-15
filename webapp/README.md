@@ -6,7 +6,7 @@ The complete local stack is defined in [`docker-compose.yml`](docker-compose.yml
 See the root [`DOCKER_SETUP.md`](../DOCKER_SETUP.md) for startup, profiles,
 persistence, and rebuild behavior.
 
-> Documentation validated 2026-09-09. Start at `docs/README.md`; current schema head is `016_audit_retention`.
+> Documentation validated 2026-09-10. Start at `docs/README.md`; current schema head is `018_operation_control_plane`.
 
 **AI-Assisted Attack Surface Management & Security Reconnaissance Platform**
 

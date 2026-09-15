@@ -1,6 +1,6 @@
 # ExposureScopeX — Product Requirements Document
 
-> Product intent reconciled on 2026-09-09. Use `PRODUCT_STATUS.md`,
+> Product intent reconciled on 2026-09-10. Use `PRODUCT_STATUS.md`,
 > `../BACKLOG.md`, `ARCHITECTURE.md`, and capability APIs for current behavior.
 
 **Version:** 2.2.0
@@ -15,7 +15,7 @@
 
 ExposureScopeX is an integrated Attack Surface Management (ASM) and security assessment platform that combines a battle-tested Bash CLI framework with a full-stack web application. It enables security teams to discover, inventory, and continuously monitor every externally reachable asset belonging to their organization — then execute structured penetration tests and vulnerability assessments against those assets from a single pane of glass.
 
-The platform spans the entire offensive security workflow: passive reconnaissance via public APIs (crt.sh, Shodan, VirusTotal, Wayback Machine), active subdomain enumeration and port scanning (subfinder, nmap, masscan, nuclei), web application testing (feroxbuster, sqlmap, dalfox, nikto), cloud misconfiguration detection, CVE correlation via the NVD API, and autonomous AI-driven assessments powered by Claude. Findings flow into a PostgreSQL-backed database with deduplication, severity triage, case management, and multi-format reporting (Markdown, HTML, PDF, SARIF).
+The platform spans deterministic, non-exploitative security assessment: passive reconnaissance via public APIs, authorized subdomain and port discovery, bounded web and API checks, cloud misconfiguration detection, CVE correlation, immutable evidence, and professional reporting. Findings flow into a PostgreSQL-backed database with deduplication, severity triage, case management, and multi-format reporting. AI is restricted to evidence-grounded post-scan explanation, prioritization, and remediation assistance; it never plans or executes scans.
 
 The web application (Next.js 15 frontend + FastAPI backend) surfaces these capabilities through an accessible UI built for daily use by security engineers, pentest leads, SOC analysts, and MSSP practitioners. Real-time scan progress via Redis pub/sub, durable PostgreSQL events, Celery task orchestration, and Docker Compose packaging make the platform operable from a laptop to a production cluster.
 
@@ -42,7 +42,7 @@ Security teams face three compounding problems:
 | Manual reporting | Automated MD/HTML/PDF/SARIF report generation with Chart.js risk visualizations |
 | No cross-scan baseline | SQLite findings DB with `ON CONFLICT` deduplication + `--diff` / `--baseline` modes |
 | Siloed scanning | Celery task queue runs real scans; WebSocket streams progress to the browser |
-| No AI leverage | `--agent` mode uses Claude (claude-opus-4-6) to autonomously plan and execute recon |
+| Analyst workload after scans | Evidence-grounded assistance can explain and prioritize results without controlling scanner execution |
 | MSSP multi-tenancy | Org-scoped data model; every table carries `org_id` FK |
 
 ---
@@ -57,7 +57,7 @@ Security teams face three compounding problems:
 
 ### Persona B: Pentest Lead
 - **Background:** Senior practitioner running structured engagements for clients or internal teams
-- **Goals:** Kick off scoped assessments, run multiple phases (enum → scan → cloud → exploit), generate deliverable-quality reports
+- **Goals:** Kick off scoped assessments, run deterministic discovery, validation, and cloud phases, generate deliverable-quality reports
 - **Pain points:** Context switching between tools; no phase-level progress visibility; PDF report generation is manual
 - **Usage pattern:** Creates an Assessment via the UI, selects phases, monitors real-time progress via WebSocket, exports SARIF for the client's SIEM
 
@@ -77,10 +77,10 @@ Security teams face three compounding problems:
 
 ## 4. Core Value Propositions
 
-1. **Single platform, entire lifecycle** — Passive recon through exploitation in one tool; web UI and CLI are peers, not one a wrapper for the other.
+1. **Single platform, defensible assessment lifecycle** — Passive recon through non-exploitative validation and evidence-backed reporting; web UI and CLI are peers, not one a wrapper for the other.
 2. **Zero-day-one value** — Demo data (AcmeCorp: 15 assets, 50 findings, 8 CVEs) lets evaluators experience the full workflow without running a real scan.
 3. **Continuous ASM, not point-in-time** — Cron-based scheduling, `--diff` state diffing, and `--baseline` suppression turn a scan tool into a monitoring platform.
-4. **AI-native** — The `--agent` mode is not a chatbot wrapper; it's a full agentic loop (observe → reason → execute → repeat, max 25 iterations) with 13 discrete tools, passive-only enforcement, and structured JSON session output.
+4. **Evidence-grounded intelligence** — Optional AI assists only after scanning with explanation, prioritization, and remediation drafts that cite immutable evidence and require operator review.
 5. **Operator-grade security** — encrypted integration credentials, bcrypt password hashing, configurable short-lived access sessions with rotating refresh sessions, CSRF-protected HttpOnly cookies, nginx rate limiting, and persisted audit records.
 
 ---
@@ -237,7 +237,7 @@ Security teams face three compounding problems:
 - **SaaS billing and subscription management** — single-org self-hosted only in this release
 - **SSO / SAML / OIDC** — planned for Q1 2027
 - **Native mobile application** — browser-responsive web only
-- **Automated exploit payload generation** — the `--agent` mode plans and suggests; `exploitation.sh` (Hydra/Metasploit) requires explicit `-x` flag and scan authorization
+- **Exploitation and attack simulation** — credential attacks, exploit payload generation or execution, persistence, command-and-control, and autonomous attack simulation are outside the product boundary
 - **Managed scanning infrastructure** — users provide their own compute
 - **Compliance frameworks (SOC 2, PCI DSS, ISO 27001) as first-class reports** — planned for Q4 2026
 
@@ -249,7 +249,7 @@ Security teams face three compounding problems:
 - Docker Engine ≥ 24 and Docker Compose ≥ 2.20 on the host
 - PostgreSQL 16 (provided via Docker image)
 - Redis 7 (provided via Docker image)
-- External API keys optional but improve coverage: Shodan, VirusTotal, Censys, HIBP, GitHub, Anthropic (for `--agent`)
+- External intelligence API keys are optional but improve coverage: Shodan, VirusTotal, Censys, HIBP, and GitHub
 - The bash framework tools (nmap, subfinder, nuclei, httpx, etc.) are either installed on the host or executed via the worker container image
 
 ### Assumptions

@@ -157,9 +157,12 @@ cookies and local storage; identity-provider cookies are discarded.
 ```
 
 The local report distinguishes discovered components, customer-approved scope,
-executed pre-auth/authenticated cases, and measured dimensions. Browser
-failures identify the failed action and category; optional screenshots remain
-only beside the local plan.
+requested cases, executed pre-auth/authenticated cases, and measured dimensions.
+An authenticated case blocked before session setup is reported as a **coverage
+limitation**, excluded from quality scores, and never labelled as an application
+failure. An executed browser assertion that does not match its approved signal
+is labelled **assertion review**, not a confirmed product defect. Optional
+screenshots remain only beside the local plan.
 
 ### Automatic local telemetry
 
@@ -176,8 +179,15 @@ operational metadata: service, span name, selected `gen_ai` usage/tool fields,
 and opaque `esx` identifiers. Prompts, outputs, documents, tool arguments,
 credentials, and arbitrary attributes are discarded. Pass this file to
 `run --telemetry` or `report --telemetry` to show evidence coverage in the
-Assurance Graph. It does not invent advanced scores; those require the redacted
-measurement records defined in `ADAPTER_V2.md`.
+Assurance Graph. When the records contain a complete supported evidence set,
+the runner derives its advanced metric inputs locally before it calculates the
+report. Incomplete evidence remains `NOT MEASURABLE`; raw span count and browser
+success never become an invented score. See `CONNECTORS.md` for OpenTelemetry,
+Python, LangChain, and LangGraph integration paths. Use browser workflows for
+protected UI coverage and local telemetry or an adapter for groundedness,
+security behavior, agent trajectories, approved tool-use quality, RAG quality,
+and provider cost metrics. The report explains the exact redacted evidence
+required for every unmeasured dimension.
 
 ## Security boundary
 
@@ -267,7 +277,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.5.1"
+   $version = "0.7.1"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -473,7 +483,7 @@ make a governed decision.
 
 The default starter evaluates classification and confidence. Add `--full-metrics`
 when the system can produce the redacted records for groundedness, security,
-trajectory and tool policy, RAG, robustness, cross-judge agreement,
+trajectory, approved tool-use quality, RAG, robustness, cross-judge agreement,
 reproducibility, and cost/latency. The runner calculates all of those metrics
 locally from those records. The protocol is documented in
 [`ADAPTER_V2.md`](ADAPTER_V2.md). The runner keeps raw test data local; it only

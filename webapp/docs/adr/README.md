@@ -9,6 +9,7 @@ Proposed, Accepted, Superseded or Rejected.
 | [0002](0002-normalized-evidence-model.md) | Use shared normalized evidence and scan observations | Accepted |
 | [0003](0003-capability-aware-open-source-adapters.md) | Use pinned adapters and runtime capability truth | Accepted |
 | [0004](0004-compose-and-kubernetes-execution.md) | Support efficient Compose and isolated Kubernetes execution | Accepted |
+| [0005](0005-deterministic-non-exploitative-evidence-gated-scanning.md) | Keep scanning deterministic, non-exploitative, and evidence-gated | Accepted |
 
 New ADRs must state context, decision, consequences and alternatives. Do not
 rewrite accepted history; supersede it with a new record.

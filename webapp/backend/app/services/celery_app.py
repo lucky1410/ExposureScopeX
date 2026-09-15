@@ -6,10 +6,13 @@ giving us retries, monitoring, and proper queue separation.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
+import os
 import re
 import selectors
+import subprocess
 import time
 import uuid
 from collections import deque
@@ -24,10 +27,250 @@ from app.config import settings
 from app.services.assessment_runtime import (
     advance_execution_manifest,
     calculate_work_progress,
+    execution_coverage_summary,
     finalize_execution_manifest,
 )
 
 logger = get_task_logger(__name__)
+
+
+def _purge_runtime_web_auth_secrets(session_dir: str | None) -> list[str]:
+    """Remove reusable session material before artifacts are sealed or archived."""
+    removed: list[str] = []
+    if not session_dir:
+        return removed
+    root = Path(session_dir).resolve()
+    for name in ("web-auth-cookie.txt", "web-auth-storage-state.json"):
+        for path in root.rglob(name):
+            try:
+                path.unlink()
+                removed.append(str(path.relative_to(root)))
+            except OSError:
+                logger.warning("Could not purge runtime web-auth material: %s", path)
+    return removed
+
+
+def _seal_worker_evidence(
+    session_dir: str | None,
+    *,
+    scan_id: str | None,
+    task_id: str,
+    command: list[str] | None,
+    log_lines: list[str],
+    status: str,
+    exit_code: int | None,
+) -> dict | None:
+    """Write one append-only terminal-attempt transcript before artifact ingestion."""
+    if not session_dir:
+        return None
+    evidence_dir = Path(session_dir).resolve() / "forensic"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    safe_task_id = re.sub(r"[^A-Za-z0-9._-]", "_", task_id)[:120]
+    transcript_name = f"worker-transcript-{safe_task_id}.log"
+    context_name = f"execution-context-{safe_task_id}.json"
+    transcript = ("\n".join(log_lines) + "\n").encode("utf-8", errors="replace")
+    transcript_hash = hashlib.sha256(transcript).hexdigest()
+    context = {
+        "scan_id": scan_id,
+        "task_id": task_id,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "exit_code": exit_code,
+        "command": command,
+        "scanner_image": settings.SCANNER_IMAGE_IDENTITY,
+        "transcript": transcript_name,
+        "transcript_size_bytes": len(transcript),
+        "transcript_sha256": transcript_hash,
+    }
+    terminal_screenshot = None
+    try:
+        with (evidence_dir / transcript_name).open("xb") as handle:
+            handle.write(transcript)
+            handle.flush()
+            os.fsync(handle.fileno())
+        with (evidence_dir / context_name).open("xb") as handle:
+            handle.write(json.dumps(context, indent=2, sort_keys=True).encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError:
+        # A redelivered task must never overwrite evidence from the original attempt.
+        return {"status": "already_sealed", "transcript": transcript_name, "sha256": transcript_hash}
+    capture_script = Path("/app/worker/evidence_capture.py")
+    if capture_script.is_file():
+        screenshot = evidence_dir / f"terminal-snapshot-{safe_task_id}.png"
+        try:
+            subprocess.run([
+                "python", str(capture_script), "terminal",
+                "--transcript", str(evidence_dir / transcript_name),
+                "--output", str(screenshot),
+                "--scan-id", str(scan_id or "untracked"),
+                "--task-id", task_id,
+            ], check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            terminal_screenshot = screenshot.name
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("Runtime terminal screenshot capture failed for scan=%s: %s", scan_id, exc)
+    return {
+        "status": "sealed", "transcript": transcript_name, "sha256": transcript_hash,
+        "terminal_screenshot": terminal_screenshot,
+    }
+
+
+def _capture_finding_screenshots(
+    session_dir: str | None, *, task_id: str, scan_id: str | None,
+    assessment_id: str, org_id: str, target: str = "",
+) -> dict:
+    """Capture every unique web finding URL before result ingestion and report generation."""
+    if not session_dir:
+        return {"status": "unavailable", "requested": 0, "captured": 0}
+    root = Path(session_dir).resolve()
+    capture_script = Path("/app/worker/evidence_capture.py")
+    if not root.is_dir() or not capture_script.is_file():
+        return {"status": "capture_runtime_unavailable", "requested": 0, "captured": 0}
+    from app.services.scan_result_ingestion import _collect_findings, _finding_evidence_key
+
+    findings = _collect_findings(root, target)
+    urls = sorted({
+        str(item.get("url")).strip()
+        for item in findings
+        if str(item.get("url") or "").startswith(("http://", "https://"))
+    })
+    safe_task_id = re.sub(r"[^A-Za-z0-9._-]", "_", task_id)[:120]
+    evidence_dir = root / "forensic" / f"finding-screenshots-{safe_task_id}"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    capture_env = {
+        **os.environ,
+        "EXPOSURESCOPEX_ORG_ID": org_id,
+        "EXPOSURESCOPEX_ASSESSMENT_ID": assessment_id,
+        "EXPOSURESCOPEX_SCAN_ID": str(scan_id or "untracked"),
+        "EXPOSURESCOPEX_TASK_ID": task_id,
+        "EXPOSURESCOPEX_SCANNER_IMAGE": settings.SCANNER_IMAGE_IDENTITY,
+    }
+    urls_file = evidence_dir / "finding-urls.txt"
+    urls_file.write_text("\n".join(urls) + "\n", encoding="utf-8")
+    if urls:
+        try:
+            subprocess.run([
+                "python", str(capture_script), "browser",
+                "--urls-file", str(urls_file),
+                "--output-dir", str(evidence_dir),
+                "--limit", str(len(urls)),
+            ], env=capture_env, check=True, timeout=max(90, len(urls) * 40 + 30), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("Per-finding browser evidence capture failed: %s", exc)
+    captured = 0
+    for screenshot in evidence_dir.glob("playwright-*.png"):
+        sidecar = screenshot.with_suffix(screenshot.suffix + ".json")
+        try:
+            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if metadata.get("capture_type") == "playwright_browser":
+            captured += 1
+    terminal_captured = 0
+    terminal_failed = 0
+    seen_finding_keys: set[str] = set()
+    for index, finding in enumerate(findings, start=1):
+        finding_key = _finding_evidence_key(finding)
+        if finding_key in seen_finding_keys:
+            continue
+        seen_finding_keys.add(finding_key)
+        source_label = str(finding.get("_artifact_path") or "")
+        source_artifact = (root / source_label).resolve()
+        if not source_label or not source_artifact.is_relative_to(root) or not source_artifact.is_file():
+            terminal_failed += 1
+            continue
+        key_digest = hashlib.sha256(finding_key.encode()).hexdigest()[:12]
+        terminal_screenshot = evidence_dir / f"finding-terminal-{index:03d}-{key_digest}.png"
+        command = [
+            "python", str(capture_script), "finding-terminal",
+            "--source-artifact", str(source_artifact),
+            "--source-label", source_label,
+            "--output", str(terminal_screenshot),
+            "--scan-id", str(scan_id or "untracked"),
+            "--task-id", task_id,
+            "--finding-key", finding_key,
+        ]
+        for term in (finding.get("template_id"), finding.get("url"), finding.get("title")):
+            if term:
+                command.extend(("--match", str(term)[:300]))
+        try:
+            subprocess.run(
+                command, env=capture_env, check=True, timeout=30,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            )
+            terminal_captured += 1
+        except (OSError, subprocess.SubprocessError) as exc:
+            terminal_failed += 1
+            logger.warning("Finding terminal evidence capture failed for %s: %s", finding_key[:120], exc)
+    return {
+        "status": "captured" if captured == len(urls) else "incomplete",
+        "requested": len(urls), "captured": captured, "failed": len(urls) - captured,
+        "finding_terminal_requested": len(seen_finding_keys),
+        "finding_terminal_captured": terminal_captured,
+        "finding_terminal_failed": terminal_failed,
+    }
+
+
+def _capture_tool_run_screenshots(
+    session_dir: str | None, *, task_id: str, scan_id: str | None,
+    assessment_id: str, org_id: str,
+) -> dict:
+    """Capture one real xterm image from each terminal tool-run output artifact."""
+    if not session_dir:
+        return {"status": "unavailable", "requested": 0, "captured": 0}
+    root = Path(session_dir).resolve()
+    registry = root / "tool_runs.tsv"
+    capture_script = Path("/app/worker/evidence_capture.py")
+    if not registry.is_file() or not capture_script.is_file():
+        return {"status": "not_available", "requested": 0, "captured": 0}
+    terminal_runs: dict[str, list[str]] = {}
+    for raw in registry.read_text(encoding="utf-8", errors="replace").splitlines():
+        fields = raw.split("\t", 7)
+        if len(fields) == 8 and fields[2] != "running":
+            terminal_runs[fields[0]] = fields
+    evidence_dir = root / "forensic" / f"tool-run-screenshots-{re.sub(r'[^A-Za-z0-9._-]', '_', task_id)[:120]}"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    capture_env = {
+        **os.environ,
+        "EXPOSURESCOPEX_ORG_ID": org_id,
+        "EXPOSURESCOPEX_ASSESSMENT_ID": assessment_id,
+        "EXPOSURESCOPEX_SCAN_ID": str(scan_id or "untracked"),
+        "EXPOSURESCOPEX_TASK_ID": task_id,
+        "EXPOSURESCOPEX_SCANNER_IMAGE": settings.SCANNER_IMAGE_IDENTITY,
+    }
+    captured = 0
+    failed = 0
+    for index, (run_id, fields) in enumerate(sorted(terminal_runs.items()), start=1):
+        _, tool, status, _exit_code, _started, _completed, command_text, output_label = fields
+        source = (root / output_label).resolve()
+        if not output_label or not source.is_relative_to(root) or not source.is_file():
+            failed += 1
+            continue
+        tool_slug = re.sub(r"[^A-Za-z0-9._-]", "_", tool)[:40]
+        screenshot = evidence_dir / (
+            f"tool-terminal-{index:03d}-{tool_slug}-{hashlib.sha256(run_id.encode()).hexdigest()[:10]}.png"
+        )
+        try:
+            subprocess.run([
+                "python", str(capture_script), "tool-terminal",
+                "--source-artifact", str(source),
+                "--source-label", output_label,
+                "--output", str(screenshot),
+                "--scan-id", str(scan_id or "untracked"),
+                "--task-id", task_id,
+                "--run-id", run_id,
+                "--tool", tool,
+                "--status", status,
+                "--command", command_text,
+            ], env=capture_env, check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            captured += 1
+        except (OSError, subprocess.SubprocessError) as exc:
+            failed += 1
+            logger.warning("Tool terminal evidence capture failed for %s: %s", run_id, exc)
+    return {
+        "status": "captured" if captured == len(terminal_runs) else "incomplete",
+        "requested": len(terminal_runs), "captured": captured, "failed": failed,
+    }
 
 
 @worker_ready.connect
@@ -106,7 +349,15 @@ celery_app.conf.update(
 )
 
 
-@celery_app.task(bind=True, name="app.services.celery_app.generate_report_task", autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 2})
+@celery_app.task(
+    bind=True,
+    name="app.services.celery_app.generate_report_task",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 2},
+    soft_time_limit=570,
+    time_limit=600,
+)
 def generate_report_task(self, report_id: str) -> dict:
     from app.services.report_jobs import materialize_report
 
@@ -167,6 +418,8 @@ def _update_scan_row(
     raw_log: str | None = None,
     session_dir: str | None = None,
     extra_metadata: dict | None = None,
+    manifest_status: str | None = None,
+    manifest_message: str | None = None,
     completed: bool = False,
 ) -> None:
     """Best-effort scan row updates from task execution paths."""
@@ -188,7 +441,7 @@ def _update_scan_row(
         if extra_metadata:
             metadata.update(extra_metadata)
         if current_phase:
-            stage_status = {
+            stage_status = manifest_status or {
                 "failed": "failed",
                 "cancelled": "cancelled",
                 "timeout": "failed",
@@ -198,7 +451,7 @@ def _update_scan_row(
                 metadata,
                 current_phase,
                 status=stage_status,
-                message=error_message,
+                message=manifest_message or error_message,
             )
         if completed:
             metadata = finalize_execution_manifest(metadata, status)
@@ -515,7 +768,7 @@ def _claim_scan_execution(scan_id: str | None, task_id: str) -> tuple[bool, str]
         if not row:
             return False, "scan_not_found"
         status, assigned_task_id = row
-        if status in {"completed", "failed", "cancelled"}:
+        if status in {"completed", "partial", "failed", "cancelled"}:
             return False, f"already_{status}"
         if assigned_task_id and assigned_task_id != task_id:
             return False, "superseded_task"
@@ -563,6 +816,9 @@ _PHASE_MARKERS = (
     ("starting routing correlation", "routing_correlation", 70),
     ("starting passive reconnaissance", "passive_recon", 8),
     ("starting passive enumeration", "enumeration", 15),
+    ("checking for potential subdomain takeovers", "enumeration_takeovers", 17),
+    ("probing live hosts", "enumeration_live_hosts", 20),
+    ("fetching historical urls", "enumeration_history", 23),
     ("starting dns reconnaissance", "dns_recon", 25),
     ("starting osint", "osint", 32),
     ("starting port scanning", "port_scan", 40),
@@ -587,6 +843,25 @@ def _scan_phase_from_line(line: str) -> tuple[str, int] | None:
     return None
 
 
+def _scan_stage_outcome_from_line(line: str) -> tuple[str, str, str] | None:
+    """Parse explicit stage outcomes emitted by the shell runner."""
+    normalized = _ANSI_ESCAPE.sub("", line)
+    match = re.search(
+        r"\[stage-(start|completed|timeout|warning)\]\s+([a-z0-9_]+):\s*(.+)$",
+        normalized,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    status = {
+        "start": "running",
+        "completed": "completed",
+        "timeout": "timed_out",
+        "warning": "warning",
+    }[match.group(1).lower()]
+    return match.group(2).lower(), status, match.group(3).strip()
+
+
 def _publish_assessment_progress(
     assessment_id: str,
     scan_id: str | None,
@@ -598,6 +873,104 @@ def _publish_assessment_progress(
         _publish_progress(scan_id, event, payload)
     if assessment_id != scan_id:
         _publish_progress(assessment_id, event, payload)
+
+
+def _queue_terminal_document_report(
+    assessment_id: str, org_id: str, scan_id: str | None, terminal_status: str,
+) -> dict | None:
+    """Queue the mandatory per-scan DOCX without changing the terminal outcome."""
+    if not scan_id:
+        return None
+    try:
+        from app.services.report_jobs import enqueue_automatic_scan_report
+
+        return asyncio.run(enqueue_automatic_scan_report(
+            assessment_id=assessment_id,
+            org_id=org_id,
+            scan_id=scan_id,
+            terminal_status=terminal_status,
+        ))
+    except Exception:
+        logger.exception("Could not queue automatic scan report: scan=%s", scan_id)
+        return None
+
+
+def _ingest_scan_results(
+    *, org_id: str, assessment_id: str, scan_id: str, session_dir: str,
+) -> dict:
+    """Normalize all artifacts available at a terminal scan boundary."""
+    from app.services.scan_result_ingestion import ingest_assessment_scan
+
+    result = asyncio.run(ingest_assessment_scan(
+        org_id=org_id,
+        assessment_id=assessment_id,
+        scan_id=scan_id,
+        session_dir=session_dir,
+    ))
+    from app.services.eventing import dispatch_scan_exposure_events
+
+    result["events_dispatched"] = asyncio.run(
+        dispatch_scan_exposure_events(org_id, scan_id)
+    )
+    from app.services.artifact_storage import archive_scan_directory
+
+    archived_key = archive_scan_directory(org_id, scan_id, session_dir)
+    if archived_key:
+        result["artifact_object_key"] = archived_key
+    return result
+
+
+def _preserve_terminal_scan_outputs(
+    *, org_id: str, assessment_id: str, scan_id: str, session_dir: str,
+    task_id: str, command: list[str] | None, log_lines: list[str],
+    status: str, exit_code: int | None, target: str = "",
+) -> dict:
+    """Best-effort terminal preservation where one failed step cannot block another."""
+    result = {
+        "finding_screenshot_capture": None,
+        "tool_screenshot_capture": None,
+        "evidence_seal": None,
+        "ingestion_result": None,
+        "errors": [],
+    }
+    try:
+        result["finding_screenshot_capture"] = _capture_finding_screenshots(
+            session_dir, task_id=task_id, scan_id=scan_id,
+            assessment_id=assessment_id, org_id=org_id, target=target,
+        )
+    except Exception as exc:
+        result["errors"].append(f"Finding screenshot capture failed: {exc}"[:1000])
+        logger.exception("Could not capture terminal finding evidence: scan=%s", scan_id)
+    try:
+        result["tool_screenshot_capture"] = _capture_tool_run_screenshots(
+            session_dir, task_id=task_id, scan_id=scan_id,
+            assessment_id=assessment_id, org_id=org_id,
+        )
+    except Exception as exc:
+        result["errors"].append(f"Tool screenshot capture failed: {exc}"[:1000])
+        logger.exception("Could not capture tool-run evidence: scan=%s", scan_id)
+    try:
+        _purge_runtime_web_auth_secrets(session_dir)
+    except Exception as exc:
+        result["errors"].append(f"Authentication secret purge failed: {exc}"[:1000])
+        logger.exception("Could not purge terminal authentication secrets: scan=%s", scan_id)
+    try:
+        result["evidence_seal"] = _seal_worker_evidence(
+            session_dir, scan_id=scan_id, task_id=task_id,
+            command=command, log_lines=log_lines, status=status, exit_code=exit_code,
+        )
+    except Exception as exc:
+        result["errors"].append(f"Evidence sealing failed: {exc}"[:1000])
+        logger.exception("Could not seal terminal evidence: scan=%s", scan_id)
+    try:
+        result["ingestion_result"] = _ingest_scan_results(
+            org_id=org_id, assessment_id=assessment_id, scan_id=scan_id,
+            session_dir=session_dir,
+        )
+    except Exception as exc:
+        result["errors"].append(f"Partial result ingestion failed: {exc}"[:1000])
+        logger.exception("Could not ingest terminal scan artifacts: scan=%s", scan_id)
+    return result
 
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
@@ -666,6 +1039,7 @@ def _run_assessment_scan_impl(self, assessment_id: str, org_id: str, scan_id: st
                     completed=True,
                     extra_metadata={"executor": "kubernetes", "job_name": result.get("job_name")},
                 )
+                _queue_terminal_document_report(assessment_id, org_id, scan_id, "cancelled")
             return result
         except Exception as exc:
             _update_scan_row(
@@ -676,6 +1050,7 @@ def _run_assessment_scan_impl(self, assessment_id: str, org_id: str, scan_id: st
                 error_message=f"Isolated scan execution failed: {type(exc).__name__}",
                 extra_metadata={"executor": "kubernetes"},
             )
+            _queue_terminal_document_report(assessment_id, org_id, scan_id, "failed")
             raise
     return execute_assessment_scan(
         assessment_id,
@@ -701,6 +1076,7 @@ def run_assessment_scan(self, assessment_id: str, org_id: str, scan_id: str | No
             progress=0, completed=True,
             extra_metadata={"cancelled_while_queued": True},
         )
+        _queue_terminal_document_report(assessment_id, org_id, scan_id, "cancelled")
         return {"status": "cancelled", "assessment_id": assessment_id, "scan_id": scan_id}
     scan_status, metadata = _scan_row_state(scan_id)
     ttl = int((metadata.get("execution_policy") or {}).get("timeout_seconds") or 7200) + 900
@@ -775,6 +1151,7 @@ def execute_assessment_scan(
             completed=True,
             extra_metadata={"task_id": task_id, "org_id": org_id},
         )
+        _queue_terminal_document_report(assessment_id, org_id, scan_id, "cancelled")
         _publish_assessment_progress(
             assessment_id,
             scan_id,
@@ -808,6 +1185,14 @@ def execute_assessment_scan(
             raise ValueError(f"Assessment {assessment_id} not found")
 
         target, target_type, scan_mode, phases, flags = row
+        _update_scan_row(
+            scan_id,
+            status="running",
+            current_phase="preflight",
+            progress=2,
+            manifest_status="completed",
+            manifest_message="Assessment, target, and execution record validated",
+        )
         imported_targets = list((flags or {}).get("_imported_targets") or [])
         target_count = max(1, len(imported_targets))
         from app.services.execution_policy import (
@@ -865,7 +1250,6 @@ def execute_assessment_scan(
             "enum": "-e",
             "scan": "-s",
             "cloud": "-c",
-            "exploit": "-x",
             "report": "-r",
         }
         if execution_type not in specialized_types:
@@ -902,7 +1286,13 @@ def execute_assessment_scan(
         )
 
         process_env = os.environ.copy()
-        process_env["EXPOSURESCOPEX_RESULTS_DIR"] = os.path.join(output_dir, scan_id or task_id)
+        process_env["EXPOSURESCOPEX_RESULTS_DIR"] = output_dir
+        process_env["EXPOSURESCOPEX_LOG_FILE"] = os.path.join(output_dir, "exposurescopex.log")
+        process_env["EXPOSURESCOPEX_ORG_ID"] = org_id
+        process_env["EXPOSURESCOPEX_ASSESSMENT_ID"] = assessment_id
+        process_env["EXPOSURESCOPEX_SCAN_ID"] = str(scan_id or "untracked")
+        process_env["EXPOSURESCOPEX_TASK_ID"] = task_id
+        process_env["EXPOSURESCOPEX_SCANNER_IMAGE"] = settings.SCANNER_IMAGE_IDENTITY
         enabled_tools = sorted({
             str(item).strip().lower()
             for item in ((flags or {}).get("_requested_utilities") or [])
@@ -911,6 +1301,10 @@ def execute_assessment_scan(
         if enabled_tools:
             process_env["EXPOSURESCOPEX_ENABLED_TOOLS"] = ",".join(enabled_tools)
         process_env["EXPOSURESCOPEX_ACTIVE_VALIDATION"] = "true" if (flags or {}).get("allow_active_validation") else "false"
+        encrypted_web_auth = (flags or {}).get("_web_auth_encrypted")
+        if encrypted_web_auth:
+            from app.services.encryption import decrypt_dict
+            process_env["EXPOSURESCOPEX_WEB_AUTH_JSON"] = json.dumps(decrypt_dict(encrypted_web_auth))
         if execution_type in {"android", "ios", "kubernetes", "batch"}:
             from app.services.encryption import decrypt_dict
 
@@ -995,6 +1389,9 @@ def execute_assessment_scan(
         actual_session_dir = output_dir
         pending_output = ""
         last_heartbeat = started_monotonic
+        last_output_monotonic = started_monotonic
+        last_output_at = datetime.now(timezone.utc)
+        stall_warning_seconds = max(60, int(os.getenv("SCAN_STALL_WARNING_SECONDS", "600")))
         artifact_bytes = 0
         output_selector = selectors.DefaultSelector()
         if proc.stdout:
@@ -1003,16 +1400,29 @@ def execute_assessment_scan(
         persist_runtime_tool_runs("running")
 
         def record_line(line: str) -> None:
-            nonlocal actual_session_dir, current_phase, current_progress
+            nonlocal actual_session_dir, current_phase, current_progress, last_output_monotonic, last_output_at
             clean_line = _ANSI_ESCAPE.sub("", line.rstrip())
             if clean_line:
                 log_lines.append(clean_line)
+                last_output_monotonic = time.monotonic()
+                last_output_at = datetime.now(timezone.utc)
             session_match = re.search(r"\bSession:\s+(.+)$", clean_line)
             if session_match:
                 candidate = session_match.group(1).strip()
                 if candidate.startswith("/app/results/"):
                     actual_session_dir = candidate
                     _update_scan_row(scan_id, status="running", session_dir=actual_session_dir)
+            stage_outcome = _scan_stage_outcome_from_line(clean_line)
+            if stage_outcome:
+                stage_id, stage_status, stage_message = stage_outcome
+                _update_scan_row(
+                    scan_id,
+                    status="running",
+                    current_phase=stage_id,
+                    progress=current_progress,
+                    manifest_status=stage_status,
+                    manifest_message=stage_message,
+                )
             phase_update = _scan_phase_from_line(clean_line)
             if phase_update and phase_update != (current_phase, current_progress):
                 current_phase, current_progress = phase_update
@@ -1071,6 +1481,13 @@ def execute_assessment_scan(
                     completed_at=cancelled_at,
                     include_output=True,
                 )
+                preservation = _preserve_terminal_scan_outputs(
+                    org_id=org_id, assessment_id=assessment_id, scan_id=scan_id,
+                    session_dir=actual_session_dir, task_id=task_id, command=cmd,
+                    log_lines=log_lines, status="cancelled", exit_code=proc.returncode, target=target,
+                )
+                if preservation["errors"]:
+                    log_lines.extend(preservation["errors"])
                 _update_scan_row(
                     scan_id,
                     status="cancelled",
@@ -1083,9 +1500,14 @@ def execute_assessment_scan(
                         "exit_code": proc.returncode,
                         "cancelled": True,
                         "tool_runs": cancelled_tool_runs,
+                        "ingestion_result": preservation["ingestion_result"],
+                        "terminal_preservation_errors": preservation["errors"],
+                        "evidence_seal": preservation["evidence_seal"],
+                        "finding_screenshot_capture": preservation["finding_screenshot_capture"],
                     },
                     completed=True,
                 )
+                _queue_terminal_document_report(assessment_id, org_id, scan_id, "cancelled")
                 _publish_assessment_progress(
                     assessment_id,
                     scan_id,
@@ -1133,6 +1555,7 @@ def execute_assessment_scan(
                     elapsed,
                     scan_timeout,
                 )
+                output_silence_seconds = max(0, int(time.monotonic() - last_output_monotonic))
                 _update_scan_row(
                     scan_id,
                     status="running",
@@ -1145,6 +1568,10 @@ def execute_assessment_scan(
                         "telemetry": {
                             "elapsed_seconds": int(elapsed),
                             "eta_seconds": eta_seconds,
+                            "last_output_at": last_output_at.isoformat(),
+                            "output_silence_seconds": output_silence_seconds,
+                            "output_stalled": output_silence_seconds >= stall_warning_seconds,
+                            "stall_warning_seconds": stall_warning_seconds,
                             "artifact_bytes": artifact_bytes,
                             "quota_bytes": quota_bytes,
                             "worker_pid": os.getpid(),
@@ -1183,16 +1610,33 @@ def execute_assessment_scan(
             )
 
         exit_code = proc.returncode
-        final_status = "completed" if exit_code in (0, 1, 2) else "failed"
+        # The platform never launches the CLI in CI-gate mode, where 1/2 encode
+        # finding severity. Here every non-zero exit indicates a scanner failure.
+        final_status = "completed" if exit_code == 0 else "failed"
         execution_error = None if final_status == "completed" else (
             f"Scanner process exited with code {exit_code}. Review the final worker output for the failed prerequisite or utility."
         )
         ingestion_result = None
         ingestion_error = None
-        if final_status == "completed" and scan_id:
-            import asyncio
-            from app.services.scan_result_ingestion import ingest_assessment_scan
-
+        finding_capture = _capture_finding_screenshots(
+            actual_session_dir, task_id=task_id, scan_id=scan_id,
+            assessment_id=assessment_id, org_id=org_id, target=target,
+        )
+        tool_capture = _capture_tool_run_screenshots(
+            actual_session_dir, task_id=task_id, scan_id=scan_id,
+            assessment_id=assessment_id, org_id=org_id,
+        )
+        _purge_runtime_web_auth_secrets(actual_session_dir)
+        evidence_seal = _seal_worker_evidence(
+            actual_session_dir,
+            scan_id=scan_id,
+            task_id=task_id,
+            command=cmd,
+            log_lines=log_lines,
+            status=final_status,
+            exit_code=exit_code,
+        )
+        if scan_id and actual_session_dir:
             _update_scan_row(
                 scan_id,
                 status="running",
@@ -1215,26 +1659,65 @@ def execute_assessment_scan(
                 },
             )
             try:
-                ingestion_result = asyncio.run(ingest_assessment_scan(
+                ingestion_result = _ingest_scan_results(
                     org_id=org_id,
                     assessment_id=assessment_id,
                     scan_id=scan_id,
                     session_dir=actual_session_dir,
-                ))
-                from app.services.eventing import dispatch_scan_exposure_events
-
-                ingestion_result["events_dispatched"] = asyncio.run(
-                    dispatch_scan_exposure_events(org_id, scan_id)
                 )
-                from app.services.artifact_storage import archive_scan_directory
-
-                archived_key = archive_scan_directory(org_id, scan_id, actual_session_dir)
-                if archived_key:
-                    ingestion_result["artifact_object_key"] = archived_key
+                _update_scan_row(
+                    scan_id,
+                    status="running",
+                    current_phase="ingesting_results",
+                    progress=98,
+                    manifest_status="completed",
+                    manifest_message="Artifacts normalized and persisted",
+                )
+                if (ingestion_result or {}).get("graph") is not None:
+                    _update_scan_row(
+                        scan_id,
+                        status="running",
+                        current_phase="attack_path",
+                        progress=99,
+                        manifest_status="completed",
+                        manifest_message="Asset relationships and risk paths calculated",
+                    )
             except Exception as exc:
                 ingestion_error = f"Scan completed but result ingestion failed: {exc}"
                 log_lines.append(ingestion_error)
                 final_status = "failed"
+
+        _, terminal_metadata = _scan_row_state(scan_id)
+        provisional_status = final_status
+        finalized_metadata = finalize_execution_manifest(terminal_metadata, provisional_status)
+        coverage = execution_coverage_summary(finalized_metadata)
+        child_tool_runs = _read_tool_runs(actual_session_dir)
+        tool_exceptions = [
+            run for run in child_tool_runs
+            if run.get("status") in {"failed", "timed_out", "running"}
+        ]
+        evidence_incomplete = (
+            (
+                int((finding_capture or {}).get("requested") or 0) > 0
+                and int((finding_capture or {}).get("captured") or 0)
+                < int((finding_capture or {}).get("requested") or 0)
+            )
+            or (
+                int((tool_capture or {}).get("requested") or 0) > 0
+                and int((tool_capture or {}).get("captured") or 0)
+                < int((tool_capture or {}).get("requested") or 0)
+            )
+        )
+        if provisional_status == "completed" and (
+            not coverage["complete"] or tool_exceptions or evidence_incomplete
+        ):
+            final_status = "partial"
+            execution_error = (
+                f"Assessment finished with coverage gaps: {coverage['successful']}/{coverage['planned']} "
+                f"planned stages succeeded, {len(tool_exceptions)} tool exception(s), "
+                f"and {int((finding_capture or {}).get('failed') or 0) + int((tool_capture or {}).get('failed') or 0)} "
+                "evidence capture failure(s)."
+            )
 
         db.execute(
             sqla_text("UPDATE assessments SET status=:status, updated_at=NOW() WHERE id=:id"),
@@ -1251,8 +1734,12 @@ def execute_assessment_scan(
         _update_scan_row(
             scan_id,
             status=final_status,
-            current_phase="completed" if final_status == "completed" else "failed",
-            progress=100 if final_status == "completed" else 98,
+            current_phase=(
+                "completed" if final_status == "completed"
+                else "completed_with_gaps" if final_status == "partial"
+                else "failed"
+            ),
+            progress=100 if final_status in {"completed", "partial"} else 98,
             error_message=ingestion_error or execution_error,
             raw_log="\n".join(log_lines)[-50000:],
             session_dir=actual_session_dir,
@@ -1260,19 +1747,45 @@ def execute_assessment_scan(
                 "exit_code": exit_code,
                 "ingestion_result": ingestion_result,
                 "tool_runs": final_tool_runs,
+                "evidence_seal": evidence_seal,
+                "finding_screenshot_capture": finding_capture,
+                "tool_screenshot_capture": tool_capture,
+                "coverage": coverage,
+                "tool_exceptions": tool_exceptions,
             },
             completed=True,
+        )
+        automatic_report = _queue_terminal_document_report(
+            assessment_id, org_id, scan_id, final_status,
         )
         _publish_assessment_progress(
             assessment_id,
             scan_id,
-            "assessment.scan.completed" if final_status == "completed" else "assessment.scan.failed",
-            {"assessment_id": assessment_id, "scan_id": scan_id, "status": final_status, "phase": "completed" if final_status == "completed" else "failed", "progress": 100 if final_status == "completed" else 98, "exit_code": exit_code, "error": ingestion_error},
+            "assessment.scan.completed" if final_status in {"completed", "partial"} else "assessment.scan.failed",
+            {"assessment_id": assessment_id, "scan_id": scan_id, "status": final_status, "phase": "completed" if final_status in {"completed", "partial"} else "failed", "progress": 100 if final_status in {"completed", "partial"} else 98, "exit_code": exit_code, "error": ingestion_error or execution_error, "coverage": coverage},
         )
         logger.info("Assessment scan %s: status=%s", assessment_id, final_status)
-        return {"status": final_status, "assessment_id": assessment_id, "scan_id": scan_id, "exit_code": exit_code}
+        return {
+            "status": final_status,
+            "assessment_id": assessment_id,
+            "scan_id": scan_id,
+            "exit_code": exit_code,
+            "automatic_report": automatic_report,
+        }
 
     except subprocess.TimeoutExpired as exc:
+        preservation = None
+        failed_phase = current_phase if "current_phase" in locals() else "unknown"
+        if scan_id and "actual_session_dir" in locals() and "log_lines" in locals():
+            preservation = _preserve_terminal_scan_outputs(
+                org_id=org_id, assessment_id=assessment_id, scan_id=scan_id,
+                session_dir=actual_session_dir, task_id=task_id,
+                command=cmd if "cmd" in locals() else None, log_lines=log_lines,
+                status="failed", exit_code=proc.returncode if "proc" in locals() else None,
+                target=target if "target" in locals() else "",
+            )
+            if preservation["errors"]:
+                log_lines.extend(preservation["errors"])
         if "persist_runtime_tool_runs" in locals():
             try:
                 persist_runtime_tool_runs(
@@ -1293,15 +1806,39 @@ def execute_assessment_scan(
             status="failed",
             current_phase="timeout",
             progress=100,
-            error_message=f"Scan timed out after {scan_timeout} seconds",
+            error_message=f"Scan timed out during {failed_phase} after {scan_timeout} seconds",
+            raw_log="\n".join(log_lines)[-50000:] if "log_lines" in locals() else None,
+            session_dir=actual_session_dir if "actual_session_dir" in locals() else None,
+            extra_metadata={
+                "failed_phase": failed_phase,
+                "failure_reason": "scan_timeout",
+                "ingestion_result": preservation["ingestion_result"] if preservation else None,
+                "terminal_preservation_errors": preservation["errors"] if preservation else [],
+                "evidence_seal": preservation["evidence_seal"] if preservation else None,
+                "finding_screenshot_capture": preservation["finding_screenshot_capture"] if preservation else None,
+                "tool_screenshot_capture": preservation["tool_screenshot_capture"] if preservation else None,
+            },
             completed=True,
         )
+        _queue_terminal_document_report(assessment_id, org_id, scan_id, "failed")
         _publish_assessment_progress(assessment_id, scan_id, "assessment.scan.timeout", {"assessment_id": assessment_id, "scan_id": scan_id, "status": "failed", "phase": "timeout", "progress": 100})
         if retry_cb:
             raise retry_cb(exc=exc)
         raise
 
     except Exception as exc:
+        preservation = None
+        failed_phase = current_phase if "current_phase" in locals() else "unknown"
+        if scan_id and "actual_session_dir" in locals() and "log_lines" in locals():
+            preservation = _preserve_terminal_scan_outputs(
+                org_id=org_id, assessment_id=assessment_id, scan_id=scan_id,
+                session_dir=actual_session_dir, task_id=task_id,
+                command=cmd if "cmd" in locals() else None, log_lines=log_lines,
+                status="failed", exit_code=proc.returncode if "proc" in locals() else None,
+                target=target if "target" in locals() else "",
+            )
+            if preservation["errors"]:
+                log_lines.extend(preservation["errors"])
         if "persist_runtime_tool_runs" in locals():
             try:
                 persist_runtime_tool_runs(
@@ -1325,9 +1862,21 @@ def execute_assessment_scan(
             status="failed",
             current_phase="failed",
             progress=100,
-            error_message=str(exc),
+            error_message=f"Scan failed during {failed_phase}: {exc}",
+            raw_log="\n".join(log_lines)[-50000:] if "log_lines" in locals() else None,
+            session_dir=actual_session_dir if "actual_session_dir" in locals() else None,
+            extra_metadata={
+                "failed_phase": failed_phase,
+                "failure_reason": type(exc).__name__,
+                "ingestion_result": preservation["ingestion_result"] if preservation else None,
+                "terminal_preservation_errors": preservation["errors"] if preservation else [],
+                "evidence_seal": preservation["evidence_seal"] if preservation else None,
+                "finding_screenshot_capture": preservation["finding_screenshot_capture"] if preservation else None,
+                "tool_screenshot_capture": preservation["tool_screenshot_capture"] if preservation else None,
+            },
             completed=True,
         )
+        _queue_terminal_document_report(assessment_id, org_id, scan_id, "failed")
         _publish_assessment_progress(assessment_id, scan_id, "assessment.scan.failed", {"assessment_id": assessment_id, "scan_id": scan_id, "status": "failed", "phase": "failed", "progress": 100, "error": str(exc)})
         logger.error("Assessment scan failed: %s error=%s", assessment_id, exc)
         if retry_cb:
@@ -1450,15 +1999,18 @@ def runtime_maintenance_task() -> dict:
     from app.services.assessment_runtime import reconcile_stale_scans
     from app.services.auth_sessions import purge_old_auth_sessions
     from app.services.finding_lifecycle import reopen_expired_suppressions
+    from app.services.report_jobs import backfill_missing_scan_reports
 
     async def maintain_runtime() -> dict:
         stale_scans = await reconcile_stale_scans(settings.STALE_SCAN_MINUTES)
         reopened_findings = await reopen_expired_suppressions()
         purged_sessions = await purge_old_auth_sessions()
+        report_backfill = await backfill_missing_scan_reports(limit=10)
         return {
             "stale_scans_reconciled": stale_scans,
             "expired_suppressions_reopened": reopened_findings,
             "expired_auth_sessions_purged": purged_sessions,
+            "automatic_report_backfill": report_backfill,
         }
 
     return asyncio.run(maintain_runtime())
@@ -1486,7 +2038,7 @@ def retention_maintenance_task() -> dict:
         rows = db.execute(
             sqla_text(
                 "SELECT id, session_dir, scan_metadata FROM scans "
-                "WHERE status IN ('completed','failed','cancelled') "
+                "WHERE status IN ('completed','partial','failed','cancelled') "
                 "AND completed_at < :cutoff AND session_dir IS NOT NULL"
             ),
             {"cutoff": artifact_cutoff},

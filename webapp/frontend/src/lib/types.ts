@@ -20,11 +20,12 @@ export interface Organization {
 
 export interface Assessment {
   id: string
+  operation_id?: string | null
   name: string
   description?: string | null
   target: string
   target_type: 'domain' | 'ip' | 'cidr' | 'url' | 'api' | 'file' | 'asn' | 'repository' | 'image' | 'kubernetes' | 'android' | 'ios' | 'cloud_account' | 'organization' | 'mcp'
-  status: 'created' | 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status: 'created' | 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
   scan_mode: 'light' | 'medium' | 'aggressive'
   phases: Record<string, boolean> | string[]
   flags: AssessmentFlags
@@ -41,6 +42,7 @@ export interface Assessment {
 }
 
 export interface AssessmentCreateRequest {
+  operation_id?: string
   name: string
   description?: string
   target: string
@@ -53,6 +55,14 @@ export interface AssessmentCreateRequest {
   requested_utilities?: string[]
   nuclei_tags?: string[]
   imported_targets?: ImportedAssessmentTarget[]
+  web_authentication?: {
+    login_url: string
+    username: string
+    password: string
+    username_field?: string
+    password_field?: string
+    success_url_pattern?: string
+  }
 }
 
 export interface ImportedAssessmentTarget {
@@ -93,6 +103,13 @@ export interface AssessmentFlags {
   baseline: boolean
   allow_active_validation?: boolean
   proxy?: string
+  report_context?: {
+    organization?: string
+    contact_name?: string
+    contact_role?: string
+    contact_email?: string
+    classification?: string
+  }
 }
 
 export interface ScanProfile {
@@ -108,6 +125,10 @@ export interface ScanProfile {
   pipeline: string[]
   scan_strategy: string
   readiness: Record<string, string>
+  contract_version: string
+  coverage_contract: Record<string, string | number | boolean>
+  quality_gates: Record<string, number>
+  standards: Array<{ id: string; role: string }>
   tool_plan: ToolPlanItem[]
 }
 
@@ -239,7 +260,7 @@ export interface Scan {
   assessment_id: string
   celery_task_id?: string | null
   session_dir?: string | null
-  status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status: 'pending' | 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
   current_phase?: string | null
   started_at: string | null
   completed_at: string | null
@@ -262,6 +283,48 @@ export interface ScanExecution extends Scan {
   tool_runs?: ScanToolRun[]
   artifacts?: ScanArtifact[]
 }
+
+export interface OperationWorkspace {
+  id: string
+  org_id: string
+  created_by: string
+  name: string
+  codename: string | null
+  description: string | null
+  objective: string
+  status: 'planning' | 'approved' | 'active' | 'paused' | 'completed' | 'stopped' | 'archived'
+  classification: 'internal' | 'confidential' | 'restricted'
+  operation_type: 'red_team' | 'adversary_emulation' | 'purple_team' | 'tabletop'
+  planned_start_at: string | null
+  planned_end_at: string | null
+  scope_summary: string | null
+  roe_summary: string | null
+  tags: string[]
+  approved_by: string | null
+  approved_at: string | null
+  activated_at: string | null
+  stopped_at: string | null
+  stop_reason: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface OperationWorkspaceCreateRequest {
+  name: string
+  codename?: string
+  description?: string
+  objective: string
+  status?: OperationWorkspace['status']
+  classification?: OperationWorkspace['classification']
+  operation_type?: OperationWorkspace['operation_type']
+  planned_start_at?: string | null
+  planned_end_at?: string | null
+  scope_summary?: string
+  roe_summary?: string
+  tags?: string[]
+}
+
+export type OperationTransitionAction = 'approve' | 'activate' | 'resume' | 'pause' | 'complete' | 'emergency_stop' | 'archive'
 
 export interface ScanArtifact {
   id: string
@@ -679,7 +742,7 @@ export interface Report {
   id: string
   assessment_id: string
   title: string
-  format: 'markdown' | 'html' | 'pdf' | 'sarif' | 'csv' | 'json' | 'evidence'
+  format: 'markdown' | 'html' | 'pdf' | 'docx' | 'sarif' | 'csv' | 'json' | 'evidence'
   status: 'generating' | 'ready' | 'failed' | 'cancelled'
   created_at: string
   file_size: number

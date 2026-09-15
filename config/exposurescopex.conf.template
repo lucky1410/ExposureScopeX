@@ -33,12 +33,10 @@ SYSLOG_HOST="${SYSLOG_HOST:-}"
 SYSLOG_PORT="${SYSLOG_PORT:-514}"
 
 # Autonomous Agent (Claude API)
-# Required for --agent mode. Get your key at: https://console.anthropic.com
-ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
-AGENT_MODEL="${AGENT_MODEL:-claude-opus-4-6}"
-AGENT_MAX_ITERATIONS="${AGENT_MAX_ITERATIONS:-25}"
-
 # Default Settings
 SCAN_SPEED="medium"
+# Optional hard override for the discovered hosts passed to active tools.
+# Defaults are light=50, medium=250, and aggressive=1000.
+MAX_ENUMERATION_TARGETS="${MAX_ENUMERATION_TARGETS:-}"
 THREADS=50
 USER_AGENT="ExposureScopeX-Framework/1.0"

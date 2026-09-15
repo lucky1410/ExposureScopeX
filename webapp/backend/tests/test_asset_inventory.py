@@ -1,8 +1,13 @@
 """Target normalization and scan-planning tests."""
 
 import unittest
+from types import SimpleNamespace
 
-from app.api.v1.assessments import _build_batch_target_label, _dedupe_imported_targets
+from app.api.v1.assessments import (
+    _assessment_authorization_targets,
+    _build_batch_target_label,
+    _dedupe_imported_targets,
+)
 from app.services.asset_inventory import build_seed_metadata, infer_root_domain, normalize_target
 from app.services.intake_parser import parse_csv_row
 from app.services.scan_planning import build_scan_plan
@@ -108,6 +113,26 @@ class ScanPlanningTests(unittest.TestCase):
         self.assertIn("discover", plan["pipeline"])
         self.assertIn("mcp-audit", plan["utilities"])
 
+    def test_execution_policy_rejects_exploitation_and_preserves_safe_validation(self) -> None:
+        plan = build_scan_plan(
+            scan_mode="aggressive",
+            target_type="url",
+            phases={"exploit": True},
+            flags={"agent": True, "allow_active_validation": True},
+            requested_scans=["web"],
+            requested_utilities=["sqlmap", "hydra", "nuclei"],
+            nuclei_tags=["default-login", "intrusive", "misconfig"],
+        )
+        self.assertFalse(plan["phases"]["exploit"])
+        self.assertFalse(plan["flags"]["agent"])
+        self.assertTrue(plan["flags"]["allow_active_validation"])
+        self.assertNotIn("sqlmap", plan["utilities"])
+        self.assertNotIn("hydra", plan["utilities"])
+        self.assertNotIn("default-login", plan["nuclei_tags"])
+        self.assertNotIn("intrusive", plan["nuclei_tags"])
+        self.assertIn("nuclei", plan["utilities"])
+        self.assertIn("misconfig", plan["nuclei_tags"])
+
 
 class IntakeParserTests(unittest.TestCase):
     def test_parse_loose_row(self) -> None:
@@ -189,6 +214,32 @@ class IntakeParserTests(unittest.TestCase):
 
 
 class AssessmentImportBatchTests(unittest.TestCase):
+    def test_retry_authorization_uses_declared_target_not_discoveries(self) -> None:
+        assessment = SimpleNamespace(
+            target="http://dvwa.localhost/",
+            target_type="url",
+            flags={},
+            assets=[SimpleNamespace(value="172.21.0.2", asset_type="ip")],
+        )
+        self.assertEqual(
+            _assessment_authorization_targets(assessment),
+            [("http://dvwa.localhost/", "url")],
+        )
+
+    def test_batch_retry_authorization_uses_imported_seeds(self) -> None:
+        assessment = SimpleNamespace(
+            target="targets.csv",
+            target_type="file",
+            flags={"_imported_targets": [
+                {"target": "one.example.com", "target_type": "domain"},
+                {"target": "https://two.example.com/", "target_type": "url"},
+            ]},
+        )
+        self.assertEqual(
+            _assessment_authorization_targets(assessment),
+            [("one.example.com", "domain"), ("https://two.example.com/", "url")],
+        )
+
     def test_dedupe_imported_targets_collapses_duplicate_ips(self) -> None:
         imported_targets, skipped = _dedupe_imported_targets([
             {"target": "52.71.113.79", "target_type": "ip", "name": "Gateway A"},
@@ -218,6 +269,12 @@ class ScanProgressTests(unittest.TestCase):
 
     def test_unrelated_output_does_not_change_progress(self) -> None:
         self.assertIsNone(_scan_phase_from_line("Nuclei found 4 findings"))
+
+    def test_enumeration_substeps_report_granular_progress(self) -> None:
+        self.assertEqual(
+            _scan_phase_from_line("[INFO] Fetching historical URLs with waybackurls"),
+            ("enumeration_history", 23),
+        )
 
 
 if __name__ == "__main__":

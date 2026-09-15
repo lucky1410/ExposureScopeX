@@ -44,6 +44,12 @@ SKIP_THIS_TOOL=false
 
 
 handle_interrupt() {
+    if [ "${AUTO_MODE:-false}" = true ]; then
+        log_warn "Termination requested; stopping the non-interactive scan"
+        [ -n "${ACTIVE_STAGE_PID:-}" ] && _terminate_process_tree "$ACTIVE_STAGE_PID" TERM
+        exit 130
+    fi
+
     # increment interrupt counter
     ((INTERRUPT_COUNT++))
 

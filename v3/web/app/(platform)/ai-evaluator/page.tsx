@@ -152,7 +152,50 @@ function apiError(body: { detail?: unknown }, fallback: string) {
   return fallback;
 }
 
+function LocalAiAssuranceLanding() {
+  const [isWindows, setIsWindows] = useState(true);
+
+  useEffect(() => {
+    setIsWindows(navigator.userAgent.toLowerCase().includes("windows"));
+  }, []);
+
+  const installCommand = isWindows
+    ? 'py -m pip install .\\exposurescopex_eval_runner-<version>-py3-none-any.whl'
+    : 'python3 -m pip install ./exposurescopex_eval_runner-<version>-py3-none-any.whl';
+  const setupCommand = isWindows
+    ? 'esx-eval setup --directory .\\my-application-evaluation'
+    : 'esx-eval setup --directory ./my-application-evaluation';
+  const runCommand = isWindows
+    ? 'esx-eval run --config .\\esx-eval.json --out .\\out\\evaluation.json'
+    : 'esx-eval run --config ./esx-eval.json --out ./out/evaluation.json';
+
+  return (
+    <main className="workspacePage localAssurancePage">
+      <header className="localAssuranceHero">
+        <div><p className="kicker">EXPOSURESCOPEx / LOCAL-FIRST</p><h1>PRE-D<br /><em>before you deploy.</em></h1><p>PRE-D is ExposureScopeX's pre-release AI evaluation component. Use the local runner to test an application before release while prompts, outputs, source code, and results stay on your computer.</p></div>
+        <aside className="localTrustPanel"><span>DEFAULT WORKFLOW</span><strong>Run locally. Review locally.</strong><p>A normal evaluation does not connect to ExposureScopeX, upload results, or require a platform account.</p><a href="https://github.com/lucky1410/ExposureScopeX/releases/latest" target="_blank" rel="noreferrer">Open signed release <b>&rarr;</b></a></aside>
+      </header>
+
+      <section className="localSteps" aria-label="Run a local PRE-D evaluation">
+        <article><span>01</span><p className="kicker">GET THE RUNNER</p><h2>Download one verified package.</h2><p>From the GitHub release, download the runner wheel and its <code>SHA256SUMS</code> file. Do not download the full ExposureScopeX platform.</p><code>{installCommand}</code><a href="https://github.com/lucky1410/ExposureScopeX/releases/latest" target="_blank" rel="noreferrer">Open GitHub release</a></article>
+        <article><span>02</span><p className="kicker">GUIDED SETUP</p><h2>Point it at one real workflow.</h2><p>Start the setup page, enter the local test URL, confirm the suggested response fields, choose a profile, and create the evaluation. No adapter file is needed for the normal local path.</p><code>{setupCommand}</code><small>Test one customer-facing workflow. It can orchestrate many internal agents.</small></article>
+        <article><span>03</span><p className="kicker">RUN AND REVIEW</p><h2>See the evidence on your machine.</h2><p>The terminal shows each case and calculated metrics. A local HTML report explains coverage, missing evidence, and results.</p><code>{runCommand}</code><code>esx-eval view --report ./out/evaluation.local-report.html</code></article>
+      </section>
+
+      <section className="localAssuranceFacts">
+        <article><p className="kicker">WHAT YOU NEED</p><h2>A local test copy of the application.</h2><p>Use a local API endpoint or approved loopback browser journey, safe test data, and a least-privilege test account if the application needs login. You do not need an ExposureScopeX login or production credentials.</p></article>
+        <article><p className="kicker">WHAT THE RUNNER DOES</p><h2>Tests the release behavior, not every internal file.</h2><p>It evaluates the confirmed user-facing workflow. The setup flow can inspect repository hints locally, but you choose exactly what is in scope before it sends any test case.</p></article>
+        <article><p className="kicker">NEED A DIFFERENT PATH?</p><h2>The full guide covers advanced cases.</h2><p>If the application has no normal local endpoint, needs browser checks, telemetry, staging controls, or a custom contract, use the maintained GitHub guide rather than guessing from this page.</p><a href="https://github.com/lucky1410/ExposureScopeX/blob/main/v3/client-runner/README.md" target="_blank" rel="noreferrer">Read the local runner guide <b>&rarr;</b></a></article>
+      </section>
+    </main>
+  );
+}
+
 export default function AiEvaluatorPage() {
+  return <LocalAiAssuranceLanding />;
+}
+
+function AdvancedAiEvaluatorWorkspace() {
   const [descriptor, setDescriptor] = useState<EvaluatorDescriptor | null>(null);
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [semanticRuns, setSemanticRuns] = useState<SemanticRun[]>([]);

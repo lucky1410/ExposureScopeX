@@ -159,10 +159,15 @@ def _finding_references(finding: dict) -> list[str]:
 
 
 def _profile_methodology_text(profile: str) -> str:
+    nuclei_method = (
+        "execution of a versioned, vendored, GET-only Light Nuclei allowlist against one exact declared origin"
+        if profile == "light"
+        else "execution of a versioned, inventoried, review-restricted Nuclei template profile"
+    )
     common = (
         "exact-origin validation; HTTP response profiling; profile-bounded TCP service and TLS discovery; "
         "same-origin browser crawling with destructive routes excluded, using authentication only when authorized credentials are supplied; deterministic security-header review; "
-        "execution of a pinned, inventoried, signed, non-intrusive Nuclei template profile; and post-execution evidence validation"
+        f"{nuclei_method}; and post-execution evidence validation"
     )
     additions = {
         "light": "; bounded configuration and exposure checks, including a passive certificate-transparency inventory of descendants of the exact authorized hostname only",
@@ -172,7 +177,7 @@ def _profile_methodology_text(profile: str) -> str:
     bounded = additions.get(profile, "; profile-specific observational checks")
     return (
         f"{profile.capitalize()} coverage includes {common}{bounded}. "
-        "The selected template inventory and discovered in-scope URLs define coverage. Runtime is only a watchdog boundary and is not used as a substitute for template completion. "
+        "The selected template inventory and declared target paths define coverage. Runtime is only a watchdog boundary and is not used as a substitute for template completion. "
         "All additional application checks are observational: no forms, payloads, API operations, or state-changing requests are submitted. Manual business-logic testing, exploit chaining, source review, and destructive validation remain outside this profile."
     )
 
@@ -185,7 +190,7 @@ def _testing_methodology_appendix(context: dict) -> str:
         "Service and TLS discovery uses Nmap against the approved host only; it inventories reachable services and TLS posture without authentication attacks or exploitation.",
         "Browser crawl uses Playwright, follows same-origin safe GET routes only, blocks destructive route names, and retains crawl and browser-capture artifacts. It uses an authorized account only when one was configured for the assessment.",
         "Security-header review evaluates observed target response headers. A missing X-Frame-Options finding is suppressed when a CSP frame-ancestors directive provides equivalent protection.",
-        "Nuclei runs the pinned, inventoried non-intrusive template set. Its output is normalized into candidates and must satisfy independent evidence validation before being marked confirmed.",
+        "Nuclei runs a versioned template inventory. In Light it is a small vendored GET-only allowlist against the one declared origin, with redirects disabled. Its output is normalized into candidates and must satisfy independent evidence validation before being marked confirmed.",
         "Evidence validation verifies artifact hashes and applies deterministic response checks or safe replay. It does not submit forms, payloads, API operations, or state-changing requests.",
     ]
     if "subdomain_enumeration" in stages:
@@ -198,19 +203,29 @@ def _testing_methodology_appendix(context: dict) -> str:
         methods.append("API contract review makes bounded GET-only requests to published OpenAPI or Swagger documents and does not invoke application APIs.")
     if "route_security_policy_review" in stages:
         methods.append("Route policy review compares observed HTTP controls across approved crawled routes using GET-only requests.")
+    if "external_web_posture" in stages:
+        methods.append("External web posture review makes one GET-only request with a controlled Origin header and records public CORS response policy and cookie attributes without retaining cookie values.")
     executed = ", ".join(stage["adapter"] for stage in sorted(context["stages"], key=lambda item: item["position"]))
     return f"{_profile_methodology_text(context['assessment']['mode'])}\n\nExecuted stages: {executed}.\n\n" + "\n\n".join(methods)
 
 
 def _scope_summary(scope: dict | None) -> str:
     if not scope:
-        return "No uploaded scope file was supplied; the exact target URL and explicit authorization acknowledgement were the enforced boundary."
+        return "Operator attestation only: no uploaded scope declaration was supplied for independent verification. The exact target URL was enforced as the technical boundary."
     return (
         f"Scope file: {scope['source_format'].upper()} | Authorization: {scope['authorization_id']} | "
         f"Expiry: {scope['authorization_expires_at']} | Allowed ports: {', '.join(str(port) for port in scope['allowed_ports'])} | "
         f"Allowed paths: {', '.join(scope['allowed_paths'])} | Excluded paths: {', '.join(scope['excluded_paths']) or 'None'} | "
         f"Original declaration SHA-256: {scope['source_sha256']}. Credential references are opaque identifiers only; secrets are excluded."
     )
+
+
+def _scope_assurance_label(context: dict) -> str:
+    return "VALIDATED SCOPE DECLARATION" if context.get("scope") else "OPERATOR-ATTESTED SCOPE"
+
+
+def _assessment_lead(context: dict) -> str:
+    return "scope-declared" if context.get("scope") else "operator-attested"
 
 
 def _finding_index_rows(findings: list[dict]) -> list[list[str]]:
@@ -397,6 +412,20 @@ def _profile_evidence_sections(context: dict) -> list[dict]:
                 ["Routes missing one or more policy headers", sum(bool(item.get("missing_headers")) for item in routes if "status" in item)],
             ],
         })
+
+    web_posture = _latest_json_artifact(artifacts, "external_web_posture_summary")
+    if web_posture:
+        cookies = list(web_posture.get("public_cookies") or [])
+        sections.append({
+            "title": "External Browser Policy Review",
+            "summary": "GET-only review of public CORS policy and cookie attributes using a controlled test Origin.",
+            "rows": [
+                ["Access-Control-Allow-Origin", web_posture.get("allow_origin") or "Not observed"],
+                ["Credentialed CORS allowed", "Yes" if web_posture.get("allow_credentials") else "No"],
+                ["Public cookies observed", len(cookies)],
+                ["Evidence-linked posture findings", web_posture.get("finding_count") or 0],
+            ],
+        })
     return sections
 
 
@@ -446,6 +475,10 @@ def _doc_table(document: Document, headers: list[str], rows: list[list[object]])
         shading = OxmlElement("w:shd")
         shading.set(qn("w:fill"), "16324F")
         cell._tc.get_or_add_tcPr().append(shading)
+    header_properties = table.rows[0]._tr.get_or_add_trPr()
+    header_marker = OxmlElement("w:tblHeader")
+    header_marker.set(qn("w:val"), "true")
+    header_properties.append(header_marker)
     for values in rows:
         cells = table.add_row().cells
         for index, value in enumerate(values):
@@ -533,11 +566,37 @@ def _curated_findings(findings: list[dict]) -> tuple[list[dict], list[dict], lis
     return risks, kept, suppressed
 
 
-def _overall_risk(findings: list[dict]) -> str:
+def _coverage_is_complete(scan_status: object, coverage: list[dict]) -> bool:
+    if str(scan_status) != "complete":
+        return False
+    successful = {"completed", "succeeded"}
+    return all(
+        not item.get("required") or str(item.get("status")) in successful
+        for item in coverage
+    )
+
+
+def _overall_risk(findings: list[dict], scan_status: object, coverage: list[dict]) -> str:
+    """Expose uncertainty instead of turning missing coverage into a clean result."""
+    complete = _coverage_is_complete(scan_status, coverage)
+    confirmed = [
+        item for item in findings
+        if (item.get("validation_status") or "candidate") == "confirmed"
+    ]
     for severity in SEVERITIES[:-1]:
-        if any(item.get("severity") == severity and (item.get("validation_status") or "candidate") != "rejected" for item in findings):
-            return severity.upper()
-    return "NONE IDENTIFIED"
+        if any(item.get("severity") == severity for item in confirmed):
+            return f"{severity.upper()}{'' if complete else ' - COVERAGE INCOMPLETE'}"
+    if any((item.get("validation_status") or "candidate") == "candidate" for item in findings):
+        return f"POTENTIAL RISK - REVIEW REQUIRED{'' if complete else ' - COVERAGE INCOMPLETE'}"
+    if not complete:
+        return "INCONCLUSIVE - COVERAGE INCOMPLETE"
+    return "NO VALIDATED RISK IDENTIFIED"
+
+
+def _coverage_conclusion(scan_status: object, coverage: list[dict]) -> str:
+    if _coverage_is_complete(scan_status, coverage):
+        return "Declared plan coverage completed. This does not claim exhaustive security coverage or that the target is secure."
+    return "Coverage is incomplete. No absence-of-risk or clean-security conclusion can be drawn from this assessment."
 
 
 def _duration(stage: dict) -> str:
@@ -923,19 +982,19 @@ def render_docx(context: dict) -> bytes:
     title = document.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title.add_run("EXPOSURESCOPEX\n").bold = True
-    title.add_run("Authorized Security Assessment Report").bold = True
+    title.add_run("Scope-Bounded Security Assessment Report").bold = True
     for run in title.runs:
         run.font.name = "Aptos Display"; run.font.size = Pt(24); run.font.color.rgb = RGBColor.from_string("16324F")
-    subtitle = document.add_paragraph(f"{assessment['name']}\n{assessment['target']}\nEXECUTION {scan['status'].upper()} | {assessment['mode'].upper()} PROFILE")
+    subtitle = document.add_paragraph(f"{assessment['name']}\n{assessment['target']}\nPLAN STATUS {scan['status'].upper()} | {assessment['mode'].upper()} PROFILE")
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    document.add_paragraph("CONFIDENTIAL | AUTHORIZED SECURITY TESTING").alignment = WD_ALIGN_PARAGRAPH.CENTER
+    document.add_paragraph(f"CONFIDENTIAL | {_scope_assurance_label(context)}").alignment = WD_ALIGN_PARAGRAPH.CENTER
     document.add_page_break()
 
     _doc_heading(document, "Contents")
     _doc_table(document, ["Section Order", "Section"], [[index, section] for index, section in enumerate(REPORT_SECTIONS, start=1)])
     _doc_heading(document, "Document Control")
     _doc_heading(document, "Document History", 2)
-    _doc_table(document, ["Version", "Issued", "Report Status", "Execution Status", "Change"], [["1.5", _format_timestamp(context["generated_at"]), context["report_status"].upper(), str(scan["status"]).upper(), "Corrected coverage accounting, secret redaction, URL normalization, and shared evidence exhibits"]])
+    _doc_table(document, ["Version", "Issued", "Report Status", "Plan Status", "Change"], [["1.6", _format_timestamp(context["generated_at"]), context["report_status"].upper(), str(scan["status"]).upper(), "Clarified scope basis, reduced Light template scope, and kept full terminal evidence in the technical bundle"]])
     _doc_heading(document, "Point of Contact", 2)
     _doc_table(document, ["Organization", "Team", "Email"], [[settings().report_organization, settings().report_contact, getattr(settings(), "report_contact_email", "Not provided")]])
     _doc_heading(document, "Executive Summary")
@@ -944,13 +1003,14 @@ def render_docx(context: dict) -> bytes:
         state: sum((item.get("validation_status") or "candidate") == state for item in risk_findings)
         for state in ("confirmed", "candidate", "rejected", "inconclusive")
     }
-    _doc_body(document, f"The authorized {assessment['mode']} assessment finished with operational status {scan['status']}. Overall technical risk is {_overall_risk(risk_findings)} based on {len(risk_findings)} distinct risk findings: {assurance_counts['confirmed']} confirmed, {assurance_counts['candidate']} candidates, {assurance_counts['rejected']} rejected, and {assurance_counts['inconclusive']} inconclusive. {len(observations)} non-risk security observations are reported separately and {len(suppressed)} duplicate observation was suppressed. All {len(context['artifacts'])} retained artifacts remain available in the evidence bundle.")
-    _doc_table(document, ["Overall Risk", "Critical", "High", "Medium", "Low", "Observations"], [[_overall_risk(risk_findings), counts["critical"], counts["high"], counts["medium"], counts["low"], len(observations)]])
-    _doc_body(document, f"Priority: remediate confirmed findings from highest to lowest severity, then independently review candidate observations. A COMPLETE execution status means every planned {assessment['mode']} stage reached a successful terminal state; it does not claim exhaustive penetration-test coverage.")
+    assessment_conclusion = _overall_risk(risk_findings, scan["status"], context["coverage"])
+    _doc_body(document, f"The {_assessment_lead(context)} {assessment['mode']} assessment finished with plan status {scan['status']}. Assessment conclusion: {assessment_conclusion}. {_coverage_conclusion(scan['status'], context['coverage'])} The result is based on {len(risk_findings)} distinct risk findings: {assurance_counts['confirmed']} confirmed, {assurance_counts['candidate']} candidates, {assurance_counts['rejected']} rejected, and {assurance_counts['inconclusive']} inconclusive. {len(observations)} non-risk security observations are reported separately and {len(suppressed)} duplicate observation was suppressed. All {len(context['artifacts'])} retained artifacts remain available in the evidence bundle.")
+    _doc_table(document, ["Assessment Conclusion", "Critical", "High", "Medium", "Low", "Observations"], [[assessment_conclusion, counts["critical"], counts["high"], counts["medium"], counts["low"], len(observations)]])
+    _doc_body(document, f"Priority: remediate confirmed findings from highest to lowest severity, then independently review candidate observations. A COMPLETE plan status means every planned {assessment['mode']} stage reached a successful terminal state; it does not claim exhaustive penetration-test coverage.")
     _doc_heading(document, "Project Scope")
     _doc_table(document, ["Assessment", "Target", "Perspective", "Profile", "Plan", "Safety"], [[assessment["name"], assessment["target"], _assessment_perspective(context), assessment["mode"], scan.get("plan_version") or "-", "Non-exploitative"]])
     _doc_body(document, _scope_summary(context.get("scope")))
-    _doc_body(document, f"Testing was restricted to the authorized origin and the immutable {assessment['mode']} plan. It did not include exploitation, destructive requests, persistence, credential attacks, source-code review, or manual business-logic abuse. Results therefore describe observed conditions within this profile, not all vulnerabilities that may exist.")
+    _doc_body(document, f"Testing was restricted to the declared origin and the immutable {assessment['mode']} plan. It did not include exploitation, destructive requests, persistence, credential attacks, source-code review, or manual business-logic abuse. Results therefore describe observed conditions within this profile, not all vulnerabilities that may exist.")
     _doc_heading(document, "Profiling")
     _doc_body(document, _profiling_summary_intro(context))
     _doc_heading(document, "Execution Summary", 2)
@@ -1076,7 +1136,7 @@ def render_docx(context: dict) -> bytes:
         _doc_body(document, "No versioned benchmark was attributed to this target. Accuracy, precision, recall, and F1 are therefore not claimed by this report.")
 
     _doc_heading(document, "Appendix A: Engagement Methodology")
-    _doc_table(document, ["Phase", "Purpose", "Evidence Produced"], [["1. Authorization and scope", "Validate exact origin, authorization acknowledgement, and safety boundary.", "Scope manifest and preflight transcript"], ["2. Attack-surface profiling", "Establish HTTP reachability, services, TLS posture, and authenticated routes.", "HTTP, service, TLS, crawl, and browser artifacts"], ["3. Deterministic assessment", "Run the immutable profile and pinned signed non-intrusive template inventory.", "Tool output, template inventory, and terminal transcripts"], ["4. Finding normalization", "Deduplicate observations and preserve source-to-finding provenance.", "Finding records and canonical observation keys"], ["5. Independent validation", "Verify hashes and apply safe replay or deterministic evidence oracles.", "Assurance decisions and validation replay"], ["6. Reporting", "Disclose coverage, exceptions, risk, evidence, and benchmark limitations.", "DOCX, PDF, and evidence ZIP"]])
+    _doc_table(document, ["Phase", "Purpose", "Evidence Produced"], [["1. Scope and boundary", "Record operator attestation, validate a supplied scope declaration, and enforce the exact origin.", "Scope manifest and preflight transcript"], ["2. Attack-surface profiling", "Establish HTTP reachability, services, TLS posture, and authenticated routes.", "HTTP, service, TLS, crawl, and browser artifacts"], ["3. Deterministic assessment", "Run the immutable profile and versioned non-intrusive template inventory.", "Tool output and template inventory"], ["4. Finding normalization", "Deduplicate observations and preserve source-to-finding provenance.", "Finding records and canonical observation keys"], ["5. Independent validation", "Verify hashes and apply safe replay or deterministic evidence oracles.", "Assurance decisions and validation replay"], ["6. Reporting", "Disclose coverage, exceptions, risk, evidence, and benchmark limitations.", "DOCX, PDF, and evidence ZIP"]])
     _doc_body(document, "Execution used leases, heartbeats, bounded concurrency, rate limits, and hard watchdog deadlines. No exploitation, persistence, destructive requests, credential attacks, or data extraction were performed. A successful stage means its declared bounded work completed; it does not imply that every possible vulnerability class was tested.")
     _doc_heading(document, "Appendix B: Risk Methodology")
     _doc_body(document, "Technical severity reflects the plausible consequence of the observed weakness. Confidence and assurance are separate: CONFIRMED requires intact evidence plus a deterministic oracle or safe independent replay; CANDIDATE indicates a scanner match that still requires analyst validation; REJECTED means independent evidence contradicted the claim; INCONCLUSIVE means evidence integrity or replay was insufficient. Informational technology detections do not affect overall risk. Business risk requires asset criticality, exposure and compensating-control context and is not fabricated by this report.")
@@ -1089,20 +1149,8 @@ def render_docx(context: dict) -> bytes:
     _doc_heading(document, "Appendix E: Evidence Integrity Manifest")
     _doc_body(document, "The evidence ZIP contains the complete machine-readable manifest and every retained original. The report uses excerpts only for readability; hashes always refer to the complete original bytes.")
     _doc_table(document, ["Artifact Kind", "Count", "Total Bytes"], _artifact_summary(context["artifacts"]))
-    terminals = _terminal_artifacts(context["artifacts"])
-    if terminals:
-        _doc_heading(document, "Terminal Evidence Index", 2)
-        _doc_table(document, ["Capture", "SHA-256 Prefix"], [[Path(item["storage_key"]).name, item["sha256"][:16]] for item in terminals])
-        document.add_page_break()
-        _doc_heading(document, "Terminal Evidence Exhibits", 2)
-        for index, exhibit in enumerate(_terminal_exhibits(context["artifacts"], artifacts), start=1):
-            if index > 1:
-                document.add_page_break()
-            item = exhibit["artifact"]
-            _doc_heading(document, f"T-{index:03d}: {exhibit['adapter']}", 2)
-            _doc_body(document, f"Screenshot SHA-256: {item['sha256']}\nTranscript SHA-256: {exhibit['transcript_sha256']}\nProvenance: {exhibit['provenance']}")
-            width, height = _screenshot_overview_size(exhibit["content"], 6.2, 4.5)
-            document.add_picture(io.BytesIO(exhibit["content"]), width=Inches(width), height=Inches(height))
+    if _terminal_artifacts(context["artifacts"]):
+        _doc_body(document, "Full terminal transcripts and captures are retained in the Technical Evidence ZIP. They are deliberately omitted from this decision report so presentation pages remain concise and reproducible evidence stays machine-readable.")
     output = io.BytesIO(); document.save(output); return output.getvalue()
 
 
@@ -1121,21 +1169,21 @@ def render_pdf(context: dict) -> bytes:
     styles["Heading2"].keepWithNext = True
     styles["Heading3"].keepWithNext = True
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=42, leftMargin=42, topMargin=42, bottomMargin=54, title=f"ExposureScopeX report - {context['assessment']['name']}")
-    story = [Paragraph("EXPOSURESCOPEX", title), Spacer(1, 12), Paragraph("Authorized Security Assessment Report", title), Spacer(1, 20), Paragraph(_pdf_text(context["assessment"]["name"]), styles["Heading2"]), Paragraph(_pdf_text(context["assessment"]["target"]), body), Paragraph(f"EXECUTION {context['scan']['status'].upper()} | {context['assessment']['mode'].upper()} PROFILE", body), Spacer(1, 24), Paragraph("CONFIDENTIAL | AUTHORIZED SECURITY TESTING", body), PageBreak()]
+    story = [Paragraph("EXPOSURESCOPEX", title), Spacer(1, 12), Paragraph("Scope-Bounded Security Assessment Report", title), Spacer(1, 20), Paragraph(_pdf_text(context["assessment"]["name"]), styles["Heading2"]), Paragraph(_pdf_text(context["assessment"]["target"]), body), Paragraph(f"PLAN STATUS {context['scan']['status'].upper()} | {context['assessment']['mode'].upper()} PROFILE", body), Spacer(1, 24), Paragraph(f"CONFIDENTIAL | {_scope_assurance_label(context)}", body), PageBreak()]
     story += [Paragraph("Contents", heading), Table([[str(index), section] for index, section in enumerate(REPORT_SECTIONS, start=1)], colWidths=[0.65*inch, 6.0*inch], style=TableStyle([("GRID",(0,0),(-1,-1),.25,colors.grey),("FONTSIZE",(0,0),(-1,-1),8),("BACKGROUND",(0,0),(0,-1),colors.HexColor("#EAF2F7"))]))]
     simple_sections = [
-        ("Executive Summary", f"The authorized {context['assessment']['mode']} assessment finished with operational status {context['scan']['status']}. Overall technical risk is {_overall_risk(risk_findings)} based on {len(risk_findings)} distinct risk findings: {assurance_counts['confirmed']} confirmed, {assurance_counts['candidate']} candidates, {assurance_counts['rejected']} rejected and {assurance_counts['inconclusive']} inconclusive. {len(observations)} non-risk observations are reported separately; {len(suppressed)} duplicate observation was suppressed. COMPLETE means all planned profile stages succeeded, not exhaustive penetration-test coverage."),
+        ("Executive Summary", f"The {_assessment_lead(context)} {context['assessment']['mode']} assessment finished with plan status {context['scan']['status']}. Assessment conclusion: {_overall_risk(risk_findings, context['scan']['status'], context['coverage'])}. {_coverage_conclusion(context['scan']['status'], context['coverage'])} The result is based on {len(risk_findings)} distinct risk findings: {assurance_counts['confirmed']} confirmed, {assurance_counts['candidate']} candidates, {assurance_counts['rejected']} rejected and {assurance_counts['inconclusive']} inconclusive. {len(observations)} non-risk observations are reported separately; {len(suppressed)} duplicate observation was suppressed."),
         ("Project Scope", f"Target: {context['assessment']['target']} | Profile: {context['assessment']['mode']} | Plan: {context['scan'].get('plan_version') or '-'} | {_assessment_perspective(context)} perspective | Non-exploitative. {_scope_summary(context.get('scope'))} Testing excluded exploitation, destructive requests, persistence, credential attacks, source review and manual business-logic abuse."),
         ("Profiling", _profiling_summary_intro(context)),
     ]
     history_rows = [
-        [Paragraph(value, table_header) for value in ["Version", "Issued", "Report Status", "Execution Status", "Change"]],
-        [_pdf_cell(value, body) for value in ["1.5", _format_timestamp(context["generated_at"]), context["report_status"].upper(), str(context["scan"]["status"]).upper(), "Corrected coverage accounting, secret redaction, URL normalization, and shared evidence exhibits"]],
+        [Paragraph(value, table_header) for value in ["Version", "Issued", "Report Status", "Plan Status", "Change"]],
+        [_pdf_cell(value, body) for value in ["1.6", _format_timestamp(context["generated_at"]), context["report_status"].upper(), str(context["scan"]["status"]).upper(), "Clarified scope basis, reduced Light template scope, and retained terminal evidence in the technical bundle"]],
     ]
     story += [Paragraph("Document Control", heading), Paragraph("Document History", styles["Heading3"]), Table(history_rows, colWidths=[.7*inch, 1.2*inch, .9*inch, 1.05*inch, 3.15*inch], style=TableStyle([("GRID",(0,0),(-1,-1),.25,colors.HexColor("#D9D9D9")),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#16324F")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTSIZE",(0,0),(-1,-1),7),("PADDING",(0,0),(-1,-1),4)])), Paragraph("Point of Contact", styles["Heading3"]), Table([["Organization", "Team", "Email"], [settings().report_organization, settings().report_contact, getattr(settings(), "report_contact_email", "Not provided")]], colWidths=[2.1*inch, 2.1*inch, 2.4*inch], style=TableStyle([("GRID",(0,0),(-1,-1),.25,colors.HexColor("#D9D9D9")),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#16324F")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTSIZE",(0,0),(-1,-1),7),("PADDING",(0,0),(-1,-1),4)]))]
     for name, value in simple_sections:
         story += [Paragraph(name, heading), Paragraph(_pdf_text(value), body)]
-    story += [Paragraph("Risk Distribution", heading), Table([["Overall Risk", "Critical", "High", "Medium", "Low", "Observations"], [_overall_risk(risk_findings), counts["critical"], counts["high"], counts["medium"], counts["low"], len(observations)]], colWidths=[1.2*inch, .75*inch, .75*inch, .75*inch, .75*inch, 1.1*inch], style=TableStyle([("GRID",(0,0),(-1,-1),.25,colors.HexColor("#D9D9D9")),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#16324F")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"CENTER"),("FONTSIZE",(0,0),(-1,-1),8),("PADDING",(0,0),(-1,-1),5)])), Paragraph("Execution Summary", styles["Heading3"])]
+    story += [Paragraph("Risk Distribution", heading), Table([["Assessment Conclusion", "Critical", "High", "Medium", "Low", "Observations"], [_overall_risk(risk_findings, context["scan"]["status"], context["coverage"]), counts["critical"], counts["high"], counts["medium"], counts["low"], len(observations)]], colWidths=[1.75*inch, .65*inch, .65*inch, .65*inch, .65*inch, 1.15*inch], style=TableStyle([("GRID",(0,0),(-1,-1),.25,colors.HexColor("#16324F")),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#16324F")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("ALIGN",(1,1),(-1,-1),"CENTER"),("FONTSIZE",(0,0),(-1,-1),8),("PADDING",(0,0),(-1,-1),5)])), Paragraph("Execution Summary", styles["Heading3"])]
     execution_rows = [[Paragraph(value, table_header) for value in ["No.", "Stage", "Req.", "Status", "Duration", "Exception"]]]
     execution_rows.extend([[item["position"] + 1, _pdf_text(item["adapter"]), "Yes" if item["required"] else "No", item["status"], _duration(item), _pdf_text(item.get("error_detail") or "-")] for item in context["stages"]])
     story.append(Table(execution_rows, colWidths=[.42*inch, 1.55*inch, .55*inch, .75*inch, .7*inch, 2.63*inch], repeatRows=1, style=TableStyle([("GRID",(0,0),(-1,-1),.25,colors.HexColor("#D9D9D9")),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#16324F")),("VALIGN",(0,0),(-1,-1),"TOP"),("FONTSIZE",(0,0),(-1,-1),7),("PADDING",(0,0),(-1,-1),4)])))
@@ -1279,7 +1327,7 @@ def render_pdf(context: dict) -> bytes:
     else:
         story.append(Paragraph("No versioned benchmark was attributed to this target. Accuracy, precision, recall and F1 are not claimed.", body))
     appendices = [
-        ("Appendix A: Engagement Methodology", "The engagement used six controlled phases: authorization and exact-origin scope validation; HTTP, service, TLS, and authenticated route profiling; deterministic execution of an immutable plan and pinned template inventory; immediate artifact ingestion and finding normalization; independent hash and safe-replay validation; and report finalization with explicit exceptions. Leases, heartbeats, rate limits, bounded concurrency, and hard watchdog deadlines controlled execution. Every stage retained its status and transcript. No exploitation, persistence, destructive requests, credential attacks, or data extraction were performed."),
+        ("Appendix A: Engagement Methodology", "The engagement used six controlled phases: operator attestation and exact-origin boundary validation, with independent scope-declaration validation when supplied; HTTP, service, TLS, and authenticated route profiling; deterministic execution of an immutable plan and versioned template inventory; immediate artifact ingestion and finding normalization; independent hash and safe-replay validation; and report finalization with explicit exceptions. Leases, heartbeats, rate limits, bounded concurrency, and hard watchdog deadlines controlled execution. Every stage retained its status and transcript. No exploitation, persistence, destructive requests, credential attacks, or data extraction were performed."),
         ("Appendix B: Risk Methodology", "Technical severity reflects plausible consequence. CONFIRMED requires intact evidence plus a deterministic oracle or safe replay. CANDIDATE requires analyst validation. REJECTED means independent evidence contradicted the claim. INCONCLUSIVE means evidence or replay was insufficient. Informational detections do not affect overall risk. Business risk requires client context."),
         ("Appendix C: Testing Methodologies", _testing_methodology_appendix(context)),
         ("Appendix D: Execution Coverage and Exceptions", _execution_exception_summary(context["stages"]) + " | " + " | ".join(f"{item['adapter']}={item['status']} ({item.get('error_detail') or 'no exception'})" for item in context["stages"])),
@@ -1287,22 +1335,9 @@ def render_pdf(context: dict) -> bytes:
     ]
     for name, value in appendices: story += [Paragraph(name, heading), Paragraph(_pdf_text(value, 12000), body)]
     summary_rows = [["Artifact Kind", "Count", "Total Bytes"], *_artifact_summary(context["artifacts"])]
-    story.append(Table(summary_rows, colWidths=[3.6*inch, 1*inch, 1.6*inch], style=TableStyle([("GRID",(0,0),(-1,-1),.25,colors.HexColor("#D9D9D9")),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#16324F")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTSIZE",(0,0),(-1,-1),7),("PADDING",(0,0),(-1,-1),4)])))
-    terminals = _terminal_artifacts(context["artifacts"])
-    if terminals:
-        story.append(Paragraph("Terminal Evidence Index", styles["Heading3"]))
-        terminal_rows = [["Capture", "SHA-256 Prefix"], *[[_pdf_cell(Path(item["storage_key"]).name, body), item["sha256"][:16]] for item in terminals]]
-        story.append(Table(terminal_rows, colWidths=[2.7*inch, 3.9*inch], style=TableStyle([("GRID",(0,0),(-1,-1),.25,colors.HexColor("#D9D9D9")),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#16324F")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTSIZE",(0,0),(-1,-1),6.5),("PADDING",(0,0),(-1,-1),4)])))
-        story.append(PageBreak())
-        story.append(Paragraph("Terminal Evidence Exhibits", styles["Heading3"]))
-        for index, exhibit in enumerate(_terminal_exhibits(context["artifacts"], context["artifacts_by_id"]), start=1):
-            if index > 1:
-                story.append(PageBreak())
-            item = exhibit["artifact"]
-            exhibit_story = [Paragraph(f"T-{index:03d}: {_pdf_text(exhibit['adapter'])}", styles["Heading3"]), Paragraph(_pdf_text(f"Screenshot SHA-256: {item['sha256']}\nTranscript SHA-256: {exhibit['transcript_sha256']}\nProvenance: {exhibit['provenance']}"), body)]
-            width, height = _screenshot_overview_size(exhibit["content"], 6.4, 4.5)
-            exhibit_story.append(Image(io.BytesIO(exhibit["content"]), width=width*inch, height=height*inch))
-            story.append(KeepTogether(exhibit_story))
+    story.append(Table(summary_rows, colWidths=[3.6*inch, 1*inch, 1.6*inch], repeatRows=1, style=TableStyle([("GRID",(0,0),(-1,-1),.25,colors.HexColor("#D9D9D9")),("BACKGROUND",(0,0),(-1,0),colors.HexColor("#16324F")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTSIZE",(0,0),(-1,-1),7),("PADDING",(0,0),(-1,-1),4)])))
+    if _terminal_artifacts(context["artifacts"]):
+        story.append(Paragraph("Full terminal transcripts and captures are retained in the Technical Evidence ZIP. They are deliberately omitted from this decision report so presentation pages remain concise and reproducible evidence stays machine-readable.", body))
     doc.build(story, onFirstPage=_pdf_page_number, onLaterPages=_pdf_page_number); return buffer.getvalue()
 
 

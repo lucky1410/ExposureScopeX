@@ -261,8 +261,14 @@ def _run_case(
         "outcome": "passed",
     }
     if requires_auth and state is None:
-        diagnostic.update({"outcome": "failed", "failure_kind": session_error or "authenticated_session_unavailable"})
-        return _result(adapter, case, False), diagnostic
+        # The browser never reached the application workflow, so this is a
+        # coverage boundary rather than a failed product assertion.
+        diagnostic.update({
+            "outcome": "blocked",
+            "failure_stage": "session_setup",
+            "failure_kind": session_error or "authenticated_session_unavailable",
+        })
+        return _result(adapter, case, None), diagnostic
     context = browser.new_context(storage_state=state) if state is not None else browser.new_context()
     page = context.new_page()
     observations = {"console_error_count": 0, "page_error_count": 0, "request_failure_count": 0}
@@ -278,7 +284,12 @@ def _run_case(
             except Exception as exc:
                 step.update({"status": "failed", "attempt_count": int(action.get("retry_count", 0)) + 1, "duration_ms": round((time.monotonic() - started) * 1000), "failure_kind": _failure_kind(exc, timeout_error, playwright_error), **_page_observation(page, adapter["base_url"])})
                 diagnostic["steps"].append(step)
-                diagnostic.update({"outcome": "failed", "failure_kind": step["failure_kind"], "browser_health": observations})
+                diagnostic.update({
+                    "outcome": "failed",
+                    "failure_stage": "workflow_execution",
+                    "failure_kind": step["failure_kind"],
+                    "browser_health": observations,
+                })
                 screenshot = _capture_failure_screenshot(page, adapter, str(case["case_id"]))
                 if screenshot:
                     diagnostic["failure_screenshot"] = screenshot
@@ -291,7 +302,9 @@ def _run_case(
         context.close()
 
 
-def _result(adapter: dict[str, Any], case: dict[str, Any], passed: bool) -> dict[str, object]:
+def _result(adapter: dict[str, Any], case: dict[str, Any], passed: bool | None) -> dict[str, object]:
+    if passed is None:
+        return {"case_id": case["case_id"], "execution_status": "blocked"}
     return {
         "case_id": case["case_id"],
         "predicted_label": adapter.get("pass_label", "pass") if passed else adapter.get("fail_label", "fail"),

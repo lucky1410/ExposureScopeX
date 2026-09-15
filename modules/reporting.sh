@@ -28,11 +28,11 @@ generate_vuln_summary() {
     # Count by severity
     local critical=0 high=0 medium=0 low=0 info=0
     if [ -f "$nuclei_file" ] && [ -s "$nuclei_file" ]; then
-        critical=$(grep -ci "\[critical\]" "$nuclei_file" 2>/dev/null || echo 0)
-        high=$(grep -ci "\[high\]"     "$nuclei_file" 2>/dev/null || echo 0)
-        medium=$(grep -ci "\[medium\]" "$nuclei_file" 2>/dev/null || echo 0)
-        low=$(grep -ci "\[low\]"       "$nuclei_file" 2>/dev/null || echo 0)
-        info=$(grep -ci "\[info\]"     "$nuclei_file" 2>/dev/null || echo 0)
+        critical=$(grep -ci "\[critical\]" "$nuclei_file" 2>/dev/null || true)
+        high=$(grep -ci "\[high\]"     "$nuclei_file" 2>/dev/null || true)
+        medium=$(grep -ci "\[medium\]" "$nuclei_file" 2>/dev/null || true)
+        low=$(grep -ci "\[low\]"       "$nuclei_file" 2>/dev/null || true)
+        info=$(grep -ci "\[info\]"     "$nuclei_file" 2>/dev/null || true)
         has_data=true
     fi
 
@@ -40,17 +40,17 @@ generate_vuln_summary() {
     local nikto_count=0 ssl_issues=0 header_issues=0 api_issues=0
 
     for f in "${session_dir}"/nikto_*.txt; do
-        [ -f "$f" ] && nikto_count=$(( nikto_count + $(grep -c "OSVDB\|+" "$f" 2>/dev/null || echo 0) ))
+        [ -f "$f" ] && nikto_count=$(( nikto_count + $(grep -c "OSVDB\|+" "$f" 2>/dev/null || true) ))
     done
 
     [ -f "${session_dir}/ssl_results.txt" ] && \
-        ssl_issues=$(grep -c "\[WEAK\]\|\[CRITICAL\]\|\[HIGH\]" "${session_dir}/ssl_results.txt" 2>/dev/null || echo 0)
+        ssl_issues=$(grep -c "\[WEAK\]\|\[CRITICAL\]\|\[HIGH\]" "${session_dir}/ssl_results.txt" 2>/dev/null || true)
 
     [ -f "${session_dir}/http_headers.txt" ] && \
-        header_issues=$(grep -c "\[MISSING\]\|\[MISCONFIGURATION\]" "${session_dir}/http_headers.txt" 2>/dev/null || echo 0)
+        header_issues=$(grep -c "\[MISSING\]\|\[MISCONFIGURATION\]" "${session_dir}/http_headers.txt" 2>/dev/null || true)
 
     [ -f "${session_dir}/api_security.txt" ] && \
-        api_issues=$(grep -c "\[CRITICAL\]\|\[HIGH\]\|\[MEDIUM\]" "${session_dir}/api_security.txt" 2>/dev/null || echo 0)
+        api_issues=$(grep -c "\[CRITICAL\]\|\[HIGH\]\|\[MEDIUM\]" "${session_dir}/api_security.txt" 2>/dev/null || true)
 
     local total=$(( critical + high + medium + low + info ))
 
@@ -166,7 +166,7 @@ generate_sarif_report() {
         done < "$nuclei_file"
     fi
 
-    jq -n \
+    if jq -n \
         --argjson results "$results_json" \
         '{
             "version": "2.1.0",
@@ -181,9 +181,14 @@ generate_sarif_report() {
                 },
                 "results": $results
             }]
-        }' > "$sarif_output" 2>/dev/null && \
-        log_success "SARIF report: $sarif_output" || \
-        log_warn "SARIF generation failed"
+        }' > "$sarif_output" 2>/dev/null; then
+        log_success "SARIF report: $sarif_output"
+        return 0
+    fi
+
+    rm -f "$sarif_output"
+    log_warn "SARIF generation failed"
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -196,7 +201,7 @@ generate_html_report() {
 
     if ! command -v pandoc &>/dev/null; then
         log_warn "pandoc required for HTML report — skipping"
-        return 1
+        return 0
     fi
 
     log_info "Generating HTML report..."
@@ -204,11 +209,11 @@ generate_html_report() {
     # Count severities for the summary chart data
     local critical=0 high=0 medium=0 low=0 info=0
     if [ -f "${session_dir}/nuclei_results.txt" ]; then
-        critical=$(grep -ci "\[critical\]" "${session_dir}/nuclei_results.txt" 2>/dev/null || echo 0)
-        high=$(grep -ci "\[high\]"         "${session_dir}/nuclei_results.txt" 2>/dev/null || echo 0)
-        medium=$(grep -ci "\[medium\]"     "${session_dir}/nuclei_results.txt" 2>/dev/null || echo 0)
-        low=$(grep -ci "\[low\]"           "${session_dir}/nuclei_results.txt" 2>/dev/null || echo 0)
-        info=$(grep -ci "\[info\]"         "${session_dir}/nuclei_results.txt" 2>/dev/null || echo 0)
+        critical=$(grep -ci "\[critical\]" "${session_dir}/nuclei_results.txt" 2>/dev/null || true)
+        high=$(grep -ci "\[high\]"         "${session_dir}/nuclei_results.txt" 2>/dev/null || true)
+        medium=$(grep -ci "\[medium\]"     "${session_dir}/nuclei_results.txt" 2>/dev/null || true)
+        low=$(grep -ci "\[low\]"           "${session_dir}/nuclei_results.txt" 2>/dev/null || true)
+        info=$(grep -ci "\[info\]"         "${session_dir}/nuclei_results.txt" 2>/dev/null || true)
     fi
 
     # Inject a Chart.js severity bar chart into a header HTML file
@@ -453,11 +458,16 @@ generate_report() {
 
     log_success "Markdown report: $report_md"
 
-    # HTML report
-    generate_html_report "$session_dir"
+    # HTML and PDF are convenience copies. The backend creates the authoritative
+    # client DOCX/PDF after ingestion, so converter availability is non-blocking.
+    generate_html_report "$session_dir" || \
+        log_warn "Optional HTML report generation failed"
 
-    # SARIF report
-    generate_sarif_report "$session_dir"
+    # Markdown and SARIF are the scanner's required report-stage contract.
+    if ! generate_sarif_report "$session_dir"; then
+        log_error "Required SARIF report generation failed"
+        return 1
+    fi
 
     # PDF via pandoc
     if command -v pandoc &>/dev/null; then
@@ -474,5 +484,37 @@ generate_report() {
         log_warn "pandoc not found — skipping PDF generation"
     fi
 
+    if ! validate_required_report_artifacts "$session_dir"; then
+        log_error "Required report artifacts are missing or empty"
+        return 1
+    fi
+
+    return 0
+}
+
+validate_required_report_artifacts() {
+    local session_dir=$1
+    [ -s "${session_dir}/report.md" ] && [ -s "${session_dir}/report.sarif" ]
+}
+
+# Reporting is complete once the local artifacts exist. Optional notification
+# channels must not turn a successful report into a failed coverage stage.
+generate_report_and_notify() {
+    local session_dir=$1
+    local label=$2
+
+    generate_report "$session_dir" || return $?
+    if [ "${SLACK_NOTIFY:-false}" = true ]; then
+        send_slack_notification "ExposureScopeX complete: $label" "${session_dir}/report.pdf" || \
+            log_warn "Slack notification delivery failed"
+    fi
+    if [ "${TEAMS_NOTIFY:-false}" = true ]; then
+        send_teams_notification "ExposureScopeX complete: $label" || \
+            log_warn "Teams notification delivery failed"
+    fi
+    if [ "${SIEM_NOTIFY:-false}" = true ]; then
+        send_siem_log "Scan complete for $label" "INFO" || \
+            log_warn "SIEM notification delivery failed"
+    fi
     return 0
 }

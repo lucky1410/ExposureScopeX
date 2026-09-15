@@ -18,11 +18,12 @@ run_crawler() {
     # ── Resolve target to a URL list ──────────────────────────────────────
     local -a start_urls=()
     local ttype
+    local fallback_variants=false
     ttype=$(detect_target_type "$target" 2>/dev/null)
     case "$ttype" in
         url)    start_urls=("$target") ;;
-        domain) start_urls=("http://$target" "https://$target") ;;
-        ip)     start_urls=("http://$target" "https://$target") ;;
+        domain) start_urls=("https://$target" "http://$target"); fallback_variants=true ;;
+        ip)     start_urls=("https://$target" "http://$target"); fallback_variants=true ;;
         file)
             # Use live_hosts or the file itself as a URL list
             if [ -s "${output_dir}/live_hosts.txt" ]; then
@@ -37,10 +38,20 @@ run_crawler() {
             ;;
     esac
 
+    local max_start_urls=10
+    case "${MODE:-medium}" in
+        light) max_start_urls=3 ;;
+        aggressive) max_start_urls=25 ;;
+    esac
+    if [ "${#start_urls[@]}" -gt "$max_start_urls" ]; then
+        log_warn "Crawler input capped at ${max_start_urls}/${#start_urls[@]} URL(s) for ${MODE:-medium} mode"
+        start_urls=("${start_urls[@]:0:$max_start_urls}")
+    fi
+
     log_info "Starting web crawler for ${#start_urls[@]} URL(s)..."
 
     if command -v katana &>/dev/null; then
-        _crawl_katana start_urls "$crawl_out"
+        _crawl_katana start_urls "$crawl_out" "$fallback_variants"
     elif command -v gospider &>/dev/null; then
         _crawl_gospider start_urls "$crawl_out"
     elif command -v hakrawler &>/dev/null; then
@@ -50,6 +61,14 @@ run_crawler() {
         log_info "  Install katana: go install github.com/projectdiscovery/katana/cmd/katana@latest"
         _crawl_bash start_urls "$crawl_out"
     fi
+
+    local scoped_out="${crawl_out}.scoped"
+    filter_targets_to_scope "$target" "$crawl_out" "$scoped_out" || {
+        log_error "Crawler scope containment failed; discarding crawler output"
+        : > "$crawl_out"
+        return 1
+    }
+    mv "$scoped_out" "$crawl_out"
 
     # ── Post-processing: extract interesting findings ──────────────────────
     _extract_crawler_intel "$crawl_out" "$output_dir"
@@ -62,17 +81,46 @@ run_crawler() {
 
 # ── Tool wrappers ──────────────────────────────────────────────────────────────
 
+_crawl_depth() {
+    if [[ "${CRAWL_MAX_DEPTH:-}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "$CRAWL_MAX_DEPTH"
+        return
+    fi
+    case "${MODE:-medium}" in
+        light) echo 1 ;;
+        aggressive) echo 5 ;;
+        *) echo 3 ;;
+    esac
+}
+
 _crawl_katana() {
     local -n _urls=$1
     local out=$2
+    local fallback_variants=${3:-false}
     log_info "Crawler: katana (JS-aware)"
+    local depth
+    local -a auth_args=()
+    depth=$(_crawl_depth)
+    if auth_header=$(web_auth_cookie_header "$(dirname "$out")" 2>/dev/null); then
+        auth_args=(-H "$auth_header")
+    fi
     for u in "${_urls[@]}"; do
-        run_tool "katana" "katana" \
+        if run_tool "katana" "katana" \
             -u "$u" \
-            -d 3 \
+            -d "$depth" \
+            -fs fqdn \
             -silent \
             -jc \
-            -o "${out}.katana_tmp" 2>/dev/null || log_warn "katana failed on $u"
+            -fr '(?i)/(logout|logoff|signout|delete|remove|setup|install|reset)([/?#]|$)' \
+            "${auth_args[@]}" \
+            -o "${out}.katana_tmp" 2>/dev/null; then
+            [ -f "${out}.katana_tmp" ] && cat "${out}.katana_tmp" >> "$out" && rm -f "${out}.katana_tmp"
+            # HTTP and HTTPS are fallback variants of the same seed. Once one
+            # yields coverage, do not repeat the crawl against its redirect.
+            [ "$fallback_variants" = true ] && [ -s "$out" ] && break
+        else
+            log_warn "katana failed on $u"
+        fi
         [ -f "${out}.katana_tmp" ] && cat "${out}.katana_tmp" >> "$out" && rm -f "${out}.katana_tmp"
     done
 }
@@ -80,13 +128,14 @@ _crawl_katana() {
 _crawl_gospider() {
     local -n _urls=$1
     local out=$2
+    local depth
+    depth=$(_crawl_depth)
     log_info "Crawler: gospider"
     for u in "${_urls[@]}"; do
         run_tool "gospider" "gospider" \
             -s "$u" \
-            -d 3 \
+            -d "$depth" \
             -c 10 \
-            --include-subs \
             -q \
             -o "${out}.gospider_tmp" 2>/dev/null || log_warn "gospider failed on $u"
         if [ -d "${out}.gospider_tmp" ]; then
@@ -99,11 +148,12 @@ _crawl_gospider() {
 _crawl_hakrawler() {
     local -n _urls=$1
     local out=$2
+    local depth
+    depth=$(_crawl_depth)
     log_info "Crawler: hakrawler"
     for u in "${_urls[@]}"; do
         echo "$u" | run_tool "hakrawler" "hakrawler" \
-            -d 3 \
-            -subs >> "$out" 2>/dev/null || log_warn "hakrawler failed on $u"
+            -d "$depth" >> "$out" 2>/dev/null || log_warn "hakrawler failed on $u"
     done
 }
 
@@ -111,13 +161,14 @@ _crawl_hakrawler() {
 # Uses only curl + standard POSIX utilities — zero external dependencies.
 # Stays on the same domain, respects depth and page limits.
 
-CRAWL_MAX_DEPTH=${CRAWL_MAX_DEPTH:-3}
 CRAWL_MAX_PAGES=${CRAWL_MAX_PAGES:-300}
 CRAWL_TIMEOUT=${CRAWL_TIMEOUT:-10}  # curl per-page timeout
 
 _crawl_bash() {
     local -n _start_urls=$1
     local out=$2
+    local max_depth
+    max_depth=$(_crawl_depth)
 
     for start_url in "${_start_urls[@]}"; do
         [[ "$start_url" =~ ^https?:// ]] || continue
@@ -126,20 +177,22 @@ _crawl_bash() {
         local scheme
         scheme=$(echo "$start_url" | grep -oE '^https?')
 
-        log_info "Built-in crawler starting at $start_url (depth=$CRAWL_MAX_DEPTH, max=$CRAWL_MAX_PAGES pages)"
+        log_info "Built-in crawler starting at $start_url (depth=$max_depth, max=$CRAWL_MAX_PAGES pages)"
 
         local visited_file queue_file link_buf
         visited_file=$(mktemp); register_cleanup "$visited_file"
         queue_file=$(mktemp);   register_cleanup "$queue_file"
         link_buf=$(mktemp);     register_cleanup "$link_buf"
 
-        echo "$start_url" > "$queue_file"
+        printf '0\t%s\n' "$start_url" > "$queue_file"
         local page_count=0
 
         while [ -s "$queue_file" ] && [ "$page_count" -lt "$CRAWL_MAX_PAGES" ]; do
             # Pop the first URL from the queue
-            local url
-            url=$(head -1 "$queue_file")
+            local queue_entry url current_depth
+            queue_entry=$(head -1 "$queue_file")
+            current_depth=${queue_entry%%$'\t'*}
+            url=${queue_entry#*$'\t'}
             sed -i '1d' "$queue_file" 2>/dev/null || { tail -n +2 "$queue_file" > "${queue_file}.t" && mv "${queue_file}.t" "$queue_file"; }
 
             # Skip already-visited
@@ -160,7 +213,8 @@ _crawl_bash() {
             # Record this URL
             echo "$url" >> "$out"
 
-            # Extract all href/src/action link targets
+            # Extract all href/src/action link targets until the profile depth is reached.
+            [ "$current_depth" -ge "$max_depth" ] && continue
             : > "$link_buf"
             echo "$html" | \
                 grep -oE '(href|src|action)="[^"#?]*"' | \
@@ -169,8 +223,10 @@ _crawl_bash() {
                 while IFS= read -r raw_link; do
                     local abs_url=""
                     if [[ "$raw_link" =~ ^https?:// ]]; then
-                        # Only follow same-domain absolute links
-                        [[ "$raw_link" == *"$base_domain"* ]] && abs_url="$raw_link"
+                        # Only follow the exact seed host; never request external links.
+                        local link_domain
+                        link_domain=$(echo "$raw_link" | sed -E 's|^https?://([^/:]+).*|\1|')
+                        [[ "$link_domain" = "$base_domain" ]] && abs_url="$raw_link"
                     elif [[ "$raw_link" =~ ^/ ]]; then
                         abs_url="${scheme}://${base_domain}${raw_link}"
                     elif [[ "$raw_link" =~ ^[a-zA-Z0-9._-] ]]; then
@@ -185,8 +241,8 @@ _crawl_bash() {
             # Enqueue newly discovered links
             while IFS= read -r new_url; do
                 grep -qxF "$new_url" "$visited_file" 2>/dev/null && continue
-                grep -qxF "$new_url" "$queue_file"   2>/dev/null && continue
-                echo "$new_url" >> "$queue_file"
+                cut -f2- "$queue_file" | grep -qxF "$new_url" 2>/dev/null && continue
+                printf '%s\t%s\n' "$((current_depth + 1))" "$new_url" >> "$queue_file"
             done < "$link_buf"
         done
 

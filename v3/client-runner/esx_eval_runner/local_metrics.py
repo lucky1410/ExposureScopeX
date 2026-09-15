@@ -48,6 +48,11 @@ def claims_metrics(claims: list[dict[str, Any]] | None) -> dict[str, Any]:
 
 
 def classification_metrics(expected: list[str], predicted: list[str]) -> dict[str, Any]:
+    if not expected:
+        return _unavailable(
+            "No cases reached an application workflow; classification quality is unavailable.",
+            labels=[], ground_truth_class_count=0, confusion_matrix={}, sample_size=0,
+        )
     labels = sorted(set(expected) | set(predicted))
     matrix = {actual: {guess: 0 for guess in labels} for actual in labels}
     for actual, guess in zip(expected, predicted, strict=True):
@@ -96,6 +101,11 @@ def classification_metrics(expected: list[str], predicted: list[str]) -> dict[st
 
 
 def confidence_metrics(expected: list[str], predicted: list[str], confidences: list[float]) -> dict[str, Any]:
+    if not expected:
+        return _unavailable(
+            "No cases reached an application workflow; confidence calibration is unavailable.",
+            sample_size=0, bins=[],
+        )
     correctness = [float(actual == guess) for actual, guess in zip(expected, predicted, strict=True)]
     brier = _ratio(sum((confidence - correct) ** 2 for confidence, correct in zip(confidences, correctness, strict=True)), len(correctness))
     ece = 0.0
@@ -149,6 +159,47 @@ def trajectory_metrics(trajectory: dict[str, Any] | None) -> dict[str, Any]:
         "policy_compliant": compliant, "policy_violations": trajectory["policy_violations"],
         "scope_violations": trajectory["scope_violations"], "tool_misuse_events": trajectory["tool_misuse_events"],
         "score": _rounded(coverage * 0.6 + max(0.0, efficiency) * 0.2 + (1.0 if compliant else 0.0) * 0.2),
+    }
+
+
+def tool_use_metrics(tool_use: dict[str, Any] | None) -> dict[str, Any]:
+    """Measure tool selection and control enforcement from labelled local traces."""
+    cases = tool_use.get("cases", []) if tool_use else []
+    if not cases:
+        return _unavailable("No labelled tool-use observations were supplied; tool selection and execution controls cannot be measured.")
+    expected_total = sum(len(case["expected_tool_names"]) for case in cases)
+    observed_total = sum(len(case["observed_tool_names"]) for case in cases)
+    matching = sum(
+        len(set(case["expected_tool_names"]) & set(case["observed_tool_names"]))
+        for case in cases
+    )
+    precision = _ratio(matching, observed_total)
+    recall = _ratio(matching, expected_total)
+    selection_f1 = _ratio(2 * precision * recall, precision + recall)
+    exact = [
+        case["case_id"] for case in cases
+        if set(case["expected_tool_names"]) != set(case["observed_tool_names"])
+    ]
+    unauthorized = [case["case_id"] for case in cases if not case["authorized"]]
+    invalid_results = [case["case_id"] for case in cases if not case["result_valid"]]
+    evidence_covered = [
+        case for case in cases
+        if case["evidence_ids"] and case["evidence_integrity_valid"] is True
+    ]
+    return {
+        "measurement_status": "measured",
+        "case_count": len(cases),
+        "selection_precision": _rounded(precision),
+        "selection_recall": _rounded(recall),
+        "selection_f1": _rounded(selection_f1),
+        "exact_tool_set_rate": _rounded(_ratio(len(cases) - len(exact), len(cases))),
+        "authorization_rate": _rounded(_ratio(len(cases) - len(unauthorized), len(cases))),
+        "result_validity_rate": _rounded(_ratio(len(cases) - len(invalid_results), len(cases))),
+        "evidence_coverage": _rounded(_ratio(len(evidence_covered), len(cases))),
+        "unexpected_or_missing_tool_case_ids": exact,
+        "unauthorized_tool_case_ids": unauthorized,
+        "invalid_tool_result_case_ids": invalid_results,
+        "definition": "Labelled expected tools compared with redacted observed tool names and execution-control outcomes.",
     }
 
 
@@ -270,6 +321,7 @@ def calculate_local_metrics(package: dict[str, Any]) -> dict[str, dict[str, Any]
         "groundedness": claims_metrics(measurements.get("claims")),
         "security": security_metrics(measurements.get("security")),
         "trajectory": trajectory_metrics(measurements.get("trajectory")),
+        "tool_use": tool_use_metrics(measurements.get("tool_use")),
         "rag": rag_metrics(measurements.get("rag")),
         "robustness": robustness_metrics(measurements.get("robustness")),
         "judge_agreement": _agreement(measurements.get("judge_agreement"), "judge_id", "judge_count", "Judge agreement measures consistency, not correctness."),

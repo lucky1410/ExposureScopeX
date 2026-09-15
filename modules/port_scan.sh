@@ -23,7 +23,12 @@ run_port_scan() {
                 log_error "nmap required for CIDR host discovery"
                 return 1
             fi
-            nmap -sn "$target" -oG - 2>/dev/null | awk '/Up$/{print $2}' > "$sweep_file"
+            local sweep_raw="${output_dir}/sweep_hosts.gnmap"
+            if ! run_tool "nmap" "nmap" -sn "$target" -oG "$sweep_raw"; then
+                log_error "CIDR host discovery failed"
+                return 1
+            fi
+            awk '/Up$/{print $2}' "$sweep_raw" > "$sweep_file"
             local live_count
             live_count=$(wc -l < "$sweep_file" 2>/dev/null || echo 0)
             if [ "$live_count" -eq 0 ]; then
@@ -97,10 +102,10 @@ run_port_scan() {
             if ! sudo -v &>/dev/null; then
                 log_warn "No sudo privileges for masscan; skipping masscan"
             else
-                sudo masscan -p1-65535 --rate=1000 --wait=0 "${scan_targets[0]}" -oL "$masscan_output" || true
+                run_tool "masscan" "sudo" masscan -p1-65535 --rate=1000 --wait=0 "${scan_targets[0]}" -oL "$masscan_output" || true
             fi
         else
-            masscan -p1-65535 --rate=1000 --wait=0 "${scan_targets[0]}" -oL "$masscan_output" || true
+            run_tool "masscan" "masscan" -p1-65535 --rate=1000 --wait=0 "${scan_targets[0]}" -oL "$masscan_output" || true
         fi
         if [ -f "$masscan_output" ]; then
             masscan_ports=$(grep "open tcp" "$masscan_output" | awk '{print $3}' | sort -u | paste -sd ',' -)

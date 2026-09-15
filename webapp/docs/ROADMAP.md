@@ -1,11 +1,11 @@
 # ExposureScopeX — Product Roadmap
 
-> Planning document reconciled on 2026-09-09. Current status is in
+> Planning document reconciled on 2026-09-10. Current status is in
 > `PRODUCT_STATUS.md` and priorities are in `../BACKLOG.md`; quarter labels below
 > retain historical planning context.
 
 **Version:** 2.2.0
-**Last Updated:** 2026-09-09
+**Last Updated:** 2026-09-10
 **Planning Horizon:** Q3 2026 — Q2 2027 (core), 2028+ (future bets)
 **Maintainer:** SecOps24 Engineering
 
@@ -13,7 +13,7 @@
 
 ## Vision Statement
 
-ExposureScopeX will become the standard platform for organizations that operate security programs at practitioner depth — teams that need more than a SaaS scanner dashboard but fewer than a full security operations center. Every organization should be able to stand up a continuously monitored, AI-augmented attack surface management program in under an hour, from a single `docker compose up`.
+ExposureScopeX will become the standard platform for organizations that operate security programs at practitioner depth — teams that need more than a SaaS scanner dashboard but fewer than a full security operations center. Every organization should be able to stand up a continuously monitored, deterministic attack-surface assessment program in under an hour, from a single `docker compose up`. AI remains outside scanning and is limited to evidence-grounded post-scan analysis.
 
 By 2027, ExposureScopeX evolves from a single-organization tool into a multi-tenant SaaS platform with a marketplace of integrations, SSO for enterprise customers, and AI-driven attack path analysis that connects external exposure directly to internal blast radius.
 
@@ -63,7 +63,7 @@ By 2027, ExposureScopeX evolves from a single-organization tool into a multi-ten
 
 ### Goals
 
-- All assessment phases (enum, scan, cloud, exploit) end-to-end in the web UI
+- All deterministic, non-exploitative assessment phases end-to-end in the web UI
 - Real-time scan progress visible in the browser from phase 1 through completion
 - SARIF and HTML report generation operational for CI/CD and client delivery
 - Integration layer: Slack, Splunk HEC, and Jira working
@@ -198,22 +198,23 @@ ExposureScopeX v3.0.0 — "Platform"
 
 ---
 
-## Q2 2027 — AI Attack Path Analysis, Threat Intelligence Feeds
+## Q2 2027 — Evidence-Grounded Risk Paths, Threat Intelligence Feeds
 
-**Theme:** Move from finding enumeration to adversary simulation.
+**Theme:** Move from finding enumeration to defensible risk-path correlation.
 
 ### Goals
 
-- AI-driven attack path analysis connecting external findings to internal blast radius
+- Evidence-grounded risk-path analysis connecting external findings to internal blast radius
 - Live threat intelligence feed integration (MITRE ATT&CK, CVE feeds, threat actor TTPs)
-- Autonomous agent mode productized and exposed through the web UI
+- Post-scan AI assistance for explanation and remediation, never scan execution
 - MSSP white-label reporting and bulk assessment management
 
 ### Major Features
 
 #### AI-Powered Attack Path Analysis
 
-The existing `--agent` mode (Claude claude-opus-4-6, 25-iteration agentic loop, 13 tools) is promoted from a CLI flag to a first-class UI workflow:
+Post-scan analysis derives risk paths from normalized assets, findings, and
+immutable evidence without selecting or executing scanner actions:
 
 - **Attack graph visualization**: D3.js force-directed graph showing the path from initial access (external finding) through lateral movement opportunities to crown-jewel assets
 - **Confidence scoring**: Each attack path edge labeled with exploitability and impact confidence scores derived from CVSSv3 + contextual signals
@@ -305,7 +306,7 @@ All integrations follow the same pattern established in `modules/integrations.sh
 | Identity | JWT (email/password) | JWT + SAML/OIDC SSO | SSO + SCIM provisioning |
 | Deployment | Docker Compose (single node) | Kubernetes (Helm chart) | Managed cloud hosting option |
 | Integrations | Slack/Teams/Splunk (CLI) | 10-integration marketplace | 20+ integrations, webhook-based |
-| AI | `--agent` CLI flag (25 iterations) | Agent mode in UI (streaming) | Attack path graph + CVE intelligence |
+| AI | Outside scan execution | Evidence-cited analyst assistance | Risk-path graph + CVE intelligence |
 | Reporting | MD/HTML/PDF/SARIF (CLI) | Web-generated, per-org branded | Compliance frameworks (PCI, SOC 2) |
 | Billing | Self-hosted, free | Usage metering in place | SaaS subscription tiers |
 | Support | GitHub Issues | Community + email | Enterprise SLA (business hours) |
@@ -316,9 +317,12 @@ All integrations follow the same pattern established in `modules/integrations.sh
 
 These are directional bets, not committed features. They will be re-evaluated based on market signals, customer feedback, and competitive landscape in 2027.
 
-### Breach and Attack Simulation (BAS)
+### Detection Collaboration Without Attack Simulation
 
-Extend `exploitation.sh` from Hydra/Metasploit hooks into a full BAS module: automated exploitation of known vulnerabilities in isolated lab environments, atomic red team exercises mapped to MITRE ATT&CK, and continuous validation that security controls are effective.
+Correlate immutable assessment evidence with authorized telemetry supplied by a
+separate blue-team SOC platform. ExposureScopeX will exchange findings, ATT&CK
+context, detection coverage, and remediation state, but will not execute breach
+simulation, exploit payloads, credential attacks, or persistence techniques.
 
 ### Browser-Based IDE for Security Scripts
 

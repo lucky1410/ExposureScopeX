@@ -25,6 +25,7 @@ from app.reporting import (
     _profile_evidence_sections,
     _screenshot_scope_error,
     _screenshot_segments,
+    _overall_risk,
     report_status_for_scan,
     render_docx,
     render_pdf,
@@ -61,6 +62,26 @@ class ReportingTests(unittest.TestCase):
                 {"family": "service_tls_http_configuration", "required": True, "status": "timed_out"},
             ],
         }
+
+    def test_incomplete_coverage_never_returns_a_clean_result(self) -> None:
+        self.assertEqual(
+            _overall_risk([], "partial", [{"required": True, "status": "timed_out"}]),
+            "INCONCLUSIVE - COVERAGE INCOMPLETE",
+        )
+
+    def test_candidate_is_not_reported_as_confirmed_risk(self) -> None:
+        finding = {"severity": "critical", "validation_status": "candidate"}
+        self.assertEqual(
+            _overall_risk([finding], "complete", [{"required": True, "status": "completed"}]),
+            "POTENTIAL RISK - REVIEW REQUIRED",
+        )
+
+    def test_partial_candidate_discloses_its_coverage_limit(self) -> None:
+        finding = {"severity": "critical", "validation_status": "candidate"}
+        self.assertEqual(
+            _overall_risk([finding], "partial", [{"required": True, "status": "timed_out"}]),
+            "POTENTIAL RISK - REVIEW REQUIRED - COVERAGE INCOMPLETE",
+        )
 
     def test_docx_contains_required_client_sections(self) -> None:
         content = render_docx(self.context())
@@ -206,7 +227,7 @@ class ReportingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             report_status_for_scan("running")
 
-    def test_document_history_records_both_report_and_execution_status(self) -> None:
+    def test_document_history_records_both_report_and_plan_status(self) -> None:
         context = self.context()
         context["scan"]["status"] = "failed"
         context["report_status"] = report_status_for_scan("failed")
@@ -214,8 +235,28 @@ class ReportingTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             document_xml = archive.read("word/document.xml").decode("utf-8")
         self.assertIn("Report Status", document_xml)
-        self.assertIn("Execution Status", document_xml)
+        self.assertIn("Plan Status", document_xml)
         self.assertIn("FAILED", document_xml)
+
+    def test_reports_do_not_claim_independently_validated_scope_without_a_scope_file(self) -> None:
+        content = render_docx(self.context())
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        self.assertIn("Scope-Bounded Security Assessment Report", document_xml)
+        self.assertIn("OPERATOR-ATTESTED SCOPE", document_xml)
+        self.assertNotIn("Authorized Security Assessment Report", document_xml)
+
+    def test_terminal_captures_remain_in_the_technical_bundle_not_the_decision_report(self) -> None:
+        context = self.context()
+        context["artifacts"].append({
+            "id": "terminal-1", "storage_key": "scan/nuclei-terminal.png", "kind": "terminal_capture",
+            "media_type": "image/png", "sha256": "b" * 64, "size_bytes": 128, "captured_at": datetime.now(timezone.utc),
+        })
+        content = render_docx(context)
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        self.assertIn("Full terminal transcripts and captures are retained in the Technical Evidence ZIP", document_xml)
+        self.assertNotIn("Terminal Evidence Exhibits", document_xml)
 
     def test_coverage_family_rows_summarize_completed_and_exceptional_cases(self) -> None:
         rows = _coverage_family_rows(self.context()["coverage"])

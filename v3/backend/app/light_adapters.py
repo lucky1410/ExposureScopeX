@@ -26,7 +26,7 @@ from .db import pool
 from .evidence_capture import authenticated_context, capture_page, close_context, enforce_browser_scope, safe_route, same_origin
 from .methodology_cases import canonical_observation_key, evaluate_evidence_oracle
 from .nuclei_validation import evaluate_nuclei_replay, has_safe_replay_oracle
-from .nuclei_profiles import inventory_manifest, selection_arguments
+from .nuclei_profiles import inventory_manifest, maximum_template_count, selection_arguments
 from .secrets import decrypt_secret
 from .redaction import redact_object, redact_text
 from .target_planning import canonical_http_url, nuclei_targets
@@ -34,11 +34,11 @@ from .scope_files import path_is_in_scope, scope_dispatch_error
 
 
 SECURITY_HEADERS = {
-    "content-security-policy": ("Content Security Policy is missing", "medium", "Define and test a restrictive Content-Security-Policy before enforcement."),
-    "strict-transport-security": ("HTTP Strict Transport Security is missing", "medium", "Serve exclusively over HTTPS and configure an approved Strict-Transport-Security policy."),
-    "x-content-type-options": ("MIME sniffing protection is missing", "low", "Set X-Content-Type-Options: nosniff on applicable responses."),
-    "x-frame-options": ("Clickjacking protection is missing", "low", "Define CSP frame-ancestors and retain X-Frame-Options for legacy clients where required."),
-    "referrer-policy": ("Referrer policy is missing", "low", "Set an explicit Referrer-Policy aligned with application navigation requirements."),
+    "content-security-policy": ("Response observation: Content-Security-Policy header absent", "info", "Define and test a restrictive Content-Security-Policy before enforcement."),
+    "strict-transport-security": ("Response observation: Strict-Transport-Security header absent", "info", "Serve exclusively over HTTPS and configure an approved Strict-Transport-Security policy."),
+    "x-content-type-options": ("Response observation: X-Content-Type-Options header absent", "info", "Set X-Content-Type-Options: nosniff on applicable responses."),
+    "x-frame-options": ("Response observation: X-Frame-Options header absent", "info", "Define CSP frame-ancestors and retain X-Frame-Options for legacy clients where required."),
+    "referrer-policy": ("Response observation: Referrer-Policy header absent", "info", "Set an explicit Referrer-Policy aligned with application navigation requirements."),
 }
 
 PROFILE_POLICY = {
@@ -47,8 +47,8 @@ PROFILE_POLICY = {
         "nmap_label": "fixed-common-web-ports",
         "nmap_host_timeout": "120s",
         "subdomain_limit": 100,
-        "crawl_depth": 2, "crawl_urls": 20, "screenshots": 12, "surface_urls": 0,
-        "nuclei_urls": 1, "rate": 20, "concurrency": 5, "bulk": 5,
+        "crawl_depth": 2, "crawl_urls": 25, "screenshots": 12, "surface_urls": 20,
+        "nuclei_urls": 1, "rate": 2, "concurrency": 1, "bulk": 1,
     },
     "medium": {
         "nmap": ["--top-ports", "100"],
@@ -135,8 +135,24 @@ async def load_authentication(assessment_id) -> dict | None:
     }
 
 
-def fetch_url(url: str) -> dict:
-    request = Request(url, headers={"User-Agent": "ExposureScopeX/3.0 deterministic-assessment"}, method="GET")
+def _public_cookie_metadata(headers) -> list[dict]:
+    """Preserve cookie controls without retaining cookie values in evidence."""
+    cookies = []
+    for value in headers.get_all("Set-Cookie", []):
+        parts = [part.strip() for part in value.split(";") if part.strip()]
+        if not parts or "=" not in parts[0]:
+            continue
+        name = parts[0].split("=", 1)[0][:160]
+        attributes = {part.split("=", 1)[0].strip().lower() for part in parts[1:]}
+        same_site = next((part.split("=", 1)[1].strip().lower() for part in parts[1:] if part.lower().startswith("samesite=")), None)
+        cookies.append({"name": name, "secure": "secure" in attributes, "http_only": "httponly" in attributes, "same_site": same_site})
+    return cookies
+
+
+def fetch_url(url: str, *, request_headers: dict[str, str] | None = None) -> dict:
+    headers = {"User-Agent": "ExposureScopeX/3.0 deterministic-assessment"}
+    headers.update(request_headers or {})
+    request = Request(url, headers=headers, method="GET")
     try:
         response = build_opener(ScopedRedirectHandler(url)).open(request, timeout=settings().request_timeout_seconds)
     except HTTPError as exc:
@@ -147,10 +163,11 @@ def fetch_url(url: str) -> dict:
             "request": {
                 "method": "GET",
                 "url": url,
-                "headers": {"user-agent": "ExposureScopeX/3.0 deterministic-assessment"},
+                "headers": {key.lower(): value for key, value in headers.items()},
             },
             "requested_url": url, "final_url": response.geturl(), "status": response.status,
-            "headers": {key.lower(): value for key, value in response.headers.items()},
+            "headers": {key.lower(): value for key, value in response.headers.items() if key.lower() != "set-cookie"},
+            "set_cookies": _public_cookie_metadata(response.headers),
             "body_preview": body[:8192].decode("utf-8", errors="replace"),
             "body_sha256": hashlib.sha256(body).hexdigest(), "body_truncated": len(body) >= 512 * 1024,
             "observed_at": utcnow().isoformat(),
@@ -579,6 +596,8 @@ async def api_contract_review(stage: dict) -> dict:
     contracts = []
     for suffix in paths:
         url = urljoin(stage["target"].rstrip("/") + "/", suffix.lstrip("/"))
+        if not route_is_in_scope(stage, url):
+            continue
         try:
             response = await asyncio.to_thread(fetch_url, url)
             parsed = json.loads(response.get("body_preview") or "{}")
@@ -592,7 +611,7 @@ async def api_contract_review(stage: dict) -> dict:
 
 
 async def route_security_policy_review(stage: dict) -> dict:
-    _, policy = profile_policy(stage)
+    mode, policy = profile_policy(stage)
     urls = await _crawl_urls(stage, int(policy["surface_urls"]))
     observations = []
     for url in urls:
@@ -602,7 +621,7 @@ async def route_security_policy_review(stage: dict) -> dict:
             observations.append({"url": response["final_url"], "status": response["status"], "missing_headers": sorted(header for header in SECURITY_HEADERS if header not in observed), "body_sha256": response["body_sha256"]})
         except Exception as exc:
             observations.append({"url": url, "error": f"{type(exc).__name__}: {exc}"})
-    payload = {"target": stage["target"], "profile": "aggressive", "request_method": "GET", "submitted_forms": False, "routes": observations}
+    payload = {"target": stage["target"], "profile": mode, "request_method": "GET", "submitted_forms": False, "routes": observations}
     await persist_json(stage, payload, kind="route_security_policy_review", name="route-security-policy-review.json", metadata={"tool": "safe-http-policy-review", "url_limit": len(urls)})
     completed = sum("status" in item for item in observations)
     return {"command": f"route-security-policy-review --get-only --limit {len(urls)}", "transcript": f"Reviewed HTTP policy-header consistency across {completed}/{len(urls)} approved routes using GET only. No forms, payloads, or state-changing requests were submitted."}
@@ -655,6 +674,71 @@ async def security_headers(stage: dict) -> dict:
     return {"command": "security-header-audit [AUTHORIZED_TARGET]", "transcript": f"Inspected {len(SECURITY_HEADERS)} security headers\nCreated {created} evidence-linked findings\nHTTP status {result['status']}"}
 
 
+async def external_web_posture(stage: dict) -> dict:
+    """Check public browser-facing policy without using credentials or request bodies."""
+    probe_origin = "https://esx-cors-probe.invalid"
+    result = await asyncio.to_thread(fetch_url, stage["target"], request_headers={"Origin": probe_origin})
+    headers = result["headers"]
+    allow_origin = str(headers.get("access-control-allow-origin") or "").strip()
+    allow_credentials = str(headers.get("access-control-allow-credentials") or "").strip().lower() == "true"
+    source = await persist_json(
+        stage,
+        redact_object(result),
+        kind="external_web_posture",
+        name="external-web-posture.json",
+        metadata={"tool": "safe-cors-and-cookie-review", "request_method": "GET", "probe_origin": probe_origin, "secret_redacted": True},
+    )
+    created = 0
+
+    async def add_finding(title: str, severity: str, fingerprint_key: str, description: str, impact: str, remediation: str, evidence: dict) -> None:
+        nonlocal created
+        fingerprint = hashlib.sha256(f"{stage['target']}|external-web-posture|{fingerprint_key}".encode()).hexdigest()
+        status = await pool().execute(
+            """INSERT INTO findings (scan_id, stage_run_id, source_artifact_id, fingerprint, title, severity, confidence, target, description, business_impact, remediation, evidence)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) ON CONFLICT (scan_id, fingerprint) DO NOTHING""",
+            stage["scan_id"], stage["id"], source["id"], fingerprint, title, severity, 90, stage["target"], description, impact, remediation, evidence,
+        )
+        created += status.endswith("1")
+
+    evidence_base = {
+        "source_artifact_id": str(source["id"]), "source_sha256": source["sha256"],
+        "requested_url": result["requested_url"], "final_url": result["final_url"],
+        "status": result["status"], "observed_at": result["observed_at"], "requires_screenshot": False,
+    }
+    if allow_origin == probe_origin and allow_credentials:
+        await add_finding(
+            "Credentialed CORS accepted an arbitrary origin", "high", "credentialed-cors-reflection",
+            "The target reflected the controlled arbitrary Origin value and allowed credentialed browser requests.",
+            "A user with an active compatible session could expose cross-origin responses to an attacker-controlled website.",
+            "Restrict Access-Control-Allow-Origin to approved origins and do not enable credentials for untrusted origins.",
+            {**evidence_base, "evidence_type": "credentialed_cors_reflection", "probe_origin": probe_origin, "allow_origin": allow_origin, "allow_credentials": True},
+        )
+    for cookie in result["set_cookies"]:
+        name = str(cookie["name"])
+        session_like = any(token in name.lower() for token in ("session", "sess", "auth", "token", "php"))
+        if not session_like:
+            continue
+        for control, missing, severity, remediation in (
+            ("Secure", urlsplit(result["final_url"]).scheme == "https" and not cookie["secure"], "medium", "Set the Secure attribute on session-like cookies issued over HTTPS."),
+            ("HttpOnly", not cookie["http_only"], "medium", "Set the HttpOnly attribute unless the cookie is intentionally designed for script access."),
+        ):
+            if missing:
+                await add_finding(
+                    f"Publicly issued session-like cookie lacks {control}", severity, f"cookie-{name}-{control.lower()}",
+                    f"The unauthenticated response issued cookie {name!r} without the {control} attribute.",
+                    "Cookie exposure can increase the impact of compatible browser or transport attack paths.",
+                    remediation,
+                    {**evidence_base, "evidence_type": "public_cookie_control", "cookie": cookie, "control": control},
+                )
+    payload = {
+        "target": stage["target"], "probe_origin": probe_origin, "allow_origin": allow_origin or None,
+        "allow_credentials": allow_credentials, "public_cookies": result["set_cookies"], "finding_count": created,
+        "limitations": "One GET-only response using a controlled Origin header. No credentials, preflight requests, payloads, forms, or state-changing operations were sent.",
+    }
+    await persist_json(stage, payload, kind="external_web_posture_summary", name="external-web-posture-summary.json", metadata={"tool": "safe-cors-and-cookie-review"})
+    return {"command": "external-web-posture --get-only --controlled-origin", "transcript": json.dumps(payload, indent=2)}
+
+
 def _yaml_quote(value: str) -> str:
     return json.dumps(value)
 
@@ -683,16 +767,18 @@ async def nuclei_baseline(stage: dict) -> dict:
     if crawl:
         payload = json.loads(artifact_path(crawl["storage_key"]).read_text(encoding="utf-8"))
         discovered_urls.extend(payload.get("urls") or [])
-    urls = nuclei_targets(stage["target"], discovered_urls)[:policy["nuclei_urls"]]
+    # Light does not turn crawl output or redirect destinations into scanner targets.
+    urls = [canonical_http_url(stage["target"])] if mode == "light" else nuclei_targets(stage["target"], discovered_urls)[:policy["nuclei_urls"]]
     with tempfile.TemporaryDirectory(prefix="esx-nuclei-") as temporary:
         directory = Path(temporary)
         targets = directory / "targets.txt"
         results = directory / "results.jsonl"
         targets.write_text("\n".join(urls) + "\n", encoding="utf-8")
         selection = selection_arguments(mode, settings().nuclei_templates_dir)
+        template_signature_policy = [] if mode == "light" else ["-disable-unsigned-templates"]
         inventory_command = [
             "nuclei", *selection, "-tl", "-no-color",
-            "-disable-update-check", "-disable-unsigned-templates",
+            "-disable-update-check", *template_signature_policy,
         ]
         inventory_code, inventory_output = await run_command(stage, inventory_command, directory)
         template_paths = [
@@ -715,15 +801,17 @@ async def nuclei_baseline(stage: dict) -> dict:
             raise RuntimeError(f"Nuclei template inventory failed with status {inventory_code}: {inventory_output[-1000:]}")
         if not template_paths:
             raise RuntimeError("Nuclei profile resolved zero templates; refusing to claim coverage")
+        if (maximum := maximum_template_count(mode)) is not None and len(template_paths) > maximum:
+            raise RuntimeError(f"Light Nuclei profile resolved {len(template_paths)} templates; policy permits at most {maximum}")
         command = [
             "nuclei", "-list", str(targets), *selection,
             "-jsonl-export", str(results), "-include-rr", "-timestamp", "-no-color",
             "-stats", "-stats-json", "-stats-interval", "5", "-rate-limit", str(policy["rate"]),
-            "-concurrency", str(policy["concurrency"]), "-bulk-size", str(policy["bulk"]), "-follow-host-redirects",
-            "-max-redirects", "5", "-disable-update-check", "-disable-unsigned-templates",
+            "-concurrency", str(policy["concurrency"]), "-bulk-size", str(policy["bulk"]),
+            "-disable-update-check", *template_signature_policy,
             "-scan-strategy", "host-spray", "-project", "-project-path", str(directory / "project"),
         ]
-        display_command = f"nuclei -list targets.txt [{mode.upper()}_PROFILE_{inventory['selected_template_count']}_PINNED_TEMPLATES] -scan-strategy host-spray -project -jsonl-export results.jsonl -stats-json"
+        display_command = f"nuclei -list targets.txt [{mode.upper()}_PROFILE_{inventory['selected_template_count']}_VERSIONED_TEMPLATES] -scan-strategy host-spray -project -jsonl-export results.jsonl -stats-json"
         secret = directory / "auth-secrets.yaml"
         if auth:
             await _nuclei_secret_file(auth, secret)
@@ -732,13 +820,20 @@ async def nuclei_baseline(stage: dict) -> dict:
         code, transcript = await run_command(stage, command, directory)
         output = results.read_bytes() if results.exists() else b""
         parsed = []
+        discarded_out_of_scope = 0
         for line in output.decode("utf-8", errors="replace").splitlines():
             try:
-                parsed.append(redact_object(json.loads(line)))
+                item = redact_object(json.loads(line))
             except json.JSONDecodeError:
                 continue
+            matched_raw = str(item.get("matched-at") or item.get("host") or stage["target"])
+            matched = canonical_http_url(matched_raw) if matched_raw.startswith(("http://", "https://")) else canonical_http_url(stage["target"])
+            if not route_is_in_scope(stage, matched):
+                discarded_out_of_scope += 1
+                continue
+            parsed.append(item)
         safe_output = ("\n".join(json.dumps(item, sort_keys=True) for item in parsed) + ("\n" if parsed else "")).encode("utf-8")
-        source = await persist_bytes(stage, safe_output, kind="raw_tool_output", name="nuclei-results.jsonl", media_type="application/x-ndjson", metadata={"tool": "nuclei", "profile": mode, "policy": "signed-non-intrusive", "template_release": inventory["template_release"], "selected_template_count": inventory["selected_template_count"], "target_count": len(urls), "rate_limit": policy["rate"], "concurrency": policy["concurrency"], "exit_code": code, "secret_redacted": True})
+        source = await persist_bytes(stage, safe_output, kind="raw_tool_output", name="nuclei-results.jsonl", media_type="application/x-ndjson", metadata={"tool": "nuclei", "profile": mode, "policy": "versioned-get-only-light-allowlist" if mode == "light" else "profile-bounded-non-intrusive", "template_release": inventory["template_release"], "template_set_sha256": inventory["template_set_sha256"], "selected_template_count": inventory["selected_template_count"], "target_count": len(urls), "rate_limit": policy["rate"], "concurrency": policy["concurrency"], "discarded_out_of_scope_results": discarded_out_of_scope, "exit_code": code, "secret_redacted": True})
         screenshots: dict[str, dict] = {}
         if parsed:
             playwright, browser, context, authentication = await authenticated_context(auth)
@@ -797,7 +892,7 @@ async def nuclei_baseline(stage: dict) -> dict:
             created += status.endswith("1")
         if code != 0:
             raise RuntimeError(f"Nuclei exited with status {code}: {transcript[-1000:]}")
-        return {"command": display_command, "transcript": transcript + f"\nExecuted pinned {mode} inventory containing {inventory['selected_template_count']} templates.\nIngested {created} findings from {len(parsed)} valid JSONL results.\n"}
+        return {"command": display_command, "transcript": transcript + f"\nExecuted versioned {mode} inventory containing {inventory['selected_template_count']} templates against {len(urls)} declared target(s).\nIngested {created} findings from {len(parsed)} in-scope JSONL results; discarded {discarded_out_of_scope} out-of-scope result(s).\n"}
 
 
 async def evidence_validation(stage: dict) -> dict:
@@ -937,6 +1032,7 @@ ADAPTERS = {
     "api_contract_review": api_contract_review,
     "route_security_policy_review": route_security_policy_review,
     "security_headers": security_headers,
+    "external_web_posture": external_web_posture,
     "nuclei_baseline": nuclei_baseline,
     "evidence_validation": evidence_validation,
 }

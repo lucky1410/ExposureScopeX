@@ -1,6 +1,6 @@
 # ExposureScopeX Secure SDLC
 
-**Validated:** 2026-09-09. This is the current release-control policy. See
+**Validated:** 2026-09-10. This is the current release-control policy. See
 [Threat model](THREAT_MODEL.md), [release process](RELEASES.md), and
 [contributing](../CONTRIBUTING.md).
 
@@ -26,7 +26,7 @@ This process applies to every application, scanner adapter, infrastructure chang
 - Run scheduled security workflows weekly and Dependabot weekly. Review critical alerts daily and all other alerts weekly.
 - Run `make security` before requesting review and before every production tag.
 - Review access, threat models, dependencies, base images, and recovery evidence quarterly.
-- Require the repository's current Alembic head (`015_scan_schedules` at
+- Require the repository's current Alembic head (`018_operation_control_plane` at
   this review) and retain scan-event, worker-capability, artifact-manifest, and
   tool-provenance evidence from release verification.
 

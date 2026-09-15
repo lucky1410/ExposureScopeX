@@ -54,6 +54,20 @@ measurements = {
         "scope_violations": [],
         "tool_misuse_events": [],
     },
+    "tool_use": {
+        "cases": [
+            {
+                "case_id": case["case_id"],
+                "expected_tool_names": ["approved-search"],
+                "observed_tool_names": ["approved-search"],
+                "authorized": True,
+                "result_valid": True,
+                "evidence_ids": ["tool-event-" + case["case_id"]],
+                "evidence_integrity_valid": True,
+            }
+            for case in request["cases"]
+        ]
+    },
     "rag": {
         "relevant_document_ids": ["doc-001", "doc-002"],
         "retrieved_document_ids": ["doc-001", "doc-002"],

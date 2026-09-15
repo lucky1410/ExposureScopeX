@@ -29,6 +29,30 @@ CREATE TABLE assessment_scopes (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE assessment_assets (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  assessment_id uuid NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+  hostname text NOT NULL,
+  canonical_target text NOT NULL,
+  asset_type text NOT NULL DEFAULT 'hostname' CHECK (asset_type IN ('hostname', 'ip_address', 'web_application')),
+  discovery_sources jsonb NOT NULL DEFAULT '[]'::jsonb,
+  discovery_evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+  ownership_status text NOT NULL CHECK (ownership_status IN ('client_declared', 'candidate', 'approved', 'excluded')),
+  ownership_confidence integer NOT NULL CHECK (ownership_confidence BETWEEN 0 AND 100),
+  assessment_status text NOT NULL DEFAULT 'not_assessed' CHECK (assessment_status IN ('not_assessed', 'approved_for_assessment', 'queued', 'assessed', 'blocked')),
+  review_note text,
+  reviewed_by uuid,
+  reviewed_at timestamptz,
+  first_seen_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (assessment_id, hostname)
+);
+
+CREATE INDEX assessment_assets_assessment_idx
+  ON assessment_assets (assessment_id, ownership_status, assessment_status, last_seen_at DESC);
+
 CREATE TABLE scans (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   assessment_id uuid NOT NULL REFERENCES assessments(id),
@@ -41,6 +65,15 @@ CREATE TABLE scans (
   failure_reason text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE assessment_asset_scans (
+  assessment_asset_id uuid NOT NULL REFERENCES assessment_assets(id) ON DELETE CASCADE,
+  scan_id uuid NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (assessment_asset_id, scan_id)
+);
+
+CREATE INDEX assessment_asset_scans_scan_idx ON assessment_asset_scans (scan_id);
 
 CREATE TABLE stage_runs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -163,5 +196,5 @@ CREATE TABLE scan_events (
   occurred_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Agent control-plane tables are installed by backend migrations because they
--- reference authentication tables that are also migration-managed.
+-- Authenticated and provenance-bearing control-plane tables are installed by
+-- backend migrations because they reference authentication tables.

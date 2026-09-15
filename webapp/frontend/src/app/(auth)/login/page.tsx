@@ -24,7 +24,11 @@ export default function LoginPage() {
     try {
       const { login } = await import('@/lib/api')
       await login({ email, password })
-      router.push('/dashboard')
+      const requestedPath = new URLSearchParams(window.location.search).get('from')
+      const destination = requestedPath?.startsWith('/') && !requestedPath.startsWith('//')
+        ? requestedPath
+        : '/dashboard'
+      router.push(destination)
     } catch {
       setError('Invalid credentials or inactive account.')
     } finally {

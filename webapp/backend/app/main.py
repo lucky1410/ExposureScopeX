@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -22,6 +23,7 @@ from app.api.v1.router import api_router
 from app.config import settings
 from app.database import async_session_factory, engine
 from app.models.assessment import Assessment
+from app.models.auth_session import AuthSession
 from app.models.scan import Scan
 from app.models.user import User
 from app.security import decode_token
@@ -99,12 +101,15 @@ async def lifespan(app: FastAPI):
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
+_PRODUCTION = settings.ENVIRONMENT.lower() == "production"
+
 app = FastAPI(
     title=settings.APP_NAME,
     description="Attack Surface Management Platform — REST API",
     version=settings.APP_VERSION,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
     lifespan=lifespan,
 )
 
@@ -196,6 +201,10 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     if not settings.DEBUG:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    if _PRODUCTION:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+        )
     return response
 
 
@@ -205,6 +214,13 @@ app.include_router(api_router, prefix="/api/v1")
 
 
 # ── WebSocket — real-time scan progress ──────────────────────────────────────
+
+def _websocket_origin_allowed(origin: str | None) -> bool:
+    """Reject browser WebSockets initiated outside configured UI origins."""
+    if not origin:
+        return True
+    allowed = {item.rstrip("/").lower() for item in settings.BACKEND_CORS_ORIGINS}
+    return origin.rstrip("/").lower() in allowed
 
 @app.websocket("/ws/scan/{scan_id}")
 async def scan_progress_ws(websocket: WebSocket, scan_id: str):
@@ -217,11 +233,16 @@ async def scan_progress_ws(websocket: WebSocket, scan_id: str):
     Message format:
         {"scan_id": "...", "event": "scan.started"|"scan.completed"|..., ...}
     """
+    if not _websocket_origin_allowed(websocket.headers.get("origin")):
+        await websocket.close(code=4403, reason="WebSocket origin denied")
+        return
+
     token = websocket.cookies.get("access_token")
     payload = decode_token(token) if token else None
     try:
         user_id = uuid.UUID(str((payload or {}).get("sub")))
         org_id = uuid.UUID(str((payload or {}).get("org_id")))
+        session_id = uuid.UUID(str((payload or {}).get("sid")))
         requested_id = uuid.UUID(scan_id)
     except (ValueError, TypeError, AttributeError):
         await websocket.close(code=4401, reason="Authentication required")
@@ -234,6 +255,15 @@ async def scan_progress_ws(websocket: WebSocket, scan_id: str):
         user = await session.scalar(
             select(User).where(User.id == user_id, User.org_id == org_id, User.is_active.is_(True))
         )
+        auth_session = await session.scalar(
+            select(AuthSession.id).where(
+                AuthSession.id == session_id,
+                AuthSession.user_id == user_id,
+                AuthSession.org_id == org_id,
+                AuthSession.revoked_at.is_(None),
+                AuthSession.expires_at > datetime.now(timezone.utc),
+            )
+        )
         authorized_target = await session.scalar(
             select(Assessment.id)
             .outerjoin(Scan, Scan.assessment_id == Assessment.id)
@@ -243,7 +273,7 @@ async def scan_progress_ws(websocket: WebSocket, scan_id: str):
             )
             .limit(1)
         )
-    if not user or not authorized_target:
+    if not user or not auth_session or not authorized_target:
         await websocket.close(code=4403, reason="Scan access denied")
         return
 
@@ -329,4 +359,6 @@ async def readiness_check():
 
 @app.get("/", include_in_schema=False)
 async def root():
+    if _PRODUCTION:
+        return {"status": "healthy", "service": settings.APP_NAME, "version": settings.APP_VERSION}
     return RedirectResponse(url="/docs")

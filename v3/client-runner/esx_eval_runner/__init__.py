@@ -1,3 +1,3 @@
 """ExposureScopeX client-side evaluation runner."""
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"

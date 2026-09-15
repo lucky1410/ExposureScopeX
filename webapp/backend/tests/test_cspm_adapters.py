@@ -17,7 +17,7 @@ class OpenSourceCatalogTests(unittest.TestCase):
         self.assertIn("ffuf", scanners)
         self.assertIn("arjun", scanners)
         self.assertIn("nikto", scanners)
-        self.assertIn("sqlmap", scanners)
+        self.assertNotIn("sqlmap", scanners)
         self.assertEqual(scanners["prowler"]["status"], "bundled")
         self.assertEqual(scanners["scoutsuite"]["status"], "optional")
         self.assertFalse(scanners["scoutsuite"]["bundled"])
@@ -57,7 +57,7 @@ class OpenSourceCatalogTests(unittest.TestCase):
         self.assertIn("arjun", ids)
         self.assertIn("nikto", ids)
 
-    def test_sqlmap_only_appears_when_operator_requested(self):
+    def test_sqlmap_cannot_be_planned_when_operator_requested(self):
         baseline = build_tool_plan(
             target_type="url",
             scan_mode="medium",
@@ -71,7 +71,7 @@ class OpenSourceCatalogTests(unittest.TestCase):
             requested_scans=[],
         )
         self.assertNotIn("sqlmap", [item["tool_id"] for item in baseline])
-        self.assertIn("sqlmap", [item["tool_id"] for item in requested])
+        self.assertNotIn("sqlmap", [item["tool_id"] for item in requested])
 
 
 class RuntimeCloudTests(unittest.TestCase):

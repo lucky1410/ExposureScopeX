@@ -1,6 +1,6 @@
 # Data Model
 
-**Schema head:** `015_scan_schedules`
+**Schema head:** `018_operation_control_plane`
 
 Alembic migrations are the schema source of truth. This document describes
 logical ownership and relationships; it deliberately avoids a hand-maintained

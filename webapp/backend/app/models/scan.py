@@ -21,7 +21,7 @@ class Scan(TimestampMixin, Base):
     session_dir = Column(String(500), nullable=True)
     status = Column(
         String(20), nullable=False, default="queued"
-    )  # queued/running/completed/failed/cancelled
+    )  # queued/running/completed/partial/failed/cancelled
     current_phase = Column(String(100), nullable=True)
     progress = Column(Integer, nullable=False, default=0)  # 0-100
     started_at = Column(DateTime(timezone=True), nullable=True)

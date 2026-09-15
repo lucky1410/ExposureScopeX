@@ -222,6 +222,8 @@ db_print_summary() {
         echo ""
     else
         log_info "Findings TSV: $TSV_FILE"
-        wc -l < "$TSV_FILE" && echo "findings total"
+        local tsv_findings
+        tsv_findings=$(awk 'END { print NR > 0 ? NR - 1 : 0 }' "$TSV_FILE" 2>/dev/null || echo 0)
+        echo "$tsv_findings findings total"
     fi
 }

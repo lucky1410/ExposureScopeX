@@ -59,7 +59,7 @@ def capability_snapshot(worker_name: str | None = None) -> dict:
     return {
         "worker_name": _normalize_worker_name(worker_name),
         "image_identity": settings.SCANNER_IMAGE_IDENTITY,
-        "queues": sorted({item.strip() for item in os.getenv("WORKER_QUEUES", "scans-web,scans-api,scans-artifact,scans-cloud,scans-mobile,scans,default").split(",") if item.strip()}),
+        "queues": sorted({item.strip() for item in os.getenv("WORKER_QUEUES", "scans-web,scans-api,scans-artifact,scans-cloud,scans-mobile,scans,reports,default").split(",") if item.strip()}),
         "capabilities": sorted(set(capabilities)),
         "versions": versions,
         "last_seen_at": datetime.now(timezone.utc),

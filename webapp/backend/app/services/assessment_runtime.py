@@ -30,17 +30,18 @@ EXECUTION_STAGE_CATALOG = (
     ("port_scan", "Port and service discovery", 40, "scan"),
     ("ssl_tls", "TLS, certificate, headers, and email security", 50, "scan"),
     ("cloud", "Cloud exposure correlation", 57, "cloud"),
+    ("authentication", "Operator-approved web session establishment", 60, "authenticated"),
     ("crawler", "Web crawling and endpoint discovery", 63, "crawl"),
+    ("safe_validation", "Passive baseline and bounded non-destructive application validation", 67, "scan"),
     ("web_testing", "Web and business-logic surface testing", 70, "scan"),
     ("api_security", "API inventory and security tests", 76, "scan"),
     ("screenshots", "Visual surface capture", 80, "screenshots"),
     ("nuclei", "Nuclei official and community template coverage", 85, "scan"),
     ("cve_correlation", "CVE, KEV, and exploitability correlation", 90, "cve"),
-    ("exploitation", "Authorized safe exploit validation", 92, "exploit"),
     ("reporting", "Evidence-first report generation", 95, "report"),
     ("ingesting_results", "Result normalization and evidence ingestion", 98, None),
     ("attack_path", "Relationship and attack-path calculation", 99, None),
-    ("historical_diff", "Asset and exposure drift calculation", 99, None),
+    ("historical_diff", "Asset and exposure drift calculation", 99, "diff"),
 )
 
 SPECIALIZED_STAGE_CATALOGS = {
@@ -174,7 +175,7 @@ def build_execution_manifest(profile: dict) -> list[dict]:
             planned = True
         if strategy in {"inventory", "import"} and stage_id in {
             "port_scan", "ssl_tls", "crawler", "web_testing", "api_security",
-            "screenshots", "nuclei", "exploitation",
+            "screenshots", "nuclei",
         }:
             planned = False
         stages.append({
@@ -207,21 +208,14 @@ def advance_execution_manifest(
     if target_index is None:
         return updated
 
-    for index, item in enumerate(manifest):
-        if not item.get("planned"):
-            continue
-        if index < target_index and item.get("status") in {"pending", "running"}:
-            item["status"] = "completed"
-            item["completed_at"] = item.get("completed_at") or timestamp
-
     target = manifest[target_index]
     previous_status = target.get("status")
-    if previous_status not in {"completed", "skipped"}:
+    if previous_status not in {"completed", "skipped", "failed", "cancelled", "timed_out"}:
         target["status"] = status
         if status == "running" and previous_status != "running":
             target["attempts"] = int(target.get("attempts") or 0) + 1
             target["started_at"] = target.get("started_at") or timestamp
-        if status in {"completed", "failed", "cancelled", "warning"}:
+        if status in {"completed", "failed", "cancelled", "warning", "timed_out", "not_run"}:
             target["completed_at"] = timestamp
         if message:
             target["message"] = message[:1000]
@@ -235,12 +229,16 @@ def finalize_execution_manifest(metadata: dict, final_status: str) -> dict:
     manifest = [dict(item) for item in updated.get("execution_manifest") or []]
     timestamp = datetime.now(timezone.utc).isoformat()
     for item in manifest:
-        if not item.get("planned") or item.get("status") in {"completed", "skipped", "warning"}:
+        if not item.get("planned") or item.get("status") in {
+            "completed", "skipped", "warning", "timed_out", "failed", "cancelled", "not_run",
+        }:
             continue
-        if final_status == "completed":
-            item["status"] = "completed"
-        elif item.get("status") == "running":
-            item["status"] = "cancelled" if final_status == "cancelled" else "failed"
+        if item.get("status") == "running":
+            if final_status in {"completed", "partial"}:
+                item["status"] = "warning"
+                item["message"] = item.get("message") or "Stage started but emitted no terminal outcome"
+            else:
+                item["status"] = "cancelled" if final_status == "cancelled" else "failed"
         else:
             item["status"] = "cancelled" if final_status == "cancelled" else "not_run"
         item["completed_at"] = timestamp
@@ -248,28 +246,58 @@ def finalize_execution_manifest(metadata: dict, final_status: str) -> dict:
     return updated
 
 
+def execution_coverage_summary(metadata: dict) -> dict:
+    """Summarize observed stage outcomes without inferring unreported success."""
+    planned = [item for item in (metadata.get("execution_manifest") or []) if item.get("planned")]
+    counts = {
+        status: sum(item.get("status") == status for item in planned)
+        for status in (
+            "completed", "warning", "timed_out", "failed", "cancelled",
+            "not_run", "running", "pending",
+        )
+    }
+    successful = counts["completed"]
+    total = len(planned)
+    exceptions = total - successful
+    return {
+        "planned": total,
+        "successful": successful,
+        "exceptions": exceptions,
+        "successful_percent": round((successful / total) * 100, 1) if total else 0.0,
+        "complete": total > 0 and exceptions == 0,
+        "counts": counts,
+    }
+
+
 def calculate_work_progress(metadata: dict, reported_progress: int | None, status: str) -> tuple[int, dict]:
     """Convert manifest state into bounded per-target work-unit progress."""
     manifest = [item for item in (metadata.get("execution_manifest") or []) if item.get("planned")]
     target_count = max(1, int((metadata.get("execution_policy") or {}).get("target_count") or 1))
     total_units = max(1, len(manifest) * target_count)
-    completed_stages = sum(item.get("status") in {"completed", "warning", "skipped"} for item in manifest)
+    completed_stages = sum(
+        item.get("status") in {"completed", "warning", "timed_out", "failed", "cancelled", "not_run"}
+        for item in manifest
+    )
     running_stages = sum(item.get("status") == "running" for item in manifest)
     completed_units = min(total_units, completed_stages * target_count)
     if running_stages:
         completed_units = min(total_units, completed_units + max(1, target_count // 10))
-    if status == "completed":
-        completed_units = total_units
     weighted = int((completed_units / total_units) * 100)
     if status in {"queued", "created"}:
         weighted = 0
     elif status == "running":
         weighted = min(99, max(weighted, min(int(reported_progress or 0), 5)))
     else:
-        weighted = min(100, max(weighted, int(reported_progress or 0)))
+        weighted = min(100, weighted)
     return weighted, {
         "total": total_units,
         "completed": completed_units,
+        "successful": min(total_units, sum(item.get("status") == "completed" for item in manifest) * target_count),
+        "exceptions": min(
+            total_units,
+            sum(item.get("status") in {"warning", "timed_out", "failed", "cancelled", "not_run"} for item in manifest)
+            * target_count,
+        ),
         "target_count": target_count,
         "planned_stages": len(manifest),
     }
@@ -324,6 +352,10 @@ def build_scan_metadata(
         "telemetry": {
             "elapsed_seconds": 0,
             "eta_seconds": None,
+            "last_output_at": None,
+            "output_silence_seconds": 0,
+            "output_stalled": False,
+            "stall_warning_seconds": 600,
             "stage_durations": {},
             "artifact_bytes": 0,
             "work_units": {"total": 0, "completed": 0, "target_count": target_count},

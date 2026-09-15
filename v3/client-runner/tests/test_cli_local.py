@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 import unittest
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -21,12 +22,14 @@ from esx_eval_runner.cli import _starter_cases, init_command, run_command
 from esx_eval_runner.audit import append_audit_event, verify_audit_log
 from esx_eval_runner.assurance import build_assurance_graph, build_coverage_model, build_risk_plan, create_scope
 from esx_eval_runner.browser import _local_only_session_state, validate_browser_adapter, validate_browser_case
+from esx_eval_runner.connectors import LocalEvidenceEmitter, langchain_callback, record_anthropic_message_usage, record_openai_response_usage
 from esx_eval_runner.discovery import discover_repository
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
 from esx_eval_runner.profiles import build_cases
-from esx_eval_runner.runner import RunnerError, _adapter_command, _verify_target_attestation, build_package, canonical_json, read_json
+from esx_eval_runner.report_html import render_local_report
+from esx_eval_runner.runner import RunnerError, _adapter_command, _browser_execution_summary, _browser_scored_inputs, _normalise_results, _verify_target_attestation, attach_local_measurements, build_package, canonical_json, read_json
 from esx_eval_runner.setup import _guided_setup_html_with_evidence, _probe_local_http_target, create_guided_plan, create_http_plan
-from esx_eval_runner.telemetry import redact_otel_payload, telemetry_summary
+from esx_eval_runner.telemetry import derive_telemetry_measurements, redact_otel_payload, telemetry_summary
 from esx_eval_runner.workflows import add_candidate_to_config, apply_reusable_pack, build_workflow_pack_catalog, export_reusable_pack
 
 
@@ -118,10 +121,13 @@ class LocalRunTests(unittest.TestCase):
 
     def test_standard_http_target_runs_without_a_customer_adapter(self) -> None:
         class Target(BaseHTTPRequestHandler):
+            received_case_ids: list[str | None] = []
+
             def log_message(self, _format: str, *_args: object) -> None:
                 return
 
             def do_POST(self) -> None:  # noqa: N802
+                Target.received_case_ids.append(self.headers.get("X-ESX-Case-ID"))
                 length = int(self.headers["Content-Length"])
                 message = json.loads(self.rfile.read(length))["message"]
                 blocked = "restricted" in message
@@ -150,6 +156,7 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(package["execution"]["adapter_type"], "http_json_target")
             self.assertEqual(package["evaluation"]["predicted_labels"], ["safe", "unsafe"])
             self.assertEqual(calculate_local_metrics(package)["classification"]["accuracy"], 1.0)
+            self.assertEqual(Target.received_case_ids, ["allowed", "blocked"])
         finally:
             server.shutdown()
             server.server_close()
@@ -224,7 +231,11 @@ class LocalRunTests(unittest.TestCase):
                 "selected_component_ids": ["workflow-api", "agent-langgraph"], "confirm_plan": True,
             })
             self.assertTrue(path.is_file())
-            self.assertEqual(config["evaluation"]["required_dimensions"], ["classification", "confidence"])
+            self.assertEqual(
+                config["evaluation"]["required_dimensions"],
+                ["classification", "confidence", "reproducibility", "robustness", "security", "tool_use", "trajectory"],
+            )
+            self.assertTrue(config["telemetry"]["enabled"])
             self.assertIn("trajectory", config["assurance"]["planned_dimensions"])
             self.assertTrue((target / "discovery.json").is_file())
             self.assertTrue((target / "assurance-scope.json").is_file())
@@ -332,6 +343,84 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(hunt["executed"], 1)
         self.assertEqual(audit["executed"], 0)
 
+    def test_blocked_auth_cases_are_visible_but_excluded_from_quality_scores(self) -> None:
+        cases = [
+            {"case_id": "login", "expected_label": "safe"},
+            {"case_id": "public-boundary", "expected_label": "unsafe"},
+            {"case_id": "private-case", "expected_label": "safe"},
+        ]
+        response = {
+            "results": [
+                {"case_id": "login", "predicted_label": "safe", "confidence": 0.9},
+                {"case_id": "public-boundary", "predicted_label": "unsafe", "confidence": 0.8},
+                {"case_id": "private-case", "execution_status": "blocked"},
+            ],
+            "browser_diagnostics": [
+                {"case_id": "login", "coverage_scope": "pre_auth", "outcome": "passed", "session_status": "not_required", "steps": []},
+                {"case_id": "public-boundary", "coverage_scope": "pre_auth", "outcome": "passed", "session_status": "not_required", "steps": []},
+                {"case_id": "private-case", "coverage_scope": "authenticated", "outcome": "blocked", "failure_stage": "session_setup", "failure_kind": "session_bootstrap_required", "session_status": "interactive_auth_required", "steps": []},
+            ],
+        }
+        summary = _browser_execution_summary(response, cases)
+        scored_cases, scored_response = _browser_scored_inputs(cases, response, summary)
+        predicted, confidences = _normalise_results(scored_cases, scored_response)
+        metrics = calculate_local_metrics({
+            "evaluation": {
+                "expected_labels": [item["expected_label"] for item in scored_cases],
+                "predicted_labels": predicted,
+                "confidences": confidences,
+            },
+        })
+        coverage = build_coverage_model(
+            {"execution": {"case_count": 3, **summary}, "evaluation": {"required_dimensions": ["classification", "confidence"]}},
+            metrics,
+        )
+        self.assertEqual(predicted, ["safe", "unsafe"])
+        self.assertEqual(metrics["classification"]["accuracy"], 1.0)
+        self.assertEqual(coverage["executed"]["requested_case_count"], 3)
+        self.assertEqual(coverage["executed"]["case_count"], 2)
+        self.assertEqual(coverage["executed"]["blocked_case_count"], 1)
+        self.assertEqual(coverage["executed"]["failed_case_count"], 0)
+
+    def test_no_executed_browser_cases_produces_no_quality_score(self) -> None:
+        classification = classification_metrics([], [])
+        confidence = confidence_metrics([], [], [])
+        self.assertEqual(classification["measurement_status"], "not_measurable")
+        self.assertEqual(confidence["measurement_status"], "not_measurable")
+        self.assertIn("No cases reached", classification["reason"])
+
+    def test_browser_package_preserves_a_blocked_case_without_scoring_it(self) -> None:
+        config = {
+            "schema_version": "esx-client-runner-config-1.0",
+            "evaluation": {
+                "name": "browser boundary", "agent_id": "demo", "subject_version": "1.0.0",
+                "project_key": "demo", "dataset_version": "browser-1", "required_dimensions": ["classification", "confidence"],
+            },
+            "dataset": {"version": "browser-1", "cases": [
+                {"case_id": "sign-in", "input": {"journey": [{"type": "goto", "path": "/login"}]}, "expected_label": "safe"},
+                {"case_id": "protected", "input": {"journey": [{"type": "goto", "path": "/cases"}]}, "expected_label": "unsafe", "requires_auth": True},
+            ]},
+            "adapter": {"type": "browser_journey", "base_url": "http://127.0.0.1:3000"},
+        }
+        response = {
+            "results": [
+                {"case_id": "sign-in", "predicted_label": "safe", "confidence": 0.9},
+                {"case_id": "protected", "execution_status": "blocked"},
+            ],
+            "measurements": {}, "browser_session_status": "interactive_auth_required",
+            "browser_diagnostics": [
+                {"case_id": "sign-in", "coverage_scope": "pre_auth", "outcome": "passed", "session_status": "not_required", "steps": []},
+                {"case_id": "protected", "coverage_scope": "authenticated", "outcome": "blocked", "failure_stage": "session_setup", "failure_kind": "session_bootstrap_required", "session_status": "interactive_auth_required", "steps": []},
+            ],
+        }
+        with patch("esx_eval_runner.browser.invoke_browser_journeys", return_value=(response, 12, "a" * 64, "b" * 64)):
+            package = build_package(config)
+        self.assertEqual(package["execution"]["case_count"], 2)
+        self.assertEqual(package["execution"]["scored_case_count"], 1)
+        self.assertEqual(package["execution"]["blocked_case_count"], 1)
+        self.assertEqual(package["evaluation"]["expected_labels"], ["safe"])
+        self.assertEqual(package["evaluation"]["predicted_labels"], ["safe"])
+
     def test_browser_auth_rejects_literal_credentials(self) -> None:
         adapter = {
             "base_url": "http://127.0.0.1:3000", "auth": {
@@ -407,6 +496,22 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(report["assurance_graph"]["summary"]["scope_status"], "confirmed")
             self.assertIn("trajectory", report["metrics"])
 
+    def test_local_html_explains_evidence_needed_for_unmeasured_dimensions(self) -> None:
+        report = {
+            "subject": {"agent_id": "demo-agent", "subject_version": "1.0.0", "dataset_version": "demo-1.0"},
+            "notice": "Calculated locally.",
+            "metrics": {
+                "classification": {"measurement_status": "measured", "accuracy": 1.0},
+                "groundedness": {"measurement_status": "not_measurable", "reason": "No claims were supplied."},
+                "rag": {"measurement_status": "not_measurable", "reason": "No retrieved document evidence was supplied."},
+            },
+        }
+        page = render_local_report(report)
+        self.assertIn("MEASUREMENT READINESS", page)
+        self.assertIn("Answer claims linked to cited evidence IDs", page)
+        self.assertIn("Expected relevant document IDs", page)
+        self.assertIn("Browser journeys prove user-visible workflow behavior", page)
+
     def test_discovery_scope_plan_and_assurance_graph_are_reviewable(self) -> None:
         discovery = {
             "repository": "C:/demo",
@@ -424,7 +529,7 @@ class LocalRunTests(unittest.TestCase):
         metrics = {"classification": {"measurement_status": "measured"}, "confidence": {"measurement_status": "measured"}, "rag": {"measurement_status": "not_measurable"}}
         graph = build_assurance_graph(package, metrics, discovery=discovery, scope=scope, plan=plan, telemetry={"span_count": 4})
         self.assertEqual(graph["summary"]["confirmed_component_count"], 3)
-        self.assertEqual(graph["summary"]["unmeasurable_metric_count"], 6)
+        self.assertEqual(graph["summary"]["unmeasurable_metric_count"], 7)
 
     def test_discovery_excludes_backlog_mentions_and_labels_real_evidence(self) -> None:
         with TemporaryDirectory() as directory:
@@ -449,6 +554,202 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(telemetry_summary(path)["tool_span_count"], 1)
         with self.assertRaisesRegex(RunnerError, "loopback"):
             validate_browser_adapter({"base_url": "https://staging.example.test"})
+
+    def test_redacted_connector_events_supply_local_metric_evidence(self) -> None:
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "telemetry.jsonl"
+            emitter = LocalEvidenceEmitter(output, agent_id="assistant")
+            with emitter.case("case-001"):
+                emitter.retrieval("doc-001")
+                emitter.citation("doc-001")
+                emitter.claim("claim-001", "doc-001", support_score=0.92, citations_valid=True, evidence_integrity_valid=True)
+                emitter.milestone("plan")
+                emitter.tool_call("knowledge-search", authorized=True, result_valid=True, evidence_id="tool-001", evidence_integrity_valid=True)
+                emitter.model_usage(input_tokens=120, output_tokens=30, latency_ms=840, cost_usd=0.0042)
+                emitter.event("security_control", **{
+                    "esx.expected_attack_success": False,
+                    "esx.observed_attack_success": False,
+                    "esx.expected_detection": True,
+                    "esx.observed_detection": True,
+                    "esx.evidence_id": "security-001",
+                    "esx.evidence_integrity_valid": True,
+                })
+            callback = langchain_callback(emitter)
+            callback.on_tool_start({"name": "knowledge-search"}, "this input must never be retained")
+            measurements, provenance = derive_telemetry_measurements(
+                output,
+                required_dimensions=["classification", "confidence", "groundedness", "rag", "security", "trajectory", "tool_use", "cost_efficiency"],
+                case_ids=["case-001"],
+                policy={
+                    "rag": {"relevant_document_ids": ["doc-001"]},
+                    "trajectory": {"required_milestones": ["plan"]},
+                    "tool_use": {"expected_tools_by_case": {"case-001": ["knowledge-search"]}},
+                },
+            )
+            self.assertIn("claims", measurements)
+            self.assertIn("rag", measurements)
+            self.assertIn("security", measurements)
+            self.assertIn("trajectory", measurements)
+            self.assertIn("tool_use", measurements)
+            self.assertIn("cost_efficiency", measurements)
+            self.assertIn("trace_envelope", measurements)
+            self.assertEqual(provenance["record_count"], 8)
+            self.assertNotIn("this input", output.read_text(encoding="utf-8"))
+            package = {
+                "evaluation": {
+                    "required_dimensions": ["classification", "confidence", "groundedness", "rag", "security", "trajectory", "tool_use", "cost_efficiency"],
+                    "expected_labels": ["safe", "unsafe"],
+                    "predicted_labels": ["safe", "unsafe"],
+                    "confidences": [0.9, 0.9],
+                },
+                "execution": {},
+            }
+            attached = attach_local_measurements(package, measurements, provenance)
+            self.assertEqual(attached["execution"]["local_evidence"]["record_count"], 8)
+            self.assertEqual(calculate_local_metrics(attached)["rag"]["measurement_status"], "measured")
+
+    def test_redacted_tool_use_fixture_counts_separate_tool_spans(self) -> None:
+        measurements, provenance = derive_telemetry_measurements(
+            ROOT / "tests" / "fixtures" / "redacted-tool-use.jsonl",
+            required_dimensions=["classification", "confidence", "tool_use", "cost_efficiency"],
+            case_ids=["case-001", "case-002"],
+            policy={
+                "tool_use": {
+                    "expected_tools_by_case": {
+                        "case-001": ["approved-search"],
+                        "case-002": ["approved-lookup"],
+                    }
+                },
+            },
+        )
+        package = {
+            "evaluation": {
+                "required_dimensions": ["classification", "confidence", "tool_use", "cost_efficiency"],
+                "expected_labels": ["safe", "unsafe"],
+                "predicted_labels": ["safe", "unsafe"],
+                "confidences": [0.9, 0.9],
+            },
+            "execution": {},
+        }
+        attached = attach_local_measurements(package, measurements, provenance)
+        metrics = calculate_local_metrics(attached)
+        self.assertEqual(metrics["tool_use"]["measurement_status"], "measured")
+        self.assertEqual(metrics["tool_use"]["selection_f1"], 1.0)
+        self.assertEqual(metrics["cost_efficiency"]["tool_call_count"], 2)
+
+    def test_provider_usage_helpers_retain_only_usage_counters(self) -> None:
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "telemetry.jsonl"
+            emitter = LocalEvidenceEmitter(output, agent_id="assistant")
+            with emitter.case("case-001"):
+                self.assertTrue(record_openai_response_usage(
+                    emitter,
+                    {"usage": {"input_tokens": 12, "output_tokens": 3}, "output_text": "private answer"},
+                    latency_ms=110,
+                ))
+            with emitter.case("case-002"):
+                self.assertTrue(record_anthropic_message_usage(
+                    emitter,
+                    {"usage": {"input_tokens": 9, "output_tokens": 4}, "content": "private answer"},
+                    latency_ms=90,
+                ))
+            self.assertFalse(record_openai_response_usage(emitter, {"output_text": "private answer"}, latency_ms=1, case_id="case-003"))
+            retained = output.read_text(encoding="utf-8")
+        self.assertNotIn("private answer", retained)
+        self.assertEqual(retained.count("gen_ai.usage.input_tokens"), 2)
+
+    def test_telemetry_derives_controlled_robustness_observations(self) -> None:
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "telemetry.jsonl"
+            emitter = LocalEvidenceEmitter(output, agent_id="assistant")
+            for case_id, variation_type, confidence in (
+                ("baseline-001", "baseline", 0.92),
+                ("paraphrase-001", "paraphrase", 0.90),
+                ("perturbation-001", "perturbation", 0.88),
+                ("repeat-001", "repeat", 0.91),
+            ):
+                with emitter.case(case_id):
+                    emitter.robustness_observation(
+                        correct=True, confidence=confidence, variation_type=variation_type,
+                        predicted_label="safe",
+                    )
+            measurements, _provenance = derive_telemetry_measurements(
+                output,
+                required_dimensions=["classification", "confidence", "robustness"],
+                case_ids=["baseline-001", "paraphrase-001", "perturbation-001", "repeat-001"],
+                policy={"robustness": {"baseline_case_id": "baseline-001", "baseline_label": "safe"}},
+            )
+        package = {
+            "evaluation": {
+                "required_dimensions": ["classification", "confidence", "robustness"],
+                "expected_labels": ["safe", "unsafe"], "predicted_labels": ["safe", "unsafe"],
+                "confidences": [0.9, 0.9],
+            },
+            "execution": {},
+        }
+        metrics = calculate_local_metrics(attach_local_measurements(package, measurements, {}))
+        self.assertEqual(metrics["robustness"]["measurement_status"], "measured")
+        self.assertEqual(metrics["robustness"]["variation_coverage"], 1.0)
+
+    def test_run_command_enriches_a_simple_adapter_with_local_telemetry(self) -> None:
+        config = {
+            "schema_version": "esx-client-runner-config-1.0",
+            "evaluation": {
+                "name": "telemetry enrichment", "agent_id": "demo-agent", "subject_version": "1.0.0",
+                "project_key": "demo", "dataset_version": "telemetry-1.0",
+                "required_dimensions": ["classification", "confidence", "tool_use", "cost_efficiency"],
+            },
+            "dataset": {"version": "telemetry-1.0", "cases": [
+                {"case_id": "case-001", "input": {"message": "normal"}, "expected_label": "safe"},
+                {"case_id": "case-002", "input": {"message": "restricted"}, "expected_label": "unsafe"},
+            ]},
+            "adapter": {"type": "command_json_v1", "command": ADAPTER_COMMAND},
+            "telemetry": {
+                "enabled": True,
+                "tool_use": {"expected_tools_by_case": {
+                    "case-001": ["approved-search"], "case-002": ["approved-lookup"],
+                }},
+            },
+            "source": {"origin": "local"},
+        }
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            output_path = Path(directory) / "out" / "evaluation.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            status = run_command(argparse.Namespace(
+                config=str(config_path), out=str(output_path), github_oidc_token_file=None,
+                sign=False, summary_only=True, output_format="text",
+                telemetry=str(ROOT / "tests" / "fixtures" / "redacted-tool-use.jsonl"),
+            ))
+            package = read_json(output_path)
+            report = read_json(output_path.with_name("evaluation.local-report.json"))
+            html_report = output_path.with_name("evaluation.local-report.html").read_text(encoding="utf-8")
+        self.assertEqual(package["execution"]["local_evidence"]["derived_dimensions"], ["cost_efficiency", "tool_use"])
+        self.assertEqual(report["metrics"]["tool_use"]["measurement_status"], "measured")
+        self.assertIn("Tool-use quality", html_report)
+
+    def test_v2_adapter_can_defer_a_dimension_to_enabled_local_telemetry(self) -> None:
+        command = [
+            sys.executable,
+            "-c",
+            "import json,sys;request=json.load(sys.stdin);json.dump({'schema_version':'esx-client-adapter-response-2.0','results':[{'case_id':case['case_id'],'predicted_label':'safe','confidence':0.9} for case in request['cases']],'measurements':{}},sys.stdout)",
+        ]
+        config = {
+            "schema_version": "esx-client-runner-config-1.0",
+            "evaluation": {
+                "name": "partial v2", "agent_id": "demo-agent", "subject_version": "1.0.0",
+                "project_key": "demo", "dataset_version": "partial-v2-1.0",
+                "required_dimensions": ["classification", "confidence", "tool_use"],
+            },
+            "dataset": {"version": "partial-v2-1.0", "cases": [
+                {"case_id": "case-001", "input": {"message": "normal"}, "expected_label": "safe"},
+            ]},
+            "adapter": {"type": "command_json_v2", "command": command},
+            "telemetry": {"enabled": True},
+            "source": {"origin": "local"},
+        }
+        package = build_package(config)
+        self.assertNotIn("tool_use", package["evaluation"])
 
     def test_http_target_rejects_insecure_or_unapproved_network_destinations(self) -> None:
         base = {
@@ -523,7 +824,7 @@ class LocalRunTests(unittest.TestCase):
         package = build_package(config)
         metrics = calculate_local_metrics(package)
         for name in (
-            "classification", "confidence", "groundedness", "security", "trajectory",
+            "classification", "confidence", "groundedness", "security", "trajectory", "tool_use",
             "rag", "robustness", "judge_agreement", "reproducibility", "cost_efficiency",
         ):
             self.assertEqual(metrics[name]["measurement_status"], "measured")

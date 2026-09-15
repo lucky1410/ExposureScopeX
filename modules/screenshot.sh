@@ -2,7 +2,7 @@
 
 # Screenshot Module
 # Captures visual snapshots of live web targets.
-# Tool priority: gowitness → eyewitness → HTML URL index (built-in fallback)
+# Tool priority: Playwright Chromium → gowitness → eyewitness → HTML URL index
 
 run_screenshots() {
     local target=$1
@@ -41,11 +41,18 @@ run_screenshots() {
     fi
 
     local count
-    count=$(grep -c . "$urls_file" 2>/dev/null || echo 0)
+    count=$(grep -c . "$urls_file" 2>/dev/null || true)
     log_info "Capturing screenshots for $count URL(s)..."
 
     # ── Tool selection ─────────────────────────────────────────────────────
-    if command -v gowitness &>/dev/null; then
+    if [ -f /app/worker/evidence_capture.py ] && python -c 'import playwright' 2>/dev/null; then
+        log_info "Using Playwright Chromium evidence capture..."
+        run_tool "playwright-screenshot" "python" \
+            --urls-file "$urls_file" \
+            --output-dir "$screenshot_dir" \
+            --limit "${SCREENSHOT_MAX_URLS:-20}" || log_warn "Playwright screenshot capture encountered errors"
+
+    elif command -v gowitness &>/dev/null; then
         log_info "Using gowitness..."
         run_tool "gowitness" "gowitness" scan file \
             --file "$urls_file" \
@@ -92,7 +99,7 @@ _generate_url_index() {
 <h2>ExposureScopeX — Discovered URLs</h2>
 HTML
         local n
-        n=$(grep -c . "$urls_file" 2>/dev/null || echo 0)
+        n=$(grep -c . "$urls_file" 2>/dev/null || true)
         echo "<p class='count'>$n URLs found — $(date)</p>"
         echo "<div class='url-list'>"
         while IFS= read -r url; do

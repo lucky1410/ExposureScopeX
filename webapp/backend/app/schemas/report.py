@@ -3,14 +3,14 @@
 import uuid
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ReportRequest(BaseModel):
     assessment_id: uuid.UUID
     scan_id: uuid.UUID | None = None
     baseline_scan_id: uuid.UUID | None = None
-    format: str = Field(default="html", pattern="^(html|pdf|sarif|markdown|csv|json|evidence)$")
+    format: str = Field(default="html", pattern="^(html|pdf|docx|sarif|markdown|csv|json|evidence)$")
     include_evidence: bool = True
     include_remediation: bool = True
     executive_summary: bool = True
@@ -20,6 +20,14 @@ class ReportRequest(BaseModel):
     statuses: list[str] = Field(default_factory=list, max_length=20)
     owners: list[str] = Field(default_factory=list, max_length=100)
     modules: list[str] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def require_scan_for_client_deliverables(self):
+        if self.format in {"pdf", "docx", "evidence"} and not self.scan_id:
+            raise ValueError(f"{self.format.upper()} client deliverables require scan_id")
+        if self.baseline_scan_id and not self.scan_id:
+            raise ValueError("baseline_scan_id requires scan_id")
+        return self
 
     @field_validator("severities")
     @classmethod

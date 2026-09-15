@@ -1,0 +1,26 @@
+{
+  "name": "External web validation set",
+  "version": "2026.09.1",
+  "classification": "synthetic",
+  "source_reference": "Internal test fixture repository release 2026.09.1",
+  "cases": [
+    {
+      "case_key": "security-header-present",
+      "expected_outcome": "no_finding_expected",
+      "family": "http_configuration",
+      "severity": "low",
+      "metadata": {
+        "purpose": "A control case that should not create a finding."
+      }
+    },
+    {
+      "case_key": "security-header-absent",
+      "expected_outcome": "finding_expected",
+      "family": "http_configuration",
+      "severity": "medium",
+      "metadata": {
+        "purpose": "A known-safe fixture with a documented expected observation."
+      }
+    }
+  ]
+}

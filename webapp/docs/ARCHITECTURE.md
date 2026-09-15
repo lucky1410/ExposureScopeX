@@ -1,7 +1,7 @@
 # ExposureScopeX Architecture
 
-**Verified against source:** 2026-09-09
-**Schema head:** `015_scan_schedules`
+**Verified against source:** 2026-09-10
+**Schema head:** `018_operation_control_plane`
 
 ## Context
 
@@ -9,6 +9,30 @@ ExposureScopeX separates its control plane from scanner execution. The control
 plane owns identity, authorization, scope, planning, scheduling, persistence,
 normalization and reporting. Workers execute bounded plans with mature tools
 and return evidence.
+
+## Non-negotiable architecture invariants
+
+1. **Deterministic scanning:** AI never selects targets, tools, payloads, templates,
+   retries, timing, scope expansion, or scan actions. Versioned profiles and policy
+   code produce the complete execution plan before dispatch.
+2. **No exploitation:** workers do not perform credential attacks, exploit execution,
+   destructive validation, persistence, command-and-control, or autonomous attack
+   simulation. Forbidden utilities and template classes are rejected by backend
+   planning and worker execution policy.
+3. **Fail-closed scope:** authorization and normalized scope are checked at intake,
+   dispatch, discovery-output aggregation, tool invocation, and ingestion. A failed
+   scope control stops the affected work rather than widening access.
+4. **Evidence before assurance:** each finding must map to an immutable source
+   artifact and a valid finding-specific snapshot. Browser error pages, generated
+   images, and generic terminal captures cannot satisfy finding proof.
+5. **Completion is not finality:** a scan may complete with warnings, but its report
+   remains Partial until the evidence release gate passes. Skipped and timed-out
+   stages remain visible in coverage and reports.
+6. **AI is post-scan only:** AI may explain completed evidence, prioritize risk,
+   draft remediation, and correlate SOC feedback. AI output is labelled, cited to
+   immutable evidence, tenant-isolated, and never treated as scanner truth.
+7. **PostgreSQL is authoritative:** Redis, browser state, logs, and generated files
+   are not the sole record of scan lifecycle, tenant ownership, or finding state.
 
 ```text
 Browser
@@ -39,6 +63,37 @@ The default Compose deployment uses one broad worker to reduce memory. The
 `worker-pools` profile separates queue contention while reusing the image.
 Production Kubernetes can use per-scan Jobs for stronger isolation.
 
+## Logical planes and contracts
+
+| Plane | Owns | Must not own | Release contract |
+|---|---|---|---|
+| Experience | Role-aware UI, navigation, live status, evidence review | Authorization truth or scanner state | Primary analyst and executive journeys pass browser tests |
+| Control | Identity, tenant policy, scope, profiles, orchestration, lifecycle | Raw tool execution | Every dispatch has an authorized immutable execution manifest |
+| Execution | Bounded tool processes, cancellation, heartbeats, raw artifacts | User-defined commands, AI decisions, report finality | Every stage is policy-checked, timed, attributable, and terminal |
+| Evidence | Artifact hashing, finding linkage, snapshots, retention, chain of custody | Risk narrative or synthetic proof | Every confirmed finding has verifiable source and visual evidence |
+| Intelligence | Deterministic normalization, correlation, risk, post-scan AI assistance | Mutation of scanner facts | Derived claims cite immutable inputs and preserve provenance |
+| Integration | SOC exchange, webhooks, exports, object storage | Cross-tenant trust or implicit response actions | Versioned, authenticated, idempotent contracts pass isolation tests |
+
+Cross-plane communication uses identifiers and versioned schemas rather than
+shared process memory. The control plane may request work, but only execution
+policy can admit it. The evidence plane may downgrade report finality, and no
+other plane can bypass that decision.
+
+## Architecture acceptance gates
+
+1. **Plan gate:** profile version, normalized targets, tool/template allowlists,
+   scope decision, authorization, limits, and worker requirements are persisted.
+2. **Dispatch gate:** tenant ownership, authorization validity, compatible worker,
+   quota, and duplicate-dispatch protection pass in one controlled transition.
+3. **Execution gate:** worker independently revalidates policy and scope; every
+   stage has bounded retries, silence threshold, timeout, cancellation, and status.
+4. **Ingestion gate:** parsers preserve source attribution, JSON-safe types,
+   immutable artifact hashes, scan ownership, and idempotent observations.
+5. **Evidence gate:** source artifact and original finding-specific capture are
+   traceable; error-state, generic, synthetic, or unhashed evidence is rejected.
+6. **Release gate:** terminal coverage, skipped/failed stages, evidence gaps,
+   report integrity, and Partial/Final state are consistent across API, UI, and exports.
+
 ## Request and execution flow
 
 1. The API authenticates the user and resolves organization capability.
@@ -57,10 +112,37 @@ Production Kubernetes can use per-scan Jobs for stronger isolation.
    and records versions, status, progress, bounded output and artifacts.
 8. Parsers normalize assets, observations, findings and relationships while
    preserving tool-run attribution.
-9. Terminal state is committed as completed, failed or cancelled. Comparable
+9. Terminal state is committed as completed, partial, failed or cancelled. Comparable
    completed scope drives finding reopen/resolve transitions.
 10. Reports use immutable scan scope and execute asynchronously on the reports
     queue with durable status, cancellation, quota and integrity enforcement.
+11. The evidence release gate evaluates source-artifact hashes and finding-specific
+    captures. Only a passing gate can produce a Final forensic report.
+
+## Profile and benchmark architecture
+
+Light, Medium, and Aggressive are versioned breadth/depth contracts, not accuracy
+labels. Their executable contracts define enumeration limits, port policy, crawl
+depth and seed limits, Nuclei limits/concurrency/retries, headless behavior, and
+bounded-stage policy. Every profile disables exploitation and autonomous agents.
+
+Accuracy is measured separately by the deterministic benchmark plane in
+`app.services.assessment_benchmark`:
+
+```text
+Pinned benchmark fixture + versioned ground truth
+  -> deterministic profile execution
+  -> normalized observations + source/evidence/screenshot hashes
+  -> confusion matrix by category and overall
+  -> precision, recall, F1, FPR, execution coverage, evidence and scope gates
+  -> immutable scorecard + release pass/fail
+```
+
+The evaluator does not use AI. It rejects missing evidence, scope violations, and
+unreported planned-stage outcomes independently of detection accuracy. Releases
+must run each reset fixture at least three times and satisfy the profile's
+repeatability-variance gate. Suite pins, adapter status, and the local scoring
+command are maintained in [`../benchmarks/`](../benchmarks/README.md).
 
 See [Scan lifecycle](SCAN_LIFECYCLE.md) for transitions and recovery.
 
@@ -140,10 +222,13 @@ scans, queue growth, readiness, disk pressure and backup age.
 ## Deliberate constraints
 
 - No arbitrary plugin execution or community-code marketplace.
-- No unattended destructive exploitation.
+- No exploitation, credential attacks, or destructive attack simulation.
+- No AI participation in scan planning or execution.
 - No claim of dynamic mobile-device testing from static artifact scans.
 - No claim that a configured integration was successfully validated.
 - No microservice/event-bus decomposition without measured need.
 
 Architecture decisions are in [`adr/`](adr/README.md). Abuse cases and
-mitigations are in [Threat model](THREAT_MODEL.md).
+mitigations are in [Threat model](THREAT_MODEL.md). The editable layered system
+view and delivery increments are in
+[Reference architecture](REFERENCE_ARCHITECTURE.md).

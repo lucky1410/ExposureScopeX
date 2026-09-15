@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     ai_evaluator_client_max_package_age_hours: int = 24
     ai_evaluator_github_oidc_audience: str = "exposurescopex-evaluator"
     ai_evaluator_github_oidc_jwks_url: str = "https://token.actions.githubusercontent.com/.well-known/jwks"
+    exposure_integration_allowed_hosts: str = ""
+    exposure_integration_private_networks: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

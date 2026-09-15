@@ -125,6 +125,7 @@ WORKDIR /app
 # Install runtime dependencies for scanner tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl jq dnsutils whois nmap netcat-openbsd git openssl ca-certificates wget masscan libpq5 \
+    xvfb xterm scrot dbus-x11 fonts-dejavu-core \
     perl libnet-ssleay-perl libio-socket-ssl-perl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -133,12 +134,14 @@ COPY webapp/backend/requirements.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
 
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN python -m playwright install --with-deps chromium && \
+    chmod -R a+rX /ms-playwright
+
 # renovate: datasource=pypi depName=prowler
 ARG PROWLER_VERSION=5.41.0
 # renovate: datasource=pypi depName=arjun
 ARG ARJUN_VERSION=2.2.7
-# renovate: datasource=pypi depName=sqlmap
-ARG SQLMAP_VERSION=1.10.9
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m venv /opt/prowler && \
     /opt/prowler/bin/pip install prowler==${PROWLER_VERSION} && \
@@ -147,9 +150,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     /opt/prowler/bin/pip install --no-deps --upgrade cryptography==50.0.1
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m venv /opt/aux-scanners && \
-    /opt/aux-scanners/bin/pip install arjun==${ARJUN_VERSION} sqlmap==${SQLMAP_VERSION} && \
-    ln -s /opt/aux-scanners/bin/arjun /usr/local/bin/arjun && \
-    ln -s /opt/aux-scanners/bin/sqlmap /usr/local/bin/sqlmap
+    /opt/aux-scanners/bin/pip install arjun==${ARJUN_VERSION} && \
+    ln -s /opt/aux-scanners/bin/arjun /usr/local/bin/arjun
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade setuptools==84.0.0 wheel==0.46.3 jaraco.context==6.1.0 && \
     /opt/prowler/bin/pip install --upgrade setuptools==84.0.0 wheel==0.46.3 jaraco.context==6.1.0 && \
@@ -176,11 +178,12 @@ COPY --from=grype /out/grype /usr/local/bin/grype
 
 # Copy worker code
 COPY webapp/worker/ ./worker/
+COPY --chmod=0755 webapp/worker/entrypoint.sh webapp/worker/playwright-screenshot ./worker/
+COPY --chmod=0755 webapp/worker/playwright-screenshot /usr/local/bin/playwright-screenshot
 COPY webapp/backend/app/ ./app/
-COPY exposurescopex.sh ./exposurescopex.sh
+COPY --chmod=0755 exposurescopex.sh ./exposurescopex.sh
 COPY modules/ ./modules/
 COPY config/ ./config/
-RUN chmod +x /app/worker/entrypoint.sh /app/exposurescopex.sh /app/modules/*.sh
 
 # Compose mounts framework sources for local development; packaged copies make
 # the same image self-contained for isolated Kubernetes Jobs.
@@ -190,8 +193,7 @@ ENV HOME=/app/runtime
 ENV NUCLEI_TEMPLATES_DIR=/app/runtime/nuclei-templates
 ENV NUCLEI_COMMUNITY_TEMPLATES_DIR=/app/runtime/nuclei-templates-community
 
-RUN mkdir -p /app/runtime/nuclei-templates /app/runtime/nuclei-templates-community /app/runtime/.config /app/runtime/.cache && \
-    chown -R 65532:20 /app/runtime && chmod -R 0770 /app/runtime
+COPY --chown=65532:20 webapp/worker/runtime/ /app/runtime/
 
 USER 65532:20
 ENTRYPOINT ["/app/worker/entrypoint.sh"]

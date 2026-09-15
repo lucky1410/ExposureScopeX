@@ -1,6 +1,6 @@
 # ExposureScopeX Support Matrix
 
-**Verified against worker image and catalog:** 2026-09-09
+**Verified against worker image and catalog:** 2026-09-10
 
 Runtime truth is the capability catalog plus online worker heartbeat. Versions
 are pinned in `worker/Dockerfile` and should be updated through reviewed builds.
@@ -16,7 +16,6 @@ are pinned in `worker/Dockerfile` and should be updated through reviewed builds.
 | Katana, gau, Waybackurls | Route/history discovery | domain, URL | Historical sources may require internet access |
 | ffuf, Arjun, Nikto | Content/parameter/web baseline | domain, URL | Bounded by profile and timeouts |
 | Nuclei | Template validation | web, network, MCP-adjacent | Curated tags; templates use persistent runtime volume |
-| sqlmap | SQL injection validation | domain, URL | Guarded active validation, not default autonomous exploitation |
 | Gitleaks | Secret detection | repository | Evidence must remain redacted |
 | Trivy | CVE, secret, config and SBOM | repository, image, Kubernetes, mobile artifacts | Static analysis scope varies by target |
 | Syft, Grype | SBOM and vulnerability correlation | repository, image | Secondary software inventory adapters |
@@ -36,11 +35,11 @@ are pinned in `worker/Dockerfile` and should be updated through reviewed builds.
 
 ## Manual interoperability, not bundled execution
 
-Burp Suite evidence, Wireshark captures and specialist mobile proxy/device
-evidence can be attached through manual investigation/report workflows. Hydra,
-John the Ripper and Aircrack-ng are not default platform scanners. Credential
-attacks, wireless testing and unrestricted exploitation require isolated lab
-workers and explicit product approval.
+Burp Suite evidence, historical SQLMap exports, Wireshark captures, and
+specialist mobile proxy/device evidence can be attached through validated manual
+import workflows. SQLMap, Hydra, Metasploit, John the Ripper, and Aircrack-ng are
+not executable platform scanners. Credential attacks, exploit execution,
+wireless attacks, and destructive validation are outside the product boundary.
 
 ## Capability failure semantics
 

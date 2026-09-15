@@ -116,12 +116,20 @@ The local report separates:
 
 - **Discovered**: source and dependency evidence from the repository.
 - **Approved**: components the user included in the evaluation scope.
-- **Executed**: actual pre-auth and authenticated browser cases.
+- **Requested**: cases the reviewed plan asked ESX to run.
+- **Executed**: browser cases that actually reached a workflow.
+- **Blocked at session setup**: authenticated cases that could not begin because
+  an approved session was unavailable. These are coverage limitations, not
+  application failures, and they do not affect quality scores.
+- **Assertion review**: executed workflow cases whose approved expected signal
+  did not match. This is evidence to review, not an independently confirmed
+  application defect.
 - **Measured**: dimensions backed by validated local evidence.
 
-On a browser failure, the report records the case ID, failed action, failure
-category, completed/attempted step counts, approved-origin status, document-ready
-state, and aggregate console/page/request failure counts. It never records
-browser text, entered values, credentials, cookies, or local storage. To
-retain a local image of the failure state, enable `capture_failure_screenshots`;
-these files are not added to the evaluation package or report.
+On a browser outcome, the report records the case ID, persona, capability area,
+execution stage, failed action or session reason, completed/attempted step
+counts, approved-origin status, document-ready state, and aggregate
+console/page/request failure counts. It never records browser text, entered
+values, credentials, cookies, or local storage. To retain a local image of the
+failure state, enable `capture_failure_screenshots`; these files are not added
+to the evaluation package or report.

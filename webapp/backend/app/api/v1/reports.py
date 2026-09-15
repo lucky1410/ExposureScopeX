@@ -141,8 +141,6 @@ async def generate_report(
             status_code=status.HTTP_404_NOT_FOUND, detail="Assessment not found"
         )
 
-    if payload.baseline_scan_id and not payload.scan_id:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "baseline_scan_id requires scan_id")
     requested_scan_ids = [item for item in (payload.scan_id, payload.baseline_scan_id) if item]
     if requested_scan_ids:
         found_scan_ids = set((await db.execute(select(Scan.id).where(
@@ -152,9 +150,9 @@ async def generate_report(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "One or more report scans were not found in this assessment")
 
     now = datetime.now(timezone.utc)
-    extension = {"html": "html", "pdf": "pdf", "sarif": "sarif.json", "markdown": "md", "csv": "csv", "json": "json", "evidence": "zip"}[payload.format]
+    extension = {"html": "html", "pdf": "pdf", "docx": "docx", "sarif": "sarif.json", "markdown": "md", "csv": "csv", "json": "json", "evidence": "zip"}[payload.format]
     media_type = {
-        "html": "text/html; charset=utf-8", "pdf": "application/pdf", "markdown": "text/markdown; charset=utf-8",
+        "html": "text/html; charset=utf-8", "pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "markdown": "text/markdown; charset=utf-8",
         "sarif": "application/sarif+json", "csv": "text/csv; charset=utf-8", "json": "application/json", "evidence": "application/zip",
     }[payload.format]
     safe_name = "".join(char if char.isalnum() or char in "-_" else "_" for char in assessment.name).strip("_")
@@ -267,7 +265,7 @@ async def generate_report(
         "asset_count": len(assets),
         "finding_count": len(findings),
     }
-    ext_map = {"html": "html", "pdf": "pdf", "sarif": "sarif.json", "markdown": "md", "csv": "csv", "json": "json", "evidence": "zip"}
+    ext_map = {"html": "html", "pdf": "pdf", "docx": "docx", "sarif": "sarif.json", "markdown": "md", "csv": "csv", "json": "json", "evidence": "zip"}
     ext = ext_map.get(payload.format, "html")
     safe_name = "".join(char if char.isalnum() or char in "-_" else "_" for char in assessment.name).strip("_")
     filename = f"report_{safe_name or assessment.id}_{now.strftime('%Y%m%d_%H%M%S')}.{ext}"
@@ -276,6 +274,7 @@ async def generate_report(
     media_types = {
         "html": "text/html; charset=utf-8",
         "pdf": "application/pdf",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "markdown": "text/markdown; charset=utf-8",
         "sarif": "application/sarif+json",
         "csv": "text/csv; charset=utf-8",

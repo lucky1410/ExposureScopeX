@@ -3,7 +3,7 @@ import unittest
 from pydantic import ValidationError
 
 from app.profiles import PLAN_VERSION, compile_plan
-from app.schemas import AssessmentCreate, WebAuthentication
+from app.schemas import AssessmentCreate, PassiveInventoryRequest, WebAuthentication
 from app.target_planning import canonical_http_url, nuclei_targets
 from app.methodology_cases import (
     canonical_observation_key,
@@ -17,18 +17,21 @@ class ContractTests(unittest.TestCase):
     def test_light_plan_is_ordered_and_bounded(self) -> None:
         plan = compile_plan("light", "https://example.test")
         self.assertEqual(plan["version"], PLAN_VERSION)
-        self.assertEqual([stage["position"] for stage in plan["stages"]], list(range(8)))
+        self.assertEqual([stage["position"] for stage in plan["stages"]], list(range(13)))
         self.assertEqual(
             [stage["adapter"] for stage in plan["stages"]],
             [
                 "scope_preflight", "subdomain_enumeration", "http_profile", "tls_service_discovery",
-                "authenticated_crawl", "security_headers", "nuclei_baseline",
-                "evidence_validation",
+                "standards_discovery", "authenticated_crawl", "application_surface_inventory",
+                "api_contract_review", "route_security_policy_review", "security_headers",
+                "external_web_posture", "nuclei_baseline", "evidence_validation",
             ],
         )
         self.assertTrue(all(stage["timeout_seconds"] > 0 for stage in plan["stages"]))
         self.assertFalse(plan["stages"][1]["required"])
-        self.assertTrue(all(stage["required"] for stage in plan["stages"] if stage["adapter"] != "subdomain_enumeration"))
+        self.assertFalse(next(stage["required"] for stage in plan["stages"] if stage["adapter"] == "standards_discovery"))
+        self.assertFalse(next(stage["required"] for stage in plan["stages"] if stage["adapter"] == "api_contract_review"))
+        self.assertTrue(all(stage["required"] for stage in plan["stages"] if stage["adapter"] not in {"subdomain_enumeration", "standards_discovery", "api_contract_review"}))
 
     def test_medium_and_aggressive_are_complete_bounded_pipelines(self) -> None:
         medium = compile_plan("medium", "https://example.test")
@@ -69,6 +72,14 @@ class ContractTests(unittest.TestCase):
                 mode="light",
                 authorization_confirmed=True,
             )
+
+    def test_passive_inventory_target_rejects_embedded_credentials(self) -> None:
+        with self.assertRaises(ValidationError):
+            PassiveInventoryRequest(target="https://user:password@example.test")
+        self.assertEqual(
+            PassiveInventoryRequest(target="https://example.test/").target,
+            "https://example.test",
+        )
 
     def test_authenticated_assessment_contract(self) -> None:
         authentication = WebAuthentication(

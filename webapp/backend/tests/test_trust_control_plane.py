@@ -13,6 +13,7 @@ class ArtifactManifestTests(unittest.TestCase):
             report = Path(directory) / "assessment-report.json"
             report.write_text('{"ok":true}', encoding="utf-8")
             self.assertEqual(_artifact_type(report), "report")
+            self.assertEqual(_artifact_type(Path(directory) / "automatic.docx"), "report")
             self.assertEqual(
                 _file_sha256(report),
                 "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",

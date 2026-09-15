@@ -1,6 +1,6 @@
 # ExposureScopeX Threat Model
 
-**Reviewed:** 2026-09-09
+**Reviewed:** 2026-09-10
 
 ## Assets to protect
 
@@ -37,7 +37,7 @@
 | Nuclei template abuse | Persistent curated sources, profile tags, runtime provenance | Community templates remain executable content; review/signing needed |
 | Resource exhaustion | Rate limits, queue quotas, leases, time/memory/process/disk limits, retention | Add tenant storage quotas and disk-pressure admission control |
 | Evidence tampering | SHA-256 artifacts/reports, immutable scope, audit records | Add off-host immutable evidence and signing |
-| Destructive scan misuse | Authorization records, preview, safe defaults, guarded adapters | Human approval and isolated lab remain required |
+| Destructive scan misuse | Forbidden capabilities, authorization records, immutable preview, dual policy gates | Exploitation and destructive validation remain outside the product boundary |
 | Backup loss/ransomware | Integrity-checked backup and optional off-host replication | Automate restore drills and immutability |
 
 ## Security assumptions

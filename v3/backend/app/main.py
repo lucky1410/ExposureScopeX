@@ -1,5 +1,8 @@
 from contextlib import asynccontextmanager
+import csv
 import hashlib
+import io
+import json
 from pathlib import Path
 from uuid import UUID
 from urllib.parse import urlsplit
@@ -74,10 +77,35 @@ from .client_evaluator_runs import (
 from .methodology_cases import coverage_records
 from .migrations import migrate
 from .profiles import PLAN_VERSION, compile_plan
-from .schemas import Assessment, AssessmentCreate, ScanDetail, ScanStarted, ScopeFileValidationRequest
+from .schemas import (
+    AssetAssessmentStart,
+    AssetDiscoveryRequest,
+    Assessment,
+    AssessmentAssetReview,
+    AssessmentCreate,
+    ExposureAssetReview,
+    ExposureFindingLifecycleUpdate,
+    ExposureMonitorCreate,
+    ExposureMonitorUpdate,
+    IntegrationCreate,
+    PassiveInventoryRequest,
+    ScanDetail,
+    ScanStarted,
+    ScopeFileValidationRequest,
+    SubdomainAssessmentCreate,
+    ValidationCorpusCreate,
+)
+from .asset_inventory import (
+    DISCOVERY_SOURCE_CERTIFICATE_TRANSPARENCY,
+    DISCOVERY_SOURCE_CLIENT_DECLARED,
+    display_asset_status,
+    target_for_discovered_hostname,
+)
+from .light_adapters import _passive_certificate_transparency
 from .secrets import decrypt_secret, encrypt_secret
 from .artifact_store import artifact_path
 from .scope_files import parse_scope_file, scope_dispatch_error
+from .subdomain_scope import approved_discovered_subdomains, target_for_subdomain
 from .benchmark_manifest import (
     benchmark_release_eligibility,
     load_benchmark_manifest,
@@ -97,6 +125,15 @@ from .semantic_evaluator import (
     semantic_input_manifest,
     semantic_judge_descriptor,
 )
+from .exposure_management import (
+    enqueue_integration_deliveries,
+    exposure_workspace,
+    record_exposure_audit_event,
+    require_exposure_role,
+    sync_assessment_asset,
+    validate_integration_endpoint_url,
+    workspace_assessment,
+)
 
 
 @asynccontextmanager
@@ -111,7 +148,7 @@ app = FastAPI(title="ExposureScopeX v3", version="3.0.0-alpha.1", lifespan=lifes
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings().allowed_cors_origins,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "X-ESX-Organization"],
     allow_credentials=True,
 )
@@ -1578,13 +1615,529 @@ async def logout(
 
 
 @app.get("/api/v3/assessments", response_model=list[Assessment])
-async def list_assessments(_: dict = Depends(current_user)) -> list[dict]:
-    rows = await pool().fetch("SELECT * FROM assessments ORDER BY created_at DESC LIMIT 100")
+async def list_assessments(workspace: dict = Depends(exposure_workspace)) -> list[dict]:
+    rows = await pool().fetch(
+        "SELECT * FROM assessments WHERE organization_id = $1 ORDER BY created_at DESC LIMIT 100",
+        workspace["id"],
+    )
     return [dict(row) for row in rows]
 
 
+async def _asset_inventory_rows(organization_id: UUID, assessment_id: UUID | None = None) -> list[dict]:
+    rows = await pool().fetch(
+        """
+        SELECT aa.*, a.name AS assessment_name, a.mode::text AS assessment_mode,
+               latest.id AS latest_scan_id, latest.status::text AS latest_scan_status,
+               latest.finished_at AS latest_scan_finished_at
+        FROM assessment_assets aa
+        JOIN assessments a ON a.id = aa.assessment_id
+        LEFT JOIN LATERAL (
+          SELECT s.id, s.status, s.finished_at
+          FROM assessment_asset_scans aas
+          JOIN scans s ON s.id = aas.scan_id
+          WHERE aas.assessment_asset_id = aa.id
+          ORDER BY s.created_at DESC
+          LIMIT 1
+        ) latest ON true
+        WHERE a.organization_id = $1
+          AND ($2::uuid IS NULL OR aa.assessment_id = $2)
+        ORDER BY aa.last_seen_at DESC, aa.hostname
+        LIMIT 1000
+        """,
+        organization_id, assessment_id,
+    )
+    result = []
+    for row in rows:
+        asset = dict(row)
+        asset["client_status"] = display_asset_status(
+            str(asset["ownership_status"]), str(asset["assessment_status"])
+        )
+        result.append(asset)
+    return result
+
+
+@app.get("/api/v3/assets")
+async def list_assessment_assets(workspace: dict = Depends(exposure_workspace)) -> dict:
+    """Return the reviewable asset inventory across all client assessments."""
+    return {"assets": await _asset_inventory_rows(workspace["id"])}
+
+
+@app.get("/api/v3/assessment-scans/dashboard")
+async def assessment_scans_dashboard(workspace: dict = Depends(exposure_workspace)) -> dict:
+    """Summarize inventory, evidence, coverage, and review work without inventing a risk score."""
+    assets = await _asset_inventory_rows(workspace["id"])
+    ownership = {state: 0 for state in ("client_declared", "candidate", "approved", "excluded")}
+    assessment_status = {state: 0 for state in ("not_assessed", "approved_for_assessment", "queued", "assessed", "blocked")}
+    for asset in assets:
+        ownership[str(asset["ownership_status"])] += 1
+        assessment_status[str(asset["assessment_status"])] += 1
+    coverage_rows = await pool().fetch(
+        """
+        SELECT c.status, count(*)::integer AS count
+        FROM scan_coverage c
+        JOIN scans s ON s.id = c.scan_id
+        JOIN assessments a ON a.id = s.assessment_id
+        WHERE a.organization_id = $1
+        GROUP BY c.status
+        """, workspace["id"]
+    )
+    coverage = {str(row["status"]): int(row["count"]) for row in coverage_rows}
+    finding_rows = await pool().fetch(
+        """
+        SELECT COALESCE(fa.validation_status, 'candidate') AS validation_status,
+               f.severity, count(*)::integer AS count
+        FROM findings f
+        JOIN scans s ON s.id = f.scan_id
+        JOIN assessments a ON a.id = s.assessment_id
+        LEFT JOIN finding_assurance fa ON fa.finding_id = f.id
+        WHERE f.severity <> 'info' AND a.organization_id = $1
+        GROUP BY COALESCE(fa.validation_status, 'candidate'), f.severity
+        """, workspace["id"]
+    )
+    findings = [dict(row) for row in finding_rows]
+    attention = [
+        asset for asset in assets
+        if asset["ownership_status"] == "candidate" or asset["assessment_status"] == "blocked"
+    ][:12]
+    return {
+        "summary": {
+            "asset_count": len(assets),
+            "ownership": ownership,
+            "assessment_status": assessment_status,
+            "coverage": coverage,
+            "candidate_review_count": ownership["candidate"],
+            "coverage_issue_count": sum(
+                count for state, count in coverage.items()
+                if state in {"failed", "timed_out", "blocked", "cancelled"}
+            ),
+        },
+        "findings": findings,
+        "recent_assets": assets[:10],
+        "attention": attention,
+    }
+
+
+@app.get("/api/v3/exposure/dashboard")
+async def exposure_dashboard(workspace: dict = Depends(exposure_workspace)) -> dict:
+    """Return only persisted scope, asset, lifecycle, and coverage facts for the client dashboard."""
+    asset_rows = await pool().fetch(
+        """
+        SELECT ownership_status, lifecycle_status, count(*)::integer AS count
+        FROM exposure_assets WHERE organization_id = $1
+        GROUP BY ownership_status, lifecycle_status
+        """, workspace["id"],
+    )
+    assets = {"candidate": 0, "client_declared": 0, "verified": 0, "excluded": 0, "retired": 0}
+    for row in asset_rows:
+        if row["lifecycle_status"] == "retired":
+            assets["retired"] += int(row["count"])
+        else:
+            assets[str(row["ownership_status"])] += int(row["count"])
+    finding_rows = await pool().fetch(
+        """
+        SELECT lifecycle_status, severity, count(*)::integer AS count
+        FROM exposure_findings WHERE organization_id = $1
+        GROUP BY lifecycle_status, severity
+        """, workspace["id"],
+    )
+    findings = [dict(row) for row in finding_rows]
+    recent_events = await pool().fetch(
+        """
+        SELECT e.id, e.event_type, e.payload, e.occurred_at, a.hostname
+        FROM exposure_asset_events e JOIN exposure_assets a ON a.id = e.asset_id
+        WHERE e.organization_id = $1
+        ORDER BY e.occurred_at DESC LIMIT 12
+        """, workspace["id"],
+    )
+    monitors = await pool().fetch(
+        """
+        SELECT m.*, a.name AS assessment_name, a.target, ea.hostname
+        FROM exposure_monitors m
+        JOIN assessments a ON a.id = m.assessment_id
+        LEFT JOIN exposure_assets ea ON ea.id = m.asset_id
+        WHERE m.organization_id = $1
+        ORDER BY m.next_run_at NULLS LAST, m.created_at DESC
+        LIMIT 12
+        """, workspace["id"],
+    )
+    return {
+        "workspace": {"id": str(workspace["id"]), "name": workspace["name"], "role": workspace["membership_role"]},
+        "assets": assets,
+        "findings": findings,
+        "recent_asset_events": [dict(row) for row in recent_events],
+        "monitors": [dict(row) for row in monitors],
+        "next_step": (
+            "Review candidate ownership" if assets["candidate"] else
+            "Create a recurring monitor for a verified target" if assets["verified"] or assets["client_declared"] else
+            "Create a scoped assessment to establish your first declared asset"
+        ),
+    }
+
+
+@app.get("/api/v3/exposure/assets")
+async def list_exposure_assets(workspace: dict = Depends(exposure_workspace)) -> dict:
+    rows = await pool().fetch(
+        """
+        SELECT ea.*, count(DISTINCT relation.id)::integer AS relationship_count,
+               count(DISTINCT observation.id)::integer AS observation_count,
+               latest.lifecycle_status AS latest_finding_status,
+               latest.severity AS latest_finding_severity
+        FROM exposure_assets ea
+        LEFT JOIN exposure_asset_relations relation
+          ON relation.source_asset_id = ea.id OR relation.target_asset_id = ea.id
+        LEFT JOIN exposure_asset_observations observation ON observation.asset_id = ea.id
+        LEFT JOIN LATERAL (
+          SELECT lifecycle_status, severity FROM exposure_findings
+          WHERE asset_id = ea.id ORDER BY last_seen_at DESC LIMIT 1
+        ) latest ON true
+        WHERE ea.organization_id = $1
+        GROUP BY ea.id, latest.lifecycle_status, latest.severity
+        ORDER BY ea.last_seen_at DESC, ea.hostname
+        LIMIT 1000
+        """, workspace["id"],
+    )
+    return {"assets": [dict(row) for row in rows]}
+
+
+@app.patch("/api/v3/exposure/assets/{asset_id}/ownership")
+async def update_exposure_asset_ownership(
+    asset_id: UUID,
+    payload: ExposureAssetReview,
+    workspace: dict = Depends(exposure_workspace),
+) -> dict:
+    require_exposure_role(workspace, "owner", "admin", "analyst")
+    if payload.verification_method != "written_authorization":
+        connector_type = "dns_attestation" if payload.verification_method == "dns_attestation" else "cloud_inventory"
+        connector = await pool().fetchval(
+            """SELECT EXISTS(
+                SELECT 1 FROM exposure_integrations
+                WHERE organization_id = $1 AND integration_type = $2 AND status IN ('configured', 'active')
+            )""", workspace["id"], connector_type,
+        )
+        if not connector:
+            raise HTTPException(
+                status_code=422,
+                detail="Configure the matching DNS or cloud attestation connector before recording this verification method",
+            )
+    async with pool().acquire() as conn, conn.transaction():
+        asset = await conn.fetchrow(
+            """UPDATE exposure_assets
+               SET ownership_status = $3, ownership_confidence = CASE WHEN $3 = 'verified' THEN 100 ELSE ownership_confidence END,
+                   ownership_evidence = ownership_evidence || $4::jsonb,
+                   reviewed_by = $5, reviewed_at = now(), last_verified_at = CASE WHEN $3 = 'verified' THEN now() ELSE last_verified_at END,
+                   updated_at = now()
+               WHERE id = $1 AND organization_id = $2 RETURNING *""",
+            asset_id, workspace["id"], payload.ownership_status,
+            {"method": payload.verification_method, "note": payload.note or ""}, workspace["user_id"],
+        )
+        if asset is None:
+            raise HTTPException(status_code=404, detail="Asset not found in this workspace")
+        event_type = "asset.ownership_verified" if payload.ownership_status == "verified" else "asset.excluded"
+        event_payload = {"hostname": asset["hostname"], "method": payload.verification_method, "note": payload.note or ""}
+        await conn.execute(
+            """INSERT INTO exposure_asset_events (organization_id, asset_id, event_type, actor_id, payload)
+               VALUES ($1, $2, $3, $4, $5::jsonb)""",
+            workspace["id"], asset_id, event_type, workspace["user_id"], event_payload,
+        )
+        await enqueue_integration_deliveries(conn, workspace["id"], "asset.changed", event_payload)
+        await conn.execute(
+            """INSERT INTO exposure_audit_events (organization_id, actor_id, event_type, target_type, target_id, payload)
+               VALUES ($1, $2, $3, 'exposure_asset', $4, $5::jsonb)""",
+            workspace["id"], workspace["user_id"], event_type, asset_id, event_payload,
+        )
+    return dict(asset)
+
+
+@app.get("/api/v3/exposure/findings")
+async def list_exposure_findings(workspace: dict = Depends(exposure_workspace)) -> dict:
+    rows = await pool().fetch(
+        """
+        SELECT ef.*, ea.hostname, ea.canonical_target
+        FROM exposure_findings ef LEFT JOIN exposure_assets ea ON ea.id = ef.asset_id
+        WHERE ef.organization_id = $1
+        ORDER BY CASE ef.lifecycle_status WHEN 'open' THEN 1 WHEN 'needs_revalidation' THEN 2 ELSE 3 END,
+                 CASE ef.severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 ELSE 5 END,
+                 ef.last_seen_at DESC
+        LIMIT 1000
+        """, workspace["id"],
+    )
+    return {"findings": [dict(row) for row in rows]}
+
+
+@app.patch("/api/v3/exposure/findings/{finding_id}")
+async def update_exposure_finding_lifecycle(
+    finding_id: UUID,
+    payload: ExposureFindingLifecycleUpdate,
+    workspace: dict = Depends(exposure_workspace),
+) -> dict:
+    require_exposure_role(workspace, "owner", "admin", "analyst")
+    async with pool().acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            """UPDATE exposure_findings
+               SET lifecycle_status = $3, lifecycle_note = $4, updated_by = $5, updated_at = now(),
+                   resolved_at = CASE WHEN $3 = 'resolved' THEN now() ELSE resolved_at END
+               WHERE id = $1 AND organization_id = $2 RETURNING *""",
+            finding_id, workspace["id"], payload.lifecycle_status, payload.note, workspace["user_id"],
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Finding not found in this workspace")
+        event_payload = {"lifecycle_status": payload.lifecycle_status, "note": payload.note}
+        await conn.execute(
+            """INSERT INTO exposure_finding_events (organization_id, finding_id, event_type, actor_id, payload)
+               VALUES ($1, $2, 'finding.lifecycle_updated', $3, $4::jsonb)""",
+            workspace["id"], finding_id, workspace["user_id"], event_payload,
+        )
+        await conn.execute(
+            """INSERT INTO exposure_audit_events (organization_id, actor_id, event_type, target_type, target_id, payload)
+               VALUES ($1, $2, 'finding.lifecycle_updated', 'exposure_finding', $3, $4::jsonb)""",
+            workspace["id"], workspace["user_id"], finding_id, event_payload,
+        )
+    return dict(row)
+
+
+@app.post("/api/v3/exposure/monitors", status_code=status.HTTP_201_CREATED)
+async def create_exposure_monitor(
+    payload: ExposureMonitorCreate,
+    workspace: dict = Depends(exposure_workspace),
+) -> dict:
+    require_exposure_role(workspace, "owner", "admin", "analyst")
+    assessment = await workspace_assessment(workspace, payload.assessment_id)
+    if not assessment["authorization_confirmed"]:
+        raise HTTPException(status_code=422, detail="Recurring monitoring requires recorded written authorization")
+    hostname = str(urlsplit(str(assessment["target"])).hostname or "").lower()
+    async with pool().acquire() as conn, conn.transaction():
+        asset = await conn.fetchrow(
+            """SELECT id FROM exposure_assets WHERE organization_id = $1 AND hostname = $2""",
+            workspace["id"], hostname,
+        )
+        row = await conn.fetchrow(
+            """
+            INSERT INTO exposure_monitors (organization_id, assessment_id, asset_id, cadence_hours, next_run_at, created_by)
+            VALUES ($1, $2, $3, $4, now(), $5)
+            ON CONFLICT (assessment_id) DO UPDATE SET cadence_hours = EXCLUDED.cadence_hours,
+                status = 'active', next_run_at = now(), last_error = NULL, updated_at = now()
+            RETURNING *
+            """,
+            workspace["id"], payload.assessment_id, asset["id"] if asset else None,
+            payload.cadence_hours, workspace["user_id"],
+        )
+        await conn.execute(
+            """INSERT INTO exposure_audit_events (organization_id, actor_id, event_type, target_type, target_id, payload)
+               VALUES ($1, $2, 'monitor.enabled', 'assessment', $3, $4::jsonb)""",
+            workspace["id"], workspace["user_id"], payload.assessment_id,
+            {"cadence_hours": payload.cadence_hours},
+        )
+    return dict(row)
+
+
+@app.patch("/api/v3/exposure/monitors/{monitor_id}")
+async def update_exposure_monitor(
+    monitor_id: UUID,
+    payload: ExposureMonitorUpdate,
+    workspace: dict = Depends(exposure_workspace),
+) -> dict:
+    require_exposure_role(workspace, "owner", "admin")
+    row = await pool().fetchrow(
+        """UPDATE exposure_monitors SET status = $3, updated_at = now()
+           WHERE id = $1 AND organization_id = $2 RETURNING *""",
+        monitor_id, workspace["id"], payload.status,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Monitor not found in this workspace")
+    await record_exposure_audit_event(
+        workspace, f"monitor.{payload.status}", target_type="monitor", target_id=monitor_id,
+        payload={"assessment_id": str(row["assessment_id"])},
+    )
+    return dict(row)
+
+
+@app.get("/api/v3/exposure/quality")
+async def exposure_quality(workspace: dict = Depends(exposure_workspace)) -> dict:
+    validation = await pool().fetch(
+        """
+        SELECT COALESCE(fa.validation_status, 'candidate') AS status, count(*)::integer AS count
+        FROM findings f JOIN scans s ON s.id = f.scan_id
+        JOIN assessments a ON a.id = s.assessment_id
+        LEFT JOIN finding_assurance fa ON fa.finding_id = f.id
+        WHERE a.organization_id = $1 AND f.severity <> 'info'
+        GROUP BY COALESCE(fa.validation_status, 'candidate')
+        """, workspace["id"],
+    )
+    counts = {"candidate": 0, "confirmed": 0, "rejected": 0, "inconclusive": 0}
+    for row in validation:
+        counts[str(row["status"])] = int(row["count"])
+    measured = counts["confirmed"] + counts["rejected"]
+    corpora = await pool().fetch(
+        """
+        SELECT c.*, count(cc.id)::integer AS case_count
+        FROM validation_corpora c LEFT JOIN validation_corpus_cases cc ON cc.corpus_id = c.id
+        WHERE c.organization_id = $1 GROUP BY c.id ORDER BY c.created_at DESC
+        """, workspace["id"],
+    )
+    return {
+        "validation": counts,
+        "measured_validation_count": measured,
+        "observed_false_positive_rate": (counts["rejected"] / measured) if measured else None,
+        "rate_note": "This is a measured rejection rate among manually validated findings, not a claim about unreviewed findings.",
+        "corpora": [dict(row) for row in corpora],
+    }
+
+
+@app.post("/api/v3/exposure/validation-corpora", status_code=status.HTTP_201_CREATED)
+async def create_validation_corpus(
+    payload: ValidationCorpusCreate,
+    workspace: dict = Depends(exposure_workspace),
+) -> dict:
+    require_exposure_role(workspace, "owner", "admin", "analyst")
+    async with pool().acquire() as conn, conn.transaction():
+        corpus = await conn.fetchrow(
+            """
+            INSERT INTO validation_corpora (
+              organization_id, name, version, classification, source_reference, source_sha256, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *
+            """,
+            workspace["id"], payload.name, payload.version, payload.classification,
+            payload.source_reference, payload.source_sha256, workspace["user_id"],
+        )
+        await conn.executemany(
+            """INSERT INTO validation_corpus_cases (corpus_id, case_key, expected_outcome, family, severity, metadata)
+               VALUES ($1, $2, $3, $4, $5, $6::jsonb)""",
+            [(corpus["id"], case.case_key, case.expected_outcome, case.family, case.severity, case.metadata) for case in payload.cases],
+        )
+        await conn.execute(
+            """INSERT INTO exposure_audit_events (organization_id, actor_id, event_type, target_type, target_id, payload)
+               VALUES ($1, $2, 'validation_corpus.registered', 'validation_corpus', $3, $4::jsonb)""",
+            workspace["id"], workspace["user_id"], corpus["id"],
+            {"name": payload.name, "version": payload.version, "case_count": len(payload.cases)},
+        )
+    return {**dict(corpus), "case_count": len(payload.cases)}
+
+
+@app.post("/api/v3/exposure/integrations", status_code=status.HTTP_201_CREATED)
+async def create_exposure_integration(
+    payload: IntegrationCreate,
+    workspace: dict = Depends(exposure_workspace),
+) -> dict:
+    require_exposure_role(workspace, "owner", "admin")
+    if payload.endpoint_url:
+        try:
+            validate_integration_endpoint_url(payload.endpoint_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.integration_type in {"webhook", "siem"} and not payload.signing_secret:
+        raise HTTPException(status_code=422, detail="Outbound integrations require a signing secret")
+    async with pool().acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            """
+            INSERT INTO exposure_integrations (
+              organization_id, name, integration_type, status, endpoint_ciphertext, secret_ciphertext,
+              event_types, configuration, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9)
+            RETURNING id, name, integration_type, status, event_types, configuration, created_at
+            """,
+            workspace["id"], payload.name, payload.integration_type,
+            "active" if payload.integration_type in {"webhook", "siem"} else "configured",
+            encrypt_secret(payload.endpoint_url) if payload.endpoint_url else None,
+            encrypt_secret(payload.signing_secret) if payload.signing_secret else None,
+            payload.event_types, payload.configuration, workspace["user_id"],
+        )
+        await conn.execute(
+            """INSERT INTO exposure_audit_events (organization_id, actor_id, event_type, target_type, target_id, payload)
+               VALUES ($1, $2, 'integration.configured', 'integration', $3, $4::jsonb)""",
+            workspace["id"], workspace["user_id"], row["id"],
+            {"name": payload.name, "integration_type": payload.integration_type},
+        )
+    return dict(row)
+
+
+@app.get("/api/v3/exposure/integrations")
+async def list_exposure_integrations(workspace: dict = Depends(exposure_workspace)) -> dict:
+    require_exposure_role(workspace, "owner", "admin")
+    rows = await pool().fetch(
+        """SELECT id, name, integration_type, status, event_types, configuration, created_at, updated_at
+           FROM exposure_integrations WHERE organization_id = $1 ORDER BY created_at DESC""", workspace["id"]
+    )
+    deliveries = await pool().fetch(
+        """SELECT status, count(*)::integer AS count FROM exposure_delivery_events
+           WHERE organization_id = $1 GROUP BY status""", workspace["id"]
+    )
+    return {"integrations": [dict(row) for row in rows], "delivery_summary": [dict(row) for row in deliveries]}
+
+
+@app.get("/api/v3/exposure/audit-events")
+async def list_exposure_audit_events(workspace: dict = Depends(exposure_workspace)) -> dict:
+    require_exposure_role(workspace, "owner", "admin")
+    rows = await pool().fetch(
+        """
+        SELECT e.*, u.display_name AS actor_name
+        FROM exposure_audit_events e LEFT JOIN users u ON u.id = e.actor_id
+        WHERE e.organization_id = $1 ORDER BY e.occurred_at DESC LIMIT 250
+        """, workspace["id"],
+    )
+    return {"events": [dict(row) for row in rows]}
+
+
+@app.get("/api/v3/assessments/{assessment_id}/assets")
+async def assessment_assets(assessment_id: UUID, workspace: dict = Depends(exposure_workspace)) -> dict:
+    await workspace_assessment(workspace, assessment_id)
+    return {"assessment_id": str(assessment_id), "assets": await _asset_inventory_rows(workspace["id"], assessment_id)}
+
+
+@app.get("/api/v3/assessments/{assessment_id}/assets/export")
+async def export_assessment_assets(assessment_id: UUID, workspace: dict = Depends(exposure_workspace)) -> Response:
+    """Export the client-reviewable asset inventory without exposing raw evidence contents."""
+    assets = await _asset_inventory_rows(workspace["id"], assessment_id)
+    if not assets:
+        await workspace_assessment(workspace, assessment_id)
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow([
+        "Hostname", "Canonical target", "Asset type", "Ownership status",
+        "Ownership confidence", "Assessment status", "Discovery sources",
+        "First seen", "Last seen", "Latest scan status", "Review note",
+    ])
+    for asset in assets:
+        writer.writerow([
+            asset["hostname"], asset["canonical_target"], asset["asset_type"],
+            asset["ownership_status"], asset["ownership_confidence"],
+            asset["client_status"], "; ".join(asset.get("discovery_sources") or []),
+            asset["first_seen_at"], asset["last_seen_at"],
+            asset.get("latest_scan_status") or "not run", asset.get("review_note") or "",
+        ])
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="assessment-assets-{assessment_id}.csv"'},
+    )
+
+
+async def _record_client_declared_asset(conn, assessment: dict) -> None:
+    hostname = str(urlsplit(str(assessment["target"])).hostname or "").lower()
+    if not hostname:
+        raise ValueError("Assessment target does not have a hostname")
+    asset = await conn.fetchrow(
+        """
+        INSERT INTO assessment_assets (
+          assessment_id, hostname, canonical_target, asset_type, discovery_sources,
+          discovery_evidence, ownership_status, ownership_confidence, assessment_status
+        ) VALUES ($1, $2, $3, 'web_application', $4::jsonb, $5::jsonb,
+                  'client_declared', 100, 'approved_for_assessment')
+        ON CONFLICT (assessment_id, hostname) DO UPDATE
+        SET canonical_target = EXCLUDED.canonical_target,
+            last_seen_at = now(), updated_at = now()
+        RETURNING *
+        """,
+        assessment["id"], hostname, assessment["target"],
+        json.dumps([DISCOVERY_SOURCE_CLIENT_DECLARED]),
+        json.dumps({"source": DISCOVERY_SOURCE_CLIENT_DECLARED, "target": assessment["target"]}),
+    )
+    await sync_assessment_asset(
+        conn, assessment["organization_id"], dict(asset), actor_id=assessment.get("created_by")
+    )
+
+
 @app.get("/api/v3/scans")
-async def list_scans(_: dict = Depends(current_user)) -> list[dict]:
+async def list_scans(workspace: dict = Depends(exposure_workspace)) -> list[dict]:
     rows = await pool().fetch(
         """
         SELECT s.*, a.name AS assessment_name, a.target, a.mode,
@@ -1624,15 +2177,16 @@ async def list_scans(_: dict = Depends(current_user)) -> list[dict]:
                 ORDER BY sr.position LIMIT 1) AS current_stage
         FROM scans s
         JOIN assessments a ON a.id = s.assessment_id
+        WHERE a.organization_id = $1
         ORDER BY s.created_at DESC
         LIMIT 100
-        """
+        """, workspace["id"]
     )
     return [dict(row) for row in rows]
 
 
 @app.get("/api/v3/findings")
-async def list_findings(_: dict = Depends(current_user)) -> list[dict]:
+async def list_findings(workspace: dict = Depends(exposure_workspace)) -> list[dict]:
     rows = await pool().fetch(
         """
         SELECT f.*, a.name AS assessment_name, ar.sha256 AS evidence_sha256,
@@ -1646,15 +2200,16 @@ async def list_findings(_: dict = Depends(current_user)) -> list[dict]:
         JOIN assessments a ON a.id = s.assessment_id
         JOIN artifacts ar ON ar.id = f.source_artifact_id
         LEFT JOIN finding_assurance fa ON fa.finding_id = f.id
+        WHERE a.organization_id = $1
         ORDER BY f.created_at DESC
         LIMIT 500
-        """
+        """, workspace["id"]
     )
     return [dict(row) for row in rows]
 
 
 @app.get("/api/v3/artifacts")
-async def list_artifacts(_: dict = Depends(current_user)) -> list[dict]:
+async def list_artifacts(workspace: dict = Depends(exposure_workspace)) -> list[dict]:
     rows = await pool().fetch(
         """
         SELECT ar.*, a.name AS assessment_name, sr.adapter
@@ -1662,41 +2217,49 @@ async def list_artifacts(_: dict = Depends(current_user)) -> list[dict]:
         JOIN scans s ON s.id = ar.scan_id
         JOIN assessments a ON a.id = s.assessment_id
         LEFT JOIN stage_runs sr ON sr.id = ar.stage_run_id
+        WHERE a.organization_id = $1
         ORDER BY ar.created_at DESC
         LIMIT 500
-        """
+        """, workspace["id"]
     )
     return [dict(row) for row in rows]
 
 
 @app.get("/api/v3/reports")
-async def list_reports(_: dict = Depends(current_user)) -> list[dict]:
+async def list_reports(workspace: dict = Depends(exposure_workspace)) -> list[dict]:
     rows = await pool().fetch(
         """
-        SELECT r.*, a.name AS assessment_name, a.target, s.status AS scan_status
+        SELECT r.*, s.assessment_id, a.name AS assessment_name, a.target, s.status AS scan_status
         FROM reports r
         JOIN scans s ON s.id = r.scan_id
         JOIN assessments a ON a.id = s.assessment_id
+        WHERE a.organization_id = $1
         ORDER BY r.generated_at DESC
         LIMIT 100
-        """
+        """, workspace["id"]
     )
     return [dict(row) for row in rows]
 
 
 @app.get("/api/v3/reports/{scan_id}")
-async def report_detail(scan_id: UUID, _: dict = Depends(current_user)) -> dict:
-    row = await pool().fetchrow("SELECT * FROM reports WHERE scan_id = $1", scan_id)
+async def report_detail(scan_id: UUID, workspace: dict = Depends(exposure_workspace)) -> dict:
+    row = await pool().fetchrow(
+        """SELECT r.* FROM reports r JOIN scans s ON s.id = r.scan_id
+           JOIN assessments a ON a.id = s.assessment_id
+           WHERE r.scan_id = $1 AND a.organization_id = $2""", scan_id, workspace["id"]
+    )
     if row is None:
         raise HTTPException(status_code=404, detail="Report not generated")
     return dict(row)
 
 
 @app.post("/api/v3/reports/{scan_id}/regenerate")
-async def regenerate_report(scan_id: UUID, _: dict = Depends(current_user)) -> dict:
+async def regenerate_report(scan_id: UUID, workspace: dict = Depends(exposure_workspace)) -> dict:
+    require_exposure_role(workspace, "owner", "admin", "analyst")
     scan = await pool().fetchrow(
-        "SELECT id, assessment_id, status::text AS status FROM scans WHERE id = $1",
-        scan_id,
+        """SELECT s.id, s.assessment_id, s.status::text AS status FROM scans s
+           JOIN assessments a ON a.id = s.assessment_id
+           WHERE s.id = $1 AND a.organization_id = $2""", scan_id, workspace["id"],
     )
     if scan is None:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -1728,7 +2291,7 @@ async def regenerate_report(scan_id: UUID, _: dict = Depends(current_user)) -> d
 async def download_report(
     scan_id: UUID,
     report_format: str,
-    _: dict = Depends(current_user),
+    workspace: dict = Depends(exposure_workspace),
 ) -> FileResponse:
     kinds = {"docx": "report_docx", "pdf": "report_pdf", "evidence": "evidence_bundle"}
     media_types = {
@@ -1740,8 +2303,9 @@ async def download_report(
     row = await pool().fetchrow(
         """SELECT ar.storage_key, ar.sha256, a.name FROM artifacts ar JOIN scans s ON s.id = ar.scan_id
            JOIN assessments a ON a.id = s.assessment_id
-           WHERE ar.scan_id = $1 AND ar.kind = $2 ORDER BY ar.captured_at DESC LIMIT 1""",
-        scan_id, kinds[report_format],
+           WHERE ar.scan_id = $1 AND ar.kind = $2 AND a.organization_id = $3
+           ORDER BY ar.captured_at DESC LIMIT 1""",
+        scan_id, kinds[report_format], workspace["id"],
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Requested report artifact is not available")
@@ -1756,7 +2320,11 @@ async def download_report(
 
 
 @app.post("/api/v3/assessments", response_model=Assessment, status_code=status.HTTP_201_CREATED)
-async def create_assessment(payload: AssessmentCreate, _: dict = Depends(current_user)) -> dict:
+async def create_assessment(
+    payload: AssessmentCreate,
+    workspace: dict = Depends(exposure_workspace),
+) -> dict:
+    require_exposure_role(workspace, "owner", "admin", "analyst")
     if not payload.authorization_confirmed:
         raise HTTPException(status_code=422, detail="Written authorization must be confirmed")
     if payload.authentication and urlsplit(payload.authentication.login_url).hostname != urlsplit(payload.target).hostname:
@@ -1764,15 +2332,20 @@ async def create_assessment(payload: AssessmentCreate, _: dict = Depends(current
     async with pool().acquire() as conn, conn.transaction():
         row = await conn.fetchrow(
             """
-            INSERT INTO assessments (name, target, mode, authorization_confirmed)
-            VALUES ($1, $2, $3::assessment_mode, $4)
+            INSERT INTO assessments (
+              name, target, mode, authorization_confirmed, service_tier, organization_id, created_by
+            ) VALUES ($1, $2, $3::assessment_mode, $4, $5, $6, $7)
             RETURNING *
             """,
             payload.name,
             payload.target,
             payload.mode,
             payload.authorization_confirmed,
+            payload.service_tier,
+            workspace["id"],
+            workspace["user_id"],
         )
+        await _record_client_declared_asset(conn, dict(row))
         if payload.authentication:
             auth = payload.authentication
             await conn.execute(
@@ -1800,6 +2373,12 @@ async def create_assessment(payload: AssessmentCreate, _: dict = Depends(current
                 stored_scope["authorization_id"], payload.scope.authorization_expires_at,
                 stored_scope.get("credential_reference"), stored_scope,
             )
+        await conn.execute(
+            """INSERT INTO exposure_audit_events (organization_id, actor_id, event_type, target_type, target_id, payload)
+               VALUES ($1, $2, 'assessment.created', 'assessment', $3, $4::jsonb)""",
+            workspace["id"], workspace["user_id"], row["id"],
+            {"target": payload.target, "mode": payload.mode, "service_tier": payload.service_tier},
+        )
     return dict(row)
 
 
@@ -1814,10 +2393,511 @@ async def validate_scope_file(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.post("/api/v3/assessments/passive-inventory")
+async def public_passive_inventory(
+    payload: PassiveInventoryRequest,
+    _: dict = Depends(current_user),
+) -> dict:
+    """Return a bounded CT inventory without contacting the target or authorizing active work."""
+    hostname = str(urlsplit(payload.target).hostname or "").lower()
+    inventory = await asyncio.to_thread(_passive_certificate_transparency, hostname, 100)
+    return {
+        "target": payload.target,
+        "target_hostname": hostname,
+        "inventory": inventory,
+        "classification": "public_passive_inventory",
+        "next_step": "Create an authorized Light assessment before any host is contacted or assessed.",
+    }
+
+
+@app.post("/api/v3/assessments/{assessment_id}/assets/discover")
+async def discover_assessment_assets(
+    assessment_id: UUID,
+    payload: AssetDiscoveryRequest,
+    workspace: dict = Depends(exposure_workspace),
+) -> dict:
+    """Add passive CT candidates to the inventory; this never contacts discovered hosts."""
+    assessment = await pool().fetchrow(
+        "SELECT id, target, organization_id FROM assessments WHERE id = $1 AND organization_id = $2",
+        assessment_id, workspace["id"],
+    )
+    if assessment is None:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    parent_target = str(assessment["target"])
+    hostname = str(urlsplit(parent_target).hostname or "").lower()
+    inventory = await asyncio.to_thread(_passive_certificate_transparency, hostname, payload.limit)
+    if inventory.get("status") != "completed":
+        return {
+            "assessment_id": str(assessment_id),
+            "inventory": inventory,
+            "created_or_refreshed": 0,
+            "next_step": "Discovery did not complete. No asset ownership or security conclusion was made.",
+        }
+
+    evidence = {
+        "source": DISCOVERY_SOURCE_CERTIFICATE_TRANSPARENCY,
+        "query": inventory.get("query"),
+        "parent_target": parent_target,
+        "limitations": inventory.get("limitations"),
+    }
+    changed = 0
+    async with pool().acquire() as conn, conn.transaction():
+        for discovered_hostname in inventory.get("subdomains", []):
+            if not isinstance(discovered_hostname, str):
+                continue
+            try:
+                target = target_for_discovered_hostname(parent_target, discovered_hostname)
+            except ValueError:
+                continue
+            asset = await conn.fetchrow(
+                """
+                INSERT INTO assessment_assets (
+                  assessment_id, hostname, canonical_target, asset_type, discovery_sources,
+                  discovery_evidence, ownership_status, ownership_confidence, assessment_status
+                ) VALUES ($1, $2, $3, 'hostname', $4::jsonb, $5::jsonb,
+                          'candidate', 35, 'not_assessed')
+                ON CONFLICT (assessment_id, hostname) DO UPDATE
+                SET last_seen_at = now(), updated_at = now(),
+                    discovery_sources = CASE
+                      WHEN assessment_assets.discovery_sources @> EXCLUDED.discovery_sources
+                        THEN assessment_assets.discovery_sources
+                      ELSE assessment_assets.discovery_sources || EXCLUDED.discovery_sources
+                    END,
+                    discovery_evidence = assessment_assets.discovery_evidence || EXCLUDED.discovery_evidence
+                RETURNING *
+                """,
+                assessment_id, discovered_hostname.lower(), target,
+                json.dumps([DISCOVERY_SOURCE_CERTIFICATE_TRANSPARENCY]), json.dumps(evidence),
+            )
+            await sync_assessment_asset(
+                conn, workspace["id"], dict(asset), actor_id=workspace["user_id"], parent_hostname=hostname
+            )
+            changed += 1
+        await conn.execute(
+            """INSERT INTO exposure_audit_events (organization_id, actor_id, event_type, target_type, target_id, payload)
+               VALUES ($1, $2, 'asset.discovery_completed', 'assessment', $3, $4::jsonb)""",
+            workspace["id"], workspace["user_id"], assessment_id,
+            {"source": DISCOVERY_SOURCE_CERTIFICATE_TRANSPARENCY, "candidate_count": changed},
+        )
+    return {
+        "assessment_id": str(assessment_id),
+        "inventory": inventory,
+        "created_or_refreshed": changed,
+        "next_step": "Review ownership evidence before approving any candidate for a safe assessment.",
+        "assets": await _asset_inventory_rows(workspace["id"], assessment_id),
+    }
+
+
+@app.patch("/api/v3/assessments/{assessment_id}/assets/{asset_id}")
+async def review_assessment_asset(
+    assessment_id: UUID,
+    asset_id: UUID,
+    payload: AssessmentAssetReview,
+    workspace: dict = Depends(exposure_workspace),
+) -> dict:
+    require_exposure_role(workspace, "owner", "admin", "analyst")
+    if payload.ownership_status == "approved" and not payload.authorization_confirmed:
+        raise HTTPException(
+            status_code=422,
+            detail="Confirm written authorization before approving a discovered asset for assessment",
+        )
+    if payload.ownership_status == "approved":
+        next_assessment_status = "approved_for_assessment"
+    else:
+        next_assessment_status = "not_assessed"
+    async with pool().acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            """
+        UPDATE assessment_assets aa
+        SET ownership_status = $3,
+            assessment_status = $4,
+            review_note = $5,
+            reviewed_by = $6,
+            reviewed_at = now(),
+            updated_at = now()
+        FROM assessments a
+        WHERE aa.id = $1 AND aa.assessment_id = $2 AND a.id = aa.assessment_id
+          AND a.organization_id = $7
+          AND (aa.ownership_status <> 'client_declared' OR $3 = 'approved')
+        RETURNING aa.*, a.organization_id
+            """,
+            asset_id, assessment_id, payload.ownership_status, next_assessment_status,
+            payload.note, workspace["user_id"], workspace["id"],
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Assessment asset not found or cannot be changed")
+        asset = dict(row)
+        exposure_asset = await sync_assessment_asset(
+            conn, workspace["id"], asset, actor_id=workspace["user_id"]
+        )
+        await conn.execute(
+            """UPDATE exposure_assets
+               SET ownership_status = $3, ownership_confidence = CASE WHEN $3 = 'verified' THEN 100 ELSE ownership_confidence END,
+                   ownership_evidence = ownership_evidence || $4::jsonb,
+                   reviewed_by = $5, reviewed_at = now(), last_verified_at = CASE WHEN $3 = 'verified' THEN now() ELSE last_verified_at END,
+                   updated_at = now()
+               WHERE id = $1 AND organization_id = $2""",
+            exposure_asset["id"], workspace["id"],
+            "verified" if payload.ownership_status == "approved" else "excluded",
+            {"method": "written_authorization" if payload.ownership_status == "approved" else "client_review", "note": payload.note or ""},
+            workspace["user_id"],
+        )
+        event_type = "asset.ownership_verified" if payload.ownership_status == "approved" else "asset.excluded"
+        event_payload = {
+            "hostname": asset["hostname"], "method": "written_authorization" if payload.ownership_status == "approved" else "client_review",
+            "assessment_id": str(assessment_id),
+        }
+        await conn.execute(
+            """INSERT INTO exposure_asset_events (organization_id, asset_id, event_type, actor_id, payload)
+               VALUES ($1, $2, $3, $4, $5::jsonb)""",
+            workspace["id"], exposure_asset["id"], event_type, workspace["user_id"], event_payload,
+        )
+        await enqueue_integration_deliveries(conn, workspace["id"], "asset.changed", event_payload)
+        await conn.execute(
+            """INSERT INTO exposure_audit_events (organization_id, actor_id, event_type, target_type, target_id, payload)
+               VALUES ($1, $2, $3, 'exposure_asset', $4, $5::jsonb)""",
+            workspace["id"], workspace["user_id"], event_type, exposure_asset["id"], event_payload,
+        )
+    asset["client_status"] = display_asset_status(
+        str(asset["ownership_status"]), str(asset["assessment_status"])
+    )
+    return asset
+
+
+async def _load_passive_subdomain_inventory(assessment_id: UUID, organization_id: UUID) -> tuple[dict, dict]:
+    row = await pool().fetchrow(
+        """
+        SELECT a.id AS assessment_id, a.name AS assessment_name, a.target AS parent_target,
+               a.mode::text AS parent_mode, s.id AS scan_id, s.status::text AS scan_status,
+               ar.id AS artifact_id, ar.sha256 AS artifact_sha256, ar.storage_key
+        FROM assessments a
+        JOIN scans s ON s.assessment_id = a.id
+        JOIN artifacts ar ON ar.scan_id = s.id
+        WHERE a.id = $1 AND a.organization_id = $2 AND ar.kind = 'passive_subdomain_inventory'
+        ORDER BY ar.captured_at DESC
+        LIMIT 1
+        """,
+        assessment_id, organization_id,
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No passive subdomain inventory is available. Complete a Light assessment first.",
+        )
+    result = dict(row)
+    path = artifact_path(result["storage_key"])
+    if not path.is_file():
+        raise HTTPException(status_code=410, detail="The passive subdomain inventory artifact is missing")
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != result["artifact_sha256"]:
+        raise HTTPException(status_code=409, detail="The passive subdomain inventory failed integrity verification")
+    try:
+        inventory = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="The passive subdomain inventory is not valid JSON") from exc
+    if not isinstance(inventory, dict):
+        raise HTTPException(status_code=409, detail="The passive subdomain inventory has an invalid format")
+    return result, inventory
+
+
+@app.get("/api/v3/assessments/{assessment_id}/passive-subdomains")
+async def passive_subdomains(assessment_id: UUID, workspace: dict = Depends(exposure_workspace)) -> dict:
+    source, inventory = await _load_passive_subdomain_inventory(assessment_id, workspace["id"])
+    origin_rows = await pool().fetch(
+        """
+        SELECT o.hostname, o.child_assessment_id, c.name, c.target, c.status::text AS status,
+               o.created_at
+        FROM subdomain_assessment_origins o
+        JOIN assessments c ON c.id = o.child_assessment_id
+        WHERE o.parent_assessment_id = $1
+        ORDER BY o.created_at DESC
+        """,
+        assessment_id,
+    )
+    assessments_by_host: dict[str, list[dict]] = {}
+    for row in origin_rows:
+        item = dict(row)
+        hostname = item.pop("hostname")
+        assessments_by_host.setdefault(hostname, []).append(item)
+    names = [name for name in inventory.get("subdomains", []) if isinstance(name, str)]
+    can_start = inventory.get("status") == "completed" and source["scan_status"] not in {"queued", "running"}
+    return {
+        "assessment_id": str(assessment_id),
+        "parent_target": source["parent_target"],
+        "scan_id": str(source["scan_id"]),
+        "scan_status": source["scan_status"],
+        "inventory_status": inventory.get("status"),
+        "reason": inventory.get("reason"),
+        "source": inventory.get("source"),
+        "artifact_sha256": source["artifact_sha256"],
+        "can_start": can_start,
+        "subdomains": [
+            {"hostname": name, "assessments": assessments_by_host.get(name, [])}
+            for name in names
+        ],
+    }
+
+
+async def _queue_assessment_scan(conn, assessment: dict) -> dict:
+    scope_row = await conn.fetchrow(
+        "SELECT scope FROM assessment_scopes WHERE assessment_id = $1", assessment["id"]
+    )
+    if scope_row:
+        scope_error = scope_dispatch_error(dict(scope_row["scope"]), assessment["target"])
+        if scope_error:
+            raise HTTPException(status_code=403, detail=scope_error)
+    active_scan = await conn.fetchrow(
+        """
+        SELECT id, status::text AS status FROM scans
+        WHERE assessment_id = $1 AND status IN ('queued', 'running')
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        assessment["id"],
+    )
+    if active_scan is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Assessment already has an active scan ({active_scan['status']}: {active_scan['id']})",
+        )
+    plan = compile_plan(assessment["mode"], assessment["target"])
+    scan = await conn.fetchrow(
+        """
+        INSERT INTO scans (assessment_id, plan_version, plan)
+        VALUES ($1, $2, $3::jsonb)
+        RETURNING id, assessment_id, status, plan_version
+        """,
+        assessment["id"], PLAN_VERSION, plan,
+    )
+    await conn.executemany(
+        """INSERT INTO stage_runs (scan_id, position, adapter, required, timeout_seconds)
+           VALUES ($1, $2, $3, $4, $5)""",
+        [
+            (scan["id"], stage["position"], stage["adapter"], stage["required"], stage["timeout_seconds"])
+            for stage in plan["stages"]
+        ],
+    )
+    stage_ids = {
+        row["adapter"]: row["id"]
+        for row in await conn.fetch("SELECT id, adapter FROM stage_runs WHERE scan_id = $1", scan["id"])
+    }
+    await conn.executemany(
+        """
+        INSERT INTO scan_coverage (
+          scan_id, stage_run_id, case_id, methodology_version, profile,
+          family, adapter, title, required
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        """,
+        [
+            (
+                scan["id"], stage_ids[record["adapter"]], record["case_id"],
+                record["methodology_version"], record["profile"], record["family"],
+                record["adapter"], record["title"], record["required"],
+            )
+            for record in coverage_records(plan)
+        ],
+    )
+    await conn.execute("UPDATE assessments SET status = 'queued' WHERE id = $1", assessment["id"])
+    await conn.execute(
+        "INSERT INTO scan_events (scan_id, event_type, payload) VALUES ($1, 'scan.queued', $2)",
+        scan["id"], {"plan_version": PLAN_VERSION},
+    )
+    return dict(scan)
+
+
+@app.post("/api/v3/assessments/{assessment_id}/assets/{asset_id}/start", status_code=status.HTTP_202_ACCEPTED)
+async def start_inventory_asset_assessment(
+    assessment_id: UUID,
+    asset_id: UUID,
+    payload: AssetAssessmentStart,
+    workspace: dict = Depends(exposure_workspace),
+) -> dict:
+    """Queue one approved exact-origin asset while retaining a parent assessment view."""
+    require_exposure_role(workspace, "owner", "admin", "analyst")
+    if not payload.authorization_confirmed:
+        raise HTTPException(status_code=422, detail="Confirm written authorization before assessment execution")
+    async with pool().acquire() as conn, conn.transaction():
+        asset = await conn.fetchrow(
+            """
+            SELECT aa.*, a.name AS parent_name, a.target AS parent_target,
+                   a.mode::text AS parent_mode, a.authorization_confirmed AS parent_authorized
+            FROM assessment_assets aa
+            JOIN assessments a ON a.id = aa.assessment_id
+            WHERE aa.id = $1 AND aa.assessment_id = $2 AND a.organization_id = $3
+            FOR UPDATE OF aa, a
+            """,
+            asset_id, assessment_id, workspace["id"],
+        )
+        if asset is None:
+            raise HTTPException(status_code=404, detail="Assessment asset not found")
+        if not asset["parent_authorized"]:
+            raise HTTPException(status_code=403, detail="The parent assessment has no recorded authorization")
+        if asset["ownership_status"] not in {"client_declared", "approved"}:
+            raise HTTPException(status_code=409, detail="Review and approve this candidate asset before assessment")
+
+        if asset["canonical_target"] == asset["parent_target"]:
+            scan_assessment = {
+                "id": assessment_id,
+                "mode": asset["parent_mode"],
+                "target": asset["parent_target"],
+            }
+        else:
+            child = await conn.fetchrow(
+                """
+                INSERT INTO assessments (
+                  name, target, mode, authorization_confirmed, service_tier, organization_id, created_by
+                ) VALUES ($1, $2, $3::assessment_mode, true, 'external_baseline', $4, $5)
+                RETURNING *
+                """,
+                f"{str(asset['parent_name'])[:120]} / {asset['hostname']}", asset["canonical_target"],
+                asset["parent_mode"], workspace["id"], workspace["user_id"],
+            )
+            scan_assessment = dict(child)
+
+        scan = await _queue_assessment_scan(conn, scan_assessment)
+        await conn.execute(
+            """
+            INSERT INTO assessment_asset_scans (assessment_asset_id, scan_id)
+            VALUES ($1, $2)
+            ON CONFLICT DO NOTHING
+            """,
+            asset_id, scan["id"],
+        )
+        await conn.execute(
+            """
+            UPDATE assessment_assets
+            SET assessment_status = 'queued', updated_at = now()
+            WHERE id = $1
+            """,
+            asset_id,
+        )
+        await conn.execute(
+            """INSERT INTO exposure_audit_events (
+                 organization_id, actor_id, event_type, target_type, target_id, payload
+               ) VALUES ($1, $2, 'assessment.dispatched', 'scan', $3, $4::jsonb)""",
+            workspace["id"], workspace["user_id"], scan["id"],
+            {
+                "assessment_id": str(scan_assessment["id"]),
+                "parent_assessment_id": str(assessment_id),
+                "asset_id": str(asset_id),
+                "target": asset["canonical_target"],
+                "plan_version": PLAN_VERSION,
+            },
+        )
+    return {
+        "assessment_id": str(assessment_id),
+        "asset_id": str(asset_id),
+        "scan_id": str(scan["id"]),
+        "target": asset["canonical_target"],
+        "status": scan["status"],
+    }
+
+
+@app.post("/api/v3/assessments/{assessment_id}/subdomain-assessments", status_code=status.HTTP_202_ACCEPTED)
+async def start_approved_subdomain_assessments(
+    assessment_id: UUID,
+    payload: SubdomainAssessmentCreate,
+    workspace: dict = Depends(exposure_workspace),
+) -> dict:
+    require_exposure_role(workspace, "owner", "admin", "analyst")
+    if not payload.authorization_confirmed:
+        raise HTTPException(status_code=422, detail="Written authorization for the selected subdomains must be confirmed")
+    source, inventory = await _load_passive_subdomain_inventory(assessment_id, workspace["id"])
+    if source["scan_status"] in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail="Wait for the parent assessment to finish before starting subdomain checks")
+    try:
+        hostnames = approved_discovered_subdomains(inventory, source["parent_target"], payload.hostnames)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    created: list[dict] = []
+    async with pool().acquire() as conn, conn.transaction():
+        parent = await conn.fetchrow(
+            "SELECT * FROM assessments WHERE id = $1 AND organization_id = $2 FOR UPDATE",
+            assessment_id, workspace["id"],
+        )
+        if parent is None:
+            raise HTTPException(status_code=404, detail="Parent assessment not found")
+        if not parent["authorization_confirmed"]:
+            raise HTTPException(status_code=403, detail="Parent assessment is not authorized")
+        for hostname in hostnames:
+            target = target_for_subdomain(parent["target"], hostname)
+            asset = await conn.fetchrow(
+                """
+                INSERT INTO assessment_assets (
+                  assessment_id, hostname, canonical_target, asset_type, discovery_sources,
+                  discovery_evidence, ownership_status, ownership_confidence, assessment_status,
+                  reviewed_by, reviewed_at
+                ) VALUES ($1, $2, $3, 'hostname', $4::jsonb, $5::jsonb,
+                          'approved', 100, 'queued', $6, now())
+                ON CONFLICT (assessment_id, hostname) DO UPDATE
+                SET ownership_status = 'approved', ownership_confidence = 100,
+                    assessment_status = 'queued', reviewed_by = $6, reviewed_at = now(),
+                    last_seen_at = now(), updated_at = now()
+                RETURNING *
+                """,
+                assessment_id, hostname, target,
+                json.dumps([DISCOVERY_SOURCE_CERTIFICATE_TRANSPARENCY]),
+                json.dumps({
+                    "source": DISCOVERY_SOURCE_CERTIFICATE_TRANSPARENCY,
+                    "source_artifact_id": str(source["artifact_id"]),
+                    "source_artifact_sha256": source["artifact_sha256"],
+                }),
+                workspace["user_id"],
+            )
+            await sync_assessment_asset(
+                conn, workspace["id"], dict(asset), actor_id=workspace["user_id"],
+                parent_hostname=str(urlsplit(parent["target"]).hostname or "").lower(),
+            )
+            prefix = str(parent["name"])[: max(1, 157 - len(hostname))]
+            child = await conn.fetchrow(
+                """
+                INSERT INTO assessments (
+                  name, target, mode, authorization_confirmed, service_tier, organization_id, created_by
+                ) VALUES ($1, $2, 'light'::assessment_mode, true, 'external_baseline', $3, $4)
+                RETURNING *
+                """,
+                f"{prefix} / {hostname}", target, workspace["id"], workspace["user_id"],
+            )
+            child_assessment = dict(child)
+            await conn.execute(
+                """
+                INSERT INTO subdomain_assessment_origins (
+                  child_assessment_id, parent_assessment_id, source_artifact_id,
+                  source_artifact_sha256, hostname, approved_by
+                ) VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                child["id"], assessment_id, source["artifact_id"], source["artifact_sha256"], hostname, workspace["user_id"],
+            )
+            scan = await _queue_assessment_scan(conn, child_assessment)
+            await conn.execute(
+                """
+                INSERT INTO assessment_asset_scans (assessment_asset_id, scan_id)
+                VALUES ($1, $2)
+                ON CONFLICT DO NOTHING
+                """,
+                asset["id"], scan["id"],
+            )
+            await conn.execute(
+                """INSERT INTO exposure_audit_events (
+                     organization_id, actor_id, event_type, target_type, target_id, payload
+                   ) VALUES ($1, $2, 'assessment.dispatched', 'scan', $3, $4::jsonb)""",
+                workspace["id"], workspace["user_id"], scan["id"],
+                {
+                    "assessment_id": str(child["id"]),
+                    "parent_assessment_id": str(assessment_id),
+                    "asset_id": str(asset["id"]),
+                    "target": target,
+                    "plan_version": PLAN_VERSION,
+                },
+            )
+            created.append({"assessment_id": str(child["id"]), "scan_id": str(scan["id"]), "hostname": hostname, "target": target})
+    return {"parent_assessment_id": str(assessment_id), "created": created}
+
+
 @app.post("/api/v3/assessments/preview")
 async def preview_assessment(
     payload: AssessmentCreate,
-    _: dict = Depends(current_user),
+    workspace: dict = Depends(exposure_workspace),
 ) -> dict:
     plan = compile_plan(payload.mode, payload.target)
     release_claims = {
@@ -1851,6 +2931,8 @@ async def preview_assessment(
         warnings.append("No authenticated test session supplied. Findings will be limited to unauthenticated reachability and publicly accessible routes.")
     if payload.mode in {"medium", "aggressive"}:
         warnings.append("Current implementation for this profile is broader than Light, but some deeper validation families remain promotion targets rather than completed release claims.")
+    if payload.service_tier == "authorized_deep":
+        warnings.append("Authorized deep is a governed product lane. Current adapters remain non-exploitative until each deeper check is separately released and approved.")
     return {
         "plan_version": plan["version"],
         "target": plan["target"],
@@ -1870,106 +2952,54 @@ async def preview_assessment(
     response_model=ScanStarted,
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def start_scan(assessment_id: UUID, _: dict = Depends(current_user)) -> dict:
+async def start_scan(assessment_id: UUID, workspace: dict = Depends(exposure_workspace)) -> dict:
+    require_exposure_role(workspace, "owner", "admin", "analyst")
     async with pool().acquire() as conn, conn.transaction():
         assessment = await conn.fetchrow(
-            "SELECT * FROM assessments WHERE id = $1 FOR UPDATE", assessment_id
+            "SELECT * FROM assessments WHERE id = $1 AND organization_id = $2 FOR UPDATE", assessment_id, workspace["id"]
         )
         if assessment is None:
             raise HTTPException(status_code=404, detail="Assessment not found")
         if not assessment["authorization_confirmed"]:
             raise HTTPException(status_code=403, detail="Assessment is not authorized")
-        scope_row = await conn.fetchrow(
-            "SELECT scope FROM assessment_scopes WHERE assessment_id = $1", assessment_id
-        )
-        if scope_row:
-            scope_error = scope_dispatch_error(dict(scope_row["scope"]), assessment["target"])
-            if scope_error:
-                raise HTTPException(status_code=403, detail=scope_error)
-        active_scan = await conn.fetchrow(
+        scan = await _queue_assessment_scan(conn, dict(assessment))
+        # Keep the client-declared root and its ordinary assessment lifecycle in one record.
+        await conn.execute(
             """
-            SELECT id, status::text AS status
-            FROM scans
-            WHERE assessment_id = $1
-              AND status IN ('queued', 'running')
-            ORDER BY created_at DESC
-            LIMIT 1
+            INSERT INTO assessment_asset_scans (assessment_asset_id, scan_id)
+            SELECT id, $2 FROM assessment_assets
+            WHERE assessment_id = $1 AND canonical_target = $3
+            ON CONFLICT DO NOTHING
             """,
-            assessment_id,
-        )
-        if active_scan is not None:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Assessment already has an active scan ({active_scan['status']}: {active_scan['id']})",
-            )
-
-        plan = compile_plan(assessment["mode"], assessment["target"])
-        scan = await conn.fetchrow(
-            """
-            INSERT INTO scans (assessment_id, plan_version, plan)
-            VALUES ($1, $2, $3::jsonb)
-            RETURNING id, assessment_id, status, plan_version
-            """,
-            assessment_id,
-            PLAN_VERSION,
-            plan,
-        )
-        await conn.executemany(
-            """
-            INSERT INTO stage_runs (scan_id, position, adapter, required, timeout_seconds)
-            VALUES ($1, $2, $3, $4, $5)
-            """,
-            [
-                (
-                    scan["id"],
-                    stage["position"],
-                    stage["adapter"],
-                    stage["required"],
-                    stage["timeout_seconds"],
-                )
-                for stage in plan["stages"]
-            ],
-        )
-        stage_ids = {
-            row["adapter"]: row["id"]
-            for row in await conn.fetch(
-                "SELECT id, adapter FROM stage_runs WHERE scan_id = $1",
-                scan["id"],
-            )
-        }
-        await conn.executemany(
-            """
-            INSERT INTO scan_coverage (
-              scan_id, stage_run_id, case_id, methodology_version, profile,
-              family, adapter, title, required
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-            """,
-            [
-                (
-                    scan["id"], stage_ids[record["adapter"]], record["case_id"],
-                    record["methodology_version"], record["profile"], record["family"],
-                    record["adapter"], record["title"], record["required"],
-                )
-                for record in coverage_records(plan)
-            ],
+            assessment_id, scan["id"], assessment["target"],
         )
         await conn.execute(
-            "UPDATE assessments SET status = 'queued' WHERE id = $1", assessment_id
+            """
+            UPDATE assessment_assets
+            SET assessment_status = 'queued', updated_at = now()
+            WHERE assessment_id = $1 AND canonical_target = $2
+            """,
+            assessment_id, assessment["target"],
         )
         await conn.execute(
-            "INSERT INTO scan_events (scan_id, event_type, payload) VALUES ($1, 'scan.queued', $2)",
-            scan["id"],
-            {"plan_version": PLAN_VERSION},
+            """INSERT INTO exposure_audit_events (
+                 organization_id, actor_id, event_type, target_type, target_id, payload
+               ) VALUES ($1, $2, 'assessment.dispatched', 'scan', $3, $4::jsonb)""",
+            workspace["id"], workspace["user_id"], scan["id"],
+            {"assessment_id": str(assessment_id), "target": assessment["target"], "plan_version": PLAN_VERSION},
         )
-    return dict(scan)
+        return scan
 
 
 @app.post("/api/v3/scans/{scan_id}/cancel")
-async def cancel_scan(scan_id: UUID, _: dict = Depends(current_user)) -> dict:
+async def cancel_scan(scan_id: UUID, workspace: dict = Depends(exposure_workspace)) -> dict:
+    require_exposure_role(workspace, "owner", "admin", "analyst")
     async with pool().acquire() as conn, conn.transaction():
         scan = await conn.fetchrow(
-            "SELECT id, assessment_id, status::text AS status FROM scans WHERE id = $1 FOR UPDATE",
-            scan_id,
+            """SELECT s.id, s.assessment_id, s.status::text AS status FROM scans s
+               JOIN assessments a ON a.id = s.assessment_id
+               WHERE s.id = $1 AND a.organization_id = $2 FOR UPDATE OF s""",
+            scan_id, workspace["id"],
         )
         if scan is None:
             raise HTTPException(status_code=404, detail="Scan not found")
@@ -2021,6 +3051,15 @@ async def cancel_scan(scan_id: UUID, _: dict = Depends(current_user)) -> dict:
                 scan["assessment_id"],
             )
             await conn.execute(
+                """
+                UPDATE assessment_assets aa
+                SET assessment_status = 'blocked', updated_at = now()
+                FROM assessment_asset_scans aas
+                WHERE aas.scan_id = $1 AND aas.assessment_asset_id = aa.id
+                """,
+                scan_id,
+            )
+            await conn.execute(
                 "INSERT INTO scan_events (scan_id, event_type, payload) VALUES ($1, 'scan.cancelled', $2)",
                 scan_id,
                 {"status": "cancelled", "reason": reason, "cancelled_stages": [str(row["adapter"]) for row in cancelled]},
@@ -2040,6 +3079,15 @@ async def cancel_scan(scan_id: UUID, _: dict = Depends(current_user)) -> dict:
                 scan_id,
                 {"status": scan["status"], "reason": reason, "running_stage": running_stage["adapter"]},
             )
+        await conn.execute(
+            """INSERT INTO exposure_audit_events (
+                 organization_id, actor_id, event_type, target_type, target_id, payload
+               ) VALUES ($1, $2, $3, 'scan', $4, $5::jsonb)""",
+            workspace["id"], workspace["user_id"],
+            "scan.cancelled" if running_stage is None else "scan.cancellation_requested",
+            scan_id,
+            {"assessment_id": str(scan["assessment_id"]), "reason": reason},
+        )
         existing_report = await conn.fetchrow("SELECT * FROM reports WHERE scan_id = $1", scan_id)
     if running_stage is None:
         coverage = [dict(row) for row in await pool().fetch(
@@ -2062,8 +3110,11 @@ async def cancel_scan(scan_id: UUID, _: dict = Depends(current_user)) -> dict:
 
 
 @app.get("/api/v3/scans/{scan_id}", response_model=ScanDetail)
-async def scan_detail(scan_id: UUID, _: dict = Depends(current_user)) -> dict:
-    scan = await pool().fetchrow("SELECT * FROM scans WHERE id = $1", scan_id)
+async def scan_detail(scan_id: UUID, workspace: dict = Depends(exposure_workspace)) -> dict:
+    scan = await pool().fetchrow(
+        """SELECT s.* FROM scans s JOIN assessments a ON a.id = s.assessment_id
+           WHERE s.id = $1 AND a.organization_id = $2""", scan_id, workspace["id"]
+    )
     if scan is None:
         raise HTTPException(status_code=404, detail="Scan not found")
     stages = await pool().fetch(

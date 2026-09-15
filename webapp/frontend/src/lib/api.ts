@@ -47,6 +47,9 @@ import type {
   RetentionPreview,
   RetentionCleanupResult,
   AuthSession,
+  OperationWorkspace,
+  OperationWorkspaceCreateRequest,
+  OperationTransitionAction,
 } from './types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -403,6 +406,33 @@ export async function getOperationsSummary(): Promise<OperationsSummary> {
   return response.data
 }
 
+export async function retryScanIngestion(id: string): Promise<{ status: string; scan_id: string }> {
+  const response = await api.post<{ status: string; scan_id: string }>(`/api/v1/assessments/scan-executions/${id}/retry-ingestion`)
+  return response.data
+}
+
+export async function getOperationWorkspaces(): Promise<OperationWorkspace[]> {
+  const response = await api.get<OperationWorkspace[]>('/api/v1/operations/workspaces')
+  return response.data
+}
+
+export async function createOperationWorkspace(payload: OperationWorkspaceCreateRequest): Promise<OperationWorkspace> {
+  const response = await api.post<OperationWorkspace>('/api/v1/operations/workspaces', payload)
+  return response.data
+}
+
+export async function updateOperationWorkspace(id: string, payload: OperationWorkspaceCreateRequest): Promise<OperationWorkspace> {
+  const changes = { ...payload }
+  delete changes.status
+  const response = await api.patch<OperationWorkspace>(`/api/v1/operations/workspaces/${id}`, changes)
+  return response.data
+}
+
+export async function transitionOperationWorkspace(id: string, action: OperationTransitionAction, reason?: string): Promise<OperationWorkspace> {
+  const response = await api.post<OperationWorkspace>(`/api/v1/operations/workspaces/${id}/transition`, { action, reason })
+  return response.data
+}
+
 export async function getExecutionPolicy(): Promise<ExecutionPolicy> {
   const response = await api.get<ExecutionPolicy>('/api/v1/settings/execution-policy')
   return response.data
@@ -688,11 +718,15 @@ export async function compareScans(currentScanId: string, baselineScanId: string
 }
 
 export async function downloadReport(report: Report): Promise<void> {
-  const response = await api.get<Blob>(`/api/v1/reports/${report.id}/download`, { responseType: 'blob' })
+  return downloadReportArtifact(report.id, report.filename || report.title)
+}
+
+export async function downloadReportArtifact(id: string, filename: string): Promise<void> {
+  const response = await api.get<Blob>(`/api/v1/reports/${id}/download`, { responseType: 'blob' })
   const url = URL.createObjectURL(response.data)
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = report.filename || report.title
+  anchor.download = filename
   document.body.appendChild(anchor)
   anchor.click()
   anchor.remove()
