@@ -32,3 +32,4 @@ webapp/backups/
 secrets/
 tmp/
 my-agent-evaluation/
+gcm-diagnose.log
