@@ -102,10 +102,64 @@ py -m pip install "exposurescopex-eval-runner[browser]"
 playwright install chromium
 ```
 
-Use `adapter.type: "browser_journey"`, a loopback `base_url`, and an
-`input.journey` action list containing `goto`, `fill`, `click`, `press`,
-`expect_text`, or `expect_visible`. A passing assertion returns the configured
-`pass` label. This is deterministic journey verification, not model confidence.
+Use `adapter.type: "browser_journey"` and a loopback `base_url`. Browser mode
+is a deterministic workflow check, not a model-confidence score. A generated
+browser plan contains exactly the cases it states; selecting an HTTP `release`
+profile does not create twelve hidden browser journeys.
+
+Each `input.journey` can use `goto`, `fill`, `click`, `press`,
+`wait_for_url`, `wait_for_text`, `wait_for_selector`, `wait_for_navigation`,
+`wait_for_stable`, `assert_path`, `assert_title`, `expect_text`, or
+`expect_visible`. Use an explicit wait or assertion after an SPA action rather
+than relying on a generic page-load check.
+
+For a protected local app, add an explicit `auth` object and mark only
+post-login cases with `"requires_auth": true`. The runner reads a dedicated
+test account from environment variables, saves an optional local session-state
+file for reuse, and never writes credential values or cookies to a result,
+report, audit log, or upload package.
+
+For an identity-provider login, use `session_bootstrap` instead of `auth`, then
+run `esx-eval browser-auth --config ./esx-eval.json`. The visible browser lets
+the tester complete approved SSO and must return to the loopback application
+before ESX saves a session. The saved state contains only local-application
+cookies and local storage; identity-provider cookies are discarded.
+
+```json
+{
+  "adapter": {
+    "type": "browser_journey",
+    "base_url": "http://127.0.0.1:3000",
+    "session_state_path": ".esx/auth-session.json",
+    "auth": {
+      "login_path": "/login",
+      "username_env": "ESX_TEST_USERNAME",
+      "password_env": "ESX_TEST_PASSWORD",
+      "username_selector": "input[name='email']",
+      "password_selector": "input[name='password']",
+      "submit_selector": "button[type='submit']",
+      "success": {"type": "wait_for_text", "value": "Dashboard"}
+    }
+  },
+  "dataset": {
+    "cases": [{
+      "case_id": "dashboard-ready-001",
+      "requires_auth": true,
+      "input": {"journey": [
+        {"type": "goto", "path": "/dashboard"},
+        {"type": "wait_for_text", "value": "Dashboard"},
+        {"type": "assert_path", "path": "/dashboard"}
+      ]},
+      "expected_label": "pass"
+    }]
+  }
+}
+```
+
+The local report distinguishes discovered components, customer-approved scope,
+executed pre-auth/authenticated cases, and measured dimensions. Browser
+failures identify the failed action and category; optional screenshots remain
+only beside the local plan.
 
 ### Automatic local telemetry
 

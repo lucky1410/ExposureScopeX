@@ -157,6 +157,9 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
         if not isinstance(item.get("input"), dict) or not isinstance(item.get("expected_label"), str) or not item["expected_label"]:
             raise RunnerError("Every dataset case needs object input and expected_label")
         _safe_reference(item["expected_label"], "dataset expected_label")
+        if adapter_type == "browser_journey":
+            from .browser import validate_browser_case
+            validate_browser_case(item, adapter)
     if evaluation.get("dataset_version") != dataset.get("version"):
         raise RunnerError("evaluation.dataset_version must match dataset.version")
     for field in ("name", "agent_id", "subject_version", "project_key", "dataset_version"):
@@ -931,11 +934,13 @@ def _github_source(token: str) -> dict[str, Any]:
 
 def build_package(config: dict[str, Any], *, github_oidc_token: str | None = None) -> dict[str, Any]:
     evaluation, cases, adapter = _validate_config(config)
+    browser_summary: dict[str, Any] = {}
     if adapter["type"] == "http_json_target":
         response, duration_ms, request_sha, response_sha = _invoke_http_json_target(adapter, cases, evaluation)
     elif adapter["type"] == "browser_journey":
         from .browser import invoke_browser_journeys
         response, duration_ms, request_sha, response_sha = invoke_browser_journeys(adapter, cases, evaluation)
+        browser_summary = _browser_execution_summary(response, cases)
     else:
         response, duration_ms, request_sha, response_sha = _invoke_command_adapter(adapter, cases, evaluation)
     predicted_labels, confidences = _normalise_results(cases, response)
@@ -968,6 +973,7 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
             "duration_ms": duration_ms,
             "request_sha256": request_sha,
             "response_sha256": response_sha,
+            **browser_summary,
         },
         "source": source,
         "evaluation": {
@@ -987,6 +993,68 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
     }
     # Raw case inputs, adapter stdout/stderr, and any local secrets are never added.
     return package
+
+
+def _browser_execution_summary(response: dict[str, Any], cases: list[dict[str, Any]]) -> dict[str, Any]:
+    """Move only content-free browser evidence into the local result package."""
+    diagnostics = response.get("browser_diagnostics")
+    if not isinstance(diagnostics, list) or len(diagnostics) != len(cases):
+        raise RunnerError("Browser journey did not return one diagnostic record per case")
+    expected_ids = {str(case["case_id"]) for case in cases}
+    safe_cases: list[dict[str, Any]] = []
+    for item in diagnostics:
+        if not isinstance(item, dict) or not isinstance(item.get("case_id"), str) or item["case_id"] not in expected_ids:
+            raise RunnerError("Browser journey returned an invalid diagnostic case")
+        scope = item.get("coverage_scope")
+        outcome = item.get("outcome")
+        session = item.get("session_status")
+        if scope not in {"pre_auth", "authenticated"} or outcome not in {"passed", "failed"} or not isinstance(session, str):
+            raise RunnerError("Browser journey returned an invalid diagnostic status")
+        steps = item.get("steps")
+        if not isinstance(steps, list):
+            raise RunnerError("Browser journey diagnostic steps must be a list")
+        failed_step = next((step for step in steps if isinstance(step, dict) and step.get("status") == "failed"), None)
+        entry: dict[str, Any] = {
+            "case_id": item["case_id"],
+            "coverage_scope": scope,
+            "persona": item.get("persona", "default"),
+            "capability_area": item.get("capability_area", "general"),
+            "workflow_pack": item.get("workflow_pack", "starter"),
+            "outcome": outcome,
+            "session_status": session,
+            "completed_step_count": sum(1 for step in steps if isinstance(step, dict) and step.get("status") == "passed"),
+            "total_attempt_count": sum(int(step.get("attempt_count", 1)) for step in steps if isinstance(step, dict) and isinstance(step.get("attempt_count", 1), int)),
+            "browser_health": _safe_browser_health(item.get("browser_health")),
+            "failure_screenshot_available": bool(item.get("failure_screenshot")),
+        }
+        if isinstance(failed_step, dict):
+            entry["failed_step"] = failed_step.get("step")
+            entry["failed_action"] = failed_step.get("action")
+            entry["failure_kind"] = failed_step.get("failure_kind", "browser_action_failed")
+            entry["failed_attempt_count"] = failed_step.get("attempt_count", 1)
+            entry["failed_step_duration_ms"] = failed_step.get("duration_ms", 0)
+            entry["observed_origin"] = failed_step.get("observed_origin", "unavailable")
+            entry["document_ready_state"] = failed_step.get("document_ready_state", "unavailable")
+        elif outcome == "failed":
+            entry["failure_kind"] = item.get("failure_kind", "authenticated_session_unavailable")
+        safe_cases.append(entry)
+    if len({item["case_id"] for item in safe_cases}) != len(cases):
+        raise RunnerError("Browser journey returned duplicate diagnostic case IDs")
+    session_status = response.get("browser_session_status", "not_requested")
+    if not isinstance(session_status, str):
+        raise RunnerError("Browser journey returned an invalid session status")
+    return {"browser_session_status": session_status, "browser_case_diagnostics": safe_cases}
+
+
+def _safe_browser_health(value: object) -> dict[str, int]:
+    """Copy only aggregate browser-health counts into the result package."""
+    if not isinstance(value, dict):
+        return {"console_error_count": 0, "page_error_count": 0, "request_failure_count": 0}
+    output: dict[str, int] = {}
+    for key in ("console_error_count", "page_error_count", "request_failure_count"):
+        number = value.get(key, 0)
+        output[key] = number if isinstance(number, int) and not isinstance(number, bool) and number >= 0 else 0
+    return output
 
 
 def sign_package(package: dict[str, Any], *, identity_id: str, private_key_path: str | Path) -> dict[str, Any]:

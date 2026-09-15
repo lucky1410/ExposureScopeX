@@ -19,14 +19,15 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from esx_eval_runner.cli import _starter_cases, init_command, run_command
 from esx_eval_runner.audit import append_audit_event, verify_audit_log
-from esx_eval_runner.assurance import build_assurance_graph, build_risk_plan, create_scope
-from esx_eval_runner.browser import validate_browser_adapter
+from esx_eval_runner.assurance import build_assurance_graph, build_coverage_model, build_risk_plan, create_scope
+from esx_eval_runner.browser import _local_only_session_state, validate_browser_adapter, validate_browser_case
 from esx_eval_runner.discovery import discover_repository
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
 from esx_eval_runner.profiles import build_cases
 from esx_eval_runner.runner import RunnerError, _adapter_command, _verify_target_attestation, build_package, canonical_json, read_json
 from esx_eval_runner.setup import _guided_setup_html_with_evidence, _probe_local_http_target, create_guided_plan, create_http_plan
 from esx_eval_runner.telemetry import redact_otel_payload, telemetry_summary
+from esx_eval_runner.workflows import add_candidate_to_config, apply_reusable_pack, build_workflow_pack_catalog, export_reusable_pack
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -202,6 +203,8 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(config["adapter"]["type"], "http_json_target")
             self.assertEqual(len(config["dataset"]["cases"]), 4)
             self.assertTrue((target / "README.md").is_file())
+            route = next(item for item in discovery["workflow_suggestions"] if item["route"] == "/evaluate")
+            self.assertEqual(route["capability_area"], "general")
 
     def test_guided_setup_creates_confirmed_scope_and_auto_report_artifacts(self) -> None:
         with TemporaryDirectory() as directory:
@@ -226,6 +229,7 @@ class LocalRunTests(unittest.TestCase):
             self.assertTrue((target / "discovery.json").is_file())
             self.assertTrue((target / "assurance-scope.json").is_file())
             self.assertTrue((target / "risk-plan.json").is_file())
+            self.assertTrue((target / "workflow-packs.json").is_file())
             self.assertIn("automatically uses", (target / "README.md").read_text(encoding="utf-8"))
 
     def test_guided_setup_explains_response_mapping_and_plan_fields(self) -> None:
@@ -246,6 +250,117 @@ class LocalRunTests(unittest.TestCase):
                     "subject_version": "2.0.0", "project_key": "demo", "url": "https://staging.example.test",
                     "profile": "smoke", "connection_type": "browser", "browser_path": "/", "browser_expected_text": "Welcome", "confirm_plan": True,
                 })
+
+    def test_guided_browser_auth_plan_creates_separate_pre_and_post_auth_cases(self) -> None:
+        with TemporaryDirectory() as directory:
+            path, config = create_guided_plan({
+                "directory": str(Path(directory) / "browser"), "agent_id": "my-app",
+                "subject_version": "2.0.0", "project_key": "demo", "url": "http://127.0.0.1:3000",
+                "profile": "release", "connection_type": "browser", "browser_path": "/login",
+                "browser_expected_text": "Sign in", "browser_auth_enabled": True,
+                "browser_login_path": "/login", "browser_username_env": "ESX_TEST_USERNAME",
+                "browser_password_env": "ESX_TEST_PASSWORD", "browser_username_selector": "#email",
+                "browser_password_selector": "#password", "browser_submit_selector": "button[type='submit']",
+                "browser_post_login_path": "/dashboard", "browser_post_login_expected_text": "Dashboard",
+                "confirm_plan": True,
+            })
+            self.assertEqual(len(config["dataset"]["cases"]), 2)
+            self.assertFalse(config["dataset"]["cases"][0]["requires_auth"])
+            self.assertTrue(config["dataset"]["cases"][1]["requires_auth"])
+            self.assertEqual(config["adapter"]["auth"]["username_env"], "ESX_TEST_USERNAME")
+            self.assertEqual(config["adapter"]["auth"]["password_env"], "ESX_TEST_PASSWORD")
+            self.assertIn("Browser workflow starter: 2 explicit case", config["plan"]["profile_description"])
+            self.assertIn("Browser coverage and approved authentication", (path.parent / "README.md").read_text(encoding="utf-8"))
+
+    def test_guided_browser_sso_plan_bootstraps_an_approved_local_session(self) -> None:
+        with TemporaryDirectory() as directory:
+            path, config = create_guided_plan({
+                "directory": str(Path(directory) / "browser"), "agent_id": "my-app",
+                "subject_version": "2.0.0", "project_key": "demo", "url": "http://127.0.0.1:3000",
+                "profile": "smoke", "connection_type": "browser", "browser_path": "/login",
+                "browser_expected_text": "Sign in", "browser_auth_enabled": True,
+                "browser_auth_mode": "interactive_sso", "browser_login_path": "/login",
+                "browser_post_login_path": "/dashboard", "browser_post_login_expected_text": "Dashboard",
+                "confirm_plan": True,
+            })
+            self.assertNotIn("auth", config["adapter"])
+            self.assertEqual(config["adapter"]["session_bootstrap"]["login_path"], "/login")
+            self.assertEqual(config["adapter"]["session_state_path"], ".esx/auth-session.json")
+            self.assertIn("esx-eval browser-auth", (path.parent / "README.md").read_text(encoding="utf-8"))
+
+    def test_local_session_state_discards_identity_provider_state(self) -> None:
+        state = _local_only_session_state({
+            "cookies": [{"domain": "127.0.0.1", "name": "app"}, {"domain": "login.example.test", "name": "sso"}],
+            "origins": [{"origin": "http://127.0.0.1:3000", "localStorage": []}, {"origin": "https://login.example.test", "localStorage": []}],
+        }, "http://127.0.0.1:3000")
+        self.assertEqual(state["cookies"], [{"domain": "127.0.0.1", "name": "app"}])
+        self.assertEqual(state["origins"], [{"origin": "http://127.0.0.1:3000", "localStorage": []}])
+
+    def test_workflow_pack_requires_reviewed_signal_and_persona_then_is_reusable(self) -> None:
+        config = {
+            "adapter": {"type": "browser_journey", "base_url": "http://127.0.0.1:3000", "personas": {
+                "analyst": {"label": "Analyst", "role": "analyst", "session_state_path": ".esx/personas/analyst.json", "session_bootstrap": {"login_path": "/login", "success": {"type": "wait_for_text", "value": "Queue"}}},
+            }},
+            "dataset": {"cases": [{"case_id": "starter", "input": {"journey": [{"type": "goto", "path": "/"}]}, "expected_label": "pass"}]},
+        }
+        discovery = {"workflow_suggestions": [{"pack_id": "workflow-get-cases", "component_id": "workflow-get-cases", "route": "/cases", "capability_area": "case_management", "recommended_persona": "analyst", "recommended_requires_auth": "true", "status": "review_required"}]}
+        scope = {"components": [{"id": "workflow-get-cases"}]}
+        catalog = build_workflow_pack_catalog(discovery, scope)
+        updated = add_candidate_to_config(config, catalog, pack_id="workflow-get-cases", expected_text="Investigations", persona=None, authenticated=None)
+        case = updated["dataset"]["cases"][-1]
+        self.assertTrue(case["requires_auth"])
+        self.assertEqual(case["persona"], "analyst")
+        self.assertEqual(case["capability_area"], "case_management")
+        self.assertEqual(case["input"]["journey"][1]["retry_count"], 2)
+        reusable = export_reusable_pack(updated, name="Analyst workflows")
+        reapplied = apply_reusable_pack(config, reusable)
+        self.assertEqual(len(reapplied["dataset"]["cases"]), 2)
+
+    def test_browser_retries_are_limited_to_safe_waits_and_assertions(self) -> None:
+        with self.assertRaisesRegex(RunnerError, "only for navigation, waits, and assertions"):
+            validate_browser_case({"case_id": "unsafe-click", "input": {"journey": [{"type": "click", "selector": "button", "retry_count": 1}]}, "expected_label": "pass"})
+
+    def test_capability_coverage_uses_executed_cases_not_discovery_candidates(self) -> None:
+        package = {"execution": {"case_count": 1, "browser_case_diagnostics": [{"coverage_scope": "authenticated", "capability_area": "threat_hunt", "outcome": "passed"}]}, "evaluation": {"required_dimensions": ["classification", "confidence"]}}
+        coverage = build_coverage_model(
+            package, {"classification": {"measurement_status": "measured"}, "confidence": {"measurement_status": "measured"}},
+            discovery={"components": [{"category": "threat_hunt"}, {"category": "audit"}]},
+            scope={"components": [{"category": "threat_hunt"}]},
+        )
+        hunt = next(item for item in coverage["capability_areas"] if item["capability_area"] == "threat_hunt")
+        audit = next(item for item in coverage["capability_areas"] if item["capability_area"] == "audit")
+        self.assertEqual(hunt["executed"], 1)
+        self.assertEqual(audit["executed"], 0)
+
+    def test_browser_auth_rejects_literal_credentials(self) -> None:
+        adapter = {
+            "base_url": "http://127.0.0.1:3000", "auth": {
+                "login_path": "/login", "username_env": "user@example.test", "password_env": "ESX_TEST_PASSWORD",
+                "username_selector": "#email", "password_selector": "#password", "submit_selector": "button",
+                "success": {"type": "wait_for_text", "value": "Dashboard"},
+            },
+        }
+        with self.assertRaisesRegex(RunnerError, "environment-variable name"):
+            validate_browser_adapter(adapter)
+
+    def test_coverage_model_keeps_discovery_separate_from_browser_execution(self) -> None:
+        package = {
+            "execution": {"case_count": 2, "browser_case_diagnostics": [
+                {"coverage_scope": "pre_auth", "outcome": "passed"},
+                {"coverage_scope": "authenticated", "outcome": "failed"},
+            ]},
+            "evaluation": {"required_dimensions": ["classification", "confidence", "rag"]},
+        }
+        coverage = build_coverage_model(
+            package,
+            {"classification": {"measurement_status": "measured"}, "confidence": {"measurement_status": "measured"}, "rag": {"measurement_status": "not_measurable"}},
+            discovery={"components": [{"id": "one"}, {"id": "two"}, {"id": "three"}]},
+            scope={"components": [{"id": "one"}]},
+        )
+        self.assertEqual(coverage["discovered"]["component_count"], 3)
+        self.assertEqual(coverage["approved"]["component_count"], 1)
+        self.assertEqual(coverage["executed"]["authenticated_case_count"], 1)
+        self.assertEqual(coverage["measured"]["dimension_count"], 2)
 
     def test_guided_setup_uses_a_safe_sibling_folder_and_macos_commands(self) -> None:
         with TemporaryDirectory() as directory:

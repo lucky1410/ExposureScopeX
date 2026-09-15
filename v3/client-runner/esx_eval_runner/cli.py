@@ -14,13 +14,14 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .audit import append_audit_event, verify_audit_log
-from .assurance import build_assurance_graph, build_risk_plan, create_scope
+from .assurance import build_assurance_graph, build_coverage_model, build_risk_plan, create_scope
 from .local_metrics import calculate_local_metrics
 from .discovery import discover_repository
 from .report_html import render_local_report
 from .runner import RunnerError, build_package, generate_keypair, read_json, sha256, sign_package
 from .setup import serve_setup
 from .telemetry import serve_collector, telemetry_summary
+from .workflows import add_candidate_to_config, apply_reusable_pack, export_reusable_pack
 
 
 _PROJECT_KEY = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
@@ -497,6 +498,29 @@ def _print_local_results(config: dict[str, object], package: dict[str, object], 
     return metrics
 
 
+def _print_coverage_model(coverage: dict[str, object], package: dict[str, object]) -> None:
+    """Make the discovery-to-execution boundary visible in terminal output."""
+    discovered = coverage["discovered"]
+    approved = coverage["approved"]
+    executed = coverage["executed"]
+    measured = coverage["measured"]
+    assert isinstance(discovered, dict) and isinstance(approved, dict)
+    assert isinstance(executed, dict) and isinstance(measured, dict)
+    print("\nCOVERAGE BOUNDARY")
+    print(f"Discovered components: {discovered['component_count']} | Approved components: {approved['component_count']}")
+    print(f"Executed cases: {executed['case_count']} | Measured dimensions: {measured['dimension_count']} of {measured['required_dimension_count']}")
+    execution = package["execution"]
+    assert isinstance(execution, dict)
+    if execution.get("adapter_type") == "browser_journey":
+        print(f"Browser coverage: {executed['pre_auth_case_count']} pre-auth | {executed['authenticated_case_count']} authenticated | {executed['passed_case_count']} passed | {executed['failed_case_count']} failed")
+        for area in coverage.get("capability_areas", []):
+            if isinstance(area, dict):
+                print(f"Capability: {area.get('capability_area', 'general')} | discovered={area.get('discovered', 0)} | approved={area.get('approved', 0)} | executed={area.get('executed', 0)} | passed={area.get('passed', 0)} | failed={area.get('failed', 0)}")
+        for item in execution.get("browser_case_diagnostics", []):
+            if isinstance(item, dict) and item.get("outcome") == "failed":
+                print(f"Browser diagnostic: {item['case_id']} [{item.get('persona', 'default')}] failed at {item.get('failed_action', 'authenticated session')} after {item.get('failed_attempt_count', 0)} attempt(s) ({item.get('failure_kind', 'browser_action_failed')})")
+
+
 def _read_secret_file(path: str | None) -> str | None:
     if not path:
         return None
@@ -569,6 +593,7 @@ def run_command(args: argparse.Namespace) -> int:
     telemetry_path = _workflow_file(config, args.config, getattr(args, "telemetry", None), "telemetry_file", optional=True)
     telemetry = telemetry_summary(telemetry_path) if telemetry_path else None
     assurance_graph = build_assurance_graph(package, local_metrics, discovery=discovery, scope=scope, plan=plan, telemetry=telemetry)
+    coverage = build_coverage_model(package, local_metrics, discovery=discovery, scope=scope)
     report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.json")
     report = {
         "schema_version": "esx-local-evaluation-report-1.0",
@@ -581,6 +606,8 @@ def run_command(args: argparse.Namespace) -> int:
             "dataset_version": package["evaluation"]["dataset_version"],
         },
         "metrics": local_metrics,
+        "coverage": coverage,
+        "execution": package["execution"],
         "assurance_graph": assurance_graph,
         "notice": "This report was calculated locally. It is not a shared ExposureScopeX release decision.",
     }
@@ -592,6 +619,7 @@ def run_command(args: argparse.Namespace) -> int:
         print(json.dumps({"package": str(args.out), "report": str(report_path), "html_report": str(html_report_path), "audit_log": str(audit_path), "audit_tail_sha256": audit_entry["entry_sha256"], "package_id": package["package_id"], "signed": "signature" in package, "uploaded": False}))
     else:
         _print_local_results(config, package, summary_only=args.summary_only)
+        _print_coverage_model(coverage, package)
         print(f"\nLocal result package: {args.out}")
         print(f"Detailed local metric report: {report_path}")
         print(f"Readable local HTML report: {html_report_path}")
@@ -660,15 +688,18 @@ def report_command(args: argparse.Namespace) -> int:
     telemetry_path = _workflow_file(config, config_path, args.telemetry, "telemetry_file", optional=True) if config_path else args.telemetry
     plan = _optional_json(plan_path)
     metrics = _planned_metrics(calculate_local_metrics(package), plan)
+    discovery = _optional_json(discovery_path)
+    scope = _optional_json(scope_path)
     graph = build_assurance_graph(
-        package, metrics, discovery=_optional_json(discovery_path), scope=_optional_json(scope_path),
+        package, metrics, discovery=discovery, scope=scope,
         plan=plan, telemetry=telemetry_summary(telemetry_path) if telemetry_path else None,
     )
+    coverage = build_coverage_model(package, metrics, discovery=discovery, scope=scope)
     report = {
         "schema_version": "esx-local-assurance-report-1.0", "status": "completed_locally",
         "package_id": package["package_id"], "runner_version": package["runner_version"],
         "subject": {"agent_id": package["evaluation"]["agent_id"], "subject_version": package["evaluation"]["subject_version"], "dataset_version": package["evaluation"]["dataset_version"]},
-        "metrics": metrics, "assurance_graph": graph,
+        "metrics": metrics, "coverage": coverage, "execution": package.get("execution", {}), "assurance_graph": graph,
         "notice": "This Assurance Graph was assembled locally from the specified scope and evidence. It is not a shared release decision.",
     }
     _write_json(args.out, report)
@@ -717,6 +748,98 @@ def view_command(args: argparse.Namespace) -> int:
     webbrowser.open(report.as_uri())
     print(f"Opened local report: {report}")
     return 0
+
+
+def browser_auth_command(args: argparse.Namespace) -> int:
+    """Create a local-origin browser session after an approved interactive login."""
+    config = read_json(args.config)
+    adapter = config.get("adapter")
+    if not isinstance(adapter, dict) or adapter.get("type") != "browser_journey":
+        raise RunnerError("browser-auth requires an esx-eval.json browser_journey plan")
+    from .browser import bootstrap_browser_session, browser_adapter_for_persona
+
+    persona = getattr(args, "persona", None)
+    result = bootstrap_browser_session(browser_adapter_for_persona(adapter, persona))
+    if persona:
+        result["persona"] = persona
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def persona_command(args: argparse.Namespace) -> int:
+    """Add or list isolated, reviewer-defined browser personas."""
+    config = read_json(args.config)
+    adapter = config.get("adapter")
+    if not isinstance(adapter, dict) or adapter.get("type") != "browser_journey":
+        raise RunnerError("persona requires an esx-eval.json browser_journey plan")
+    personas = adapter.setdefault("personas", {})
+    if not isinstance(personas, dict):
+        raise RunnerError("adapter.personas must be an object")
+    if args.persona_action == "list":
+        print(json.dumps({"personas": [{"id": item_id, "label": item.get("label"), "role": item.get("role"), "session_state_path": item.get("session_state_path")} for item_id, item in sorted(personas.items()) if isinstance(item, dict)]}, indent=2))
+        return 0
+    persona_id = args.id
+    if persona_id in personas:
+        raise RunnerError(f"Persona '{persona_id}' already exists; edit the reviewed plan rather than overwriting it")
+    state_path = args.session_state_path or f".esx/personas/{persona_id}.json"
+    personas[persona_id] = {
+        "label": args.label or persona_id.replace("-", " ").title(),
+        "role": args.role,
+        "session_state_path": state_path,
+        "session_bootstrap": {
+            "login_path": args.login_path,
+            "success": {"type": "wait_for_text", "value": args.success_text},
+        },
+    }
+    from .browser import validate_browser_adapter
+
+    validate_browser_adapter(adapter)
+    _write_json(args.config, config)
+    print(json.dumps({"persona": persona_id, "role": args.role, "session_state_path": state_path, "next": f"esx-eval browser-auth --config {args.config} --persona {persona_id}"}, indent=2))
+    return 0
+
+
+def workflow_pack_command(args: argparse.Namespace) -> int:
+    """Review, materialize, export, or reuse browser workflow packs locally."""
+    config = read_json(args.config)
+    if args.workflow_pack_action == "list":
+        catalog = _read_workflow_catalog(config, args.config)
+        print(json.dumps({"status": catalog.get("status"), "notice": catalog.get("notice"), "candidates": catalog.get("candidates", [])}, indent=2))
+        return 0
+    if args.workflow_pack_action == "add":
+        catalog = _read_workflow_catalog(config, args.config)
+        updated = add_candidate_to_config(
+            config, catalog, pack_id=args.pack, expected_text=args.expected_text,
+            persona=args.persona, authenticated=args.authenticated,
+        )
+        from .runner import _validate_config
+
+        _validate_config(updated)
+        _write_json(args.config, updated)
+        print(json.dumps({"pack": args.pack, "status": "approved_and_added", "case_count": len(updated["dataset"]["cases"]), "notice": "The workflow is now explicitly configured. It counts as coverage only after a run completes."}, indent=2))
+        return 0
+    if args.workflow_pack_action == "save":
+        _write_json(args.out, export_reusable_pack(config, name=args.name))
+        print(json.dumps({"pack": str(args.out), "status": "saved_for_review"}, indent=2))
+        return 0
+    reusable = read_json(args.pack_file)
+    updated = apply_reusable_pack(config, reusable)
+    from .runner import _validate_config
+
+    _validate_config(updated)
+    _write_json(args.config, updated)
+    print(json.dumps({"pack": str(args.pack_file), "status": "applied_for_review", "case_count": len(updated["dataset"]["cases"]), "notice": "Review paths, expected signals, personas, and authorization before running."}, indent=2))
+    return 0
+
+
+def _read_workflow_catalog(config: dict[str, object], config_path: str) -> dict[str, object]:
+    path = _workflow_file(config, config_path, None, "workflow_packs_file")
+    if not path:
+        raise RunnerError("This plan has no workflow-packs.json catalog. Generate a browser plan from setup after local discovery.")
+    catalog = read_json(path)
+    if catalog.get("schema_version") != "esx-browser-workflow-catalog-1.0" or not isinstance(catalog.get("candidates"), list):
+        raise RunnerError("Workflow catalog is invalid")
+    return catalog
 
 
 def verify_audit_command(args: argparse.Namespace) -> int:
@@ -781,7 +904,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--subject-type", choices=["model", "rag", "agent", "multi_agent_system"], default="agent")
     init.add_argument("--case-count", type=int, default=1, help="Number of local starter cases (1-10,000; default: 1)")
     init.add_argument("--full-metrics", action="store_true", help="Require grounding, security, trajectory, RAG, robustness, agreement, repeatability, and cost metrics")
-    setup = commands.add_parser("setup", help="Open a local page to connect an HTTP app and generate a reviewable test plan")
+    setup = commands.add_parser("setup", help="Open a local page to connect an app and generate a reviewable test plan")
     setup.add_argument("--directory", help="Suggested new folder for the generated local plan")
     discover = commands.add_parser("discover", help="Scan a local repository for integration hints without exporting source")
     discover.add_argument("--repository", required=True, help="Local application repository folder")
@@ -807,6 +930,38 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--scope", help="Optional confirmed local scope JSON to include in the Assurance Graph")
     run.add_argument("--plan", help="Optional reviewed local risk plan JSON to include in the Assurance Graph")
     run.add_argument("--telemetry", help="Optional redacted local telemetry JSONL to include in the Assurance Graph")
+    browser_auth = commands.add_parser("browser-auth", help="Complete an approved interactive login and save local browser session state")
+    browser_auth.add_argument("--config", required=True, help="Setup-generated browser esx-eval.json with session_bootstrap")
+    browser_auth.add_argument("--persona", help="Configured persona ID; omit for the plan's default login profile")
+    persona = commands.add_parser("persona", help="Manage isolated approved browser personas")
+    persona_commands = persona.add_subparsers(dest="persona_action", required=True)
+    persona_list = persona_commands.add_parser("list", help="List local browser personas")
+    persona_list.add_argument("--config", required=True)
+    persona_add = persona_commands.add_parser("add", help="Add an interactive-login persona without storing credentials")
+    persona_add.add_argument("--config", required=True)
+    persona_add.add_argument("--id", required=True, help="Lowercase persona ID, such as analyst or read-only")
+    persona_add.add_argument("--label", help="Human-readable persona label")
+    persona_add.add_argument("--role", required=True, choices=["admin", "analyst", "read_only", "service"])
+    persona_add.add_argument("--login-path", required=True, help="Same-origin local sign-in path")
+    persona_add.add_argument("--success-text", required=True, help="Stable local text after approved sign-in")
+    persona_add.add_argument("--session-state-path", help="Relative local session-state path")
+    workflow_pack = commands.add_parser("workflow-pack", help="Review and reuse capability-based browser workflow packs")
+    workflow_commands = workflow_pack.add_subparsers(dest="workflow_pack_action", required=True)
+    workflow_list = workflow_commands.add_parser("list", help="List review-required source-derived workflow candidates")
+    workflow_list.add_argument("--config", required=True)
+    workflow_add = workflow_commands.add_parser("add", help="Approve one candidate with an expected signal and add it to the plan")
+    workflow_add.add_argument("--config", required=True)
+    workflow_add.add_argument("--pack", required=True, help="Candidate pack ID from workflow-pack list")
+    workflow_add.add_argument("--expected-text", required=True, help="Stable visible text proving this selected workflow is ready")
+    workflow_add.add_argument("--persona", help="Configured persona ID; defaults to the candidate recommendation")
+    workflow_add.add_argument("--authenticated", action=argparse.BooleanOptionalAction, default=None, help="Override whether this workflow requires an authenticated session")
+    workflow_save = workflow_commands.add_parser("save", help="Export reviewed added workflows for reuse")
+    workflow_save.add_argument("--config", required=True)
+    workflow_save.add_argument("--name", required=True)
+    workflow_save.add_argument("--out", required=True)
+    workflow_apply = workflow_commands.add_parser("apply", help="Apply a reviewed reusable workflow pack to this plan")
+    workflow_apply.add_argument("--config", required=True)
+    workflow_apply.add_argument("--pack-file", required=True)
     report = commands.add_parser("report", help="Create a standalone local Assurance Graph report from an existing result package")
     report.add_argument("--package", required=True, help="Local evaluation package JSON")
     report.add_argument("--out", required=True, help="New local Assurance Graph JSON path")
@@ -852,6 +1007,12 @@ def main(argv: list[str] | None = None) -> int:
             return telemetry_command(args)
         if args.command == "run":
             return run_command(args)
+        if args.command == "browser-auth":
+            return browser_auth_command(args)
+        if args.command == "persona":
+            return persona_command(args)
+        if args.command == "workflow-pack":
+            return workflow_pack_command(args)
         if args.command == "report":
             return report_command(args)
         if args.command == "view":

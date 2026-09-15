@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from .workflows import suggested_workflow
+
 
 _IGNORED = {".git", ".next", "node_modules", ".venv", "venv", "dist", "build", "coverage", "__pycache__"}
 _SOURCE_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx"}
@@ -40,6 +42,7 @@ def discover_repository(path: str | Path, *, max_files: int = 2_000) -> dict[str
     frameworks: set[str] = set()
     entry_points: set[str] = set()
     components: dict[str, dict[str, str]] = {}
+    workflow_suggestions: dict[str, dict[str, str]] = {}
     for candidate in root.rglob("*"):
         if files_scanned >= max_files:
             break
@@ -66,6 +69,13 @@ def discover_repository(path: str | Path, *, max_files: int = 2_000) -> dict[str
             frameworks.add("Node.js project")
         if candidate.suffix.lower() in _SOURCE_SUFFIXES and _has_http_route(content):
             entry_points.add(f"HTTP route definitions: {relative}")
+        if candidate.suffix.lower() in _SOURCE_SUFFIXES:
+            for method, route in _extract_http_routes(content):
+                component_id = f"workflow-{method.lower()}-{_slug(route)}"
+                label = f"{method} {route}"
+                suggestion = suggested_workflow(route, method, component_id, relative)
+                _record_component(components, component_id, f"HTTP route: {label}", "workflow_entry_point", suggestion["capability_area"], "source_route", relative)
+                workflow_suggestions[component_id] = suggestion
         for package, (category, display, kind) in _SIGNALS.items():
             evidence = _evidence_for(root, name, content, package, dependencies)
             if evidence is not None:
@@ -78,7 +88,8 @@ def discover_repository(path: str | Path, *, max_files: int = 2_000) -> dict[str
         "status": "completed", "repository": str(root), "files_scanned": files_scanned,
         "frameworks": sorted(frameworks), "capabilities": capabilities,
         "entry_points": sorted(entry_points), "components": component_list,
-        "limitations": "Documentation, backlog, comments, and plain text mentions are excluded. Installed packages, declared dependencies, and source imports are different evidence levels; discovery does not execute code or prove runtime behavior. Customers must confirm scope.",
+        "workflow_suggestions": sorted(workflow_suggestions.values(), key=lambda item: (item["route"], item["component_id"])),
+        "limitations": "Documentation, backlog, comments, and plain text mentions are excluded. Installed packages, declared dependencies, and source imports are different evidence levels. Source routes are reviewable workflow suggestions, not proof of browser reachability, authentication state, execution, or runtime behavior. Customers must confirm scope.",
     }
 
 
@@ -111,6 +122,20 @@ def _source_import(content: str, package: str) -> bool:
 
 def _has_http_route(content: str) -> bool:
     return bool(re.search(r"(?m)^\s*@(?:app|router)\.(?:get|post|put|delete|patch)\(", content) or re.search(r"(?m)\b(?:app|router)\.(?:get|post|put|delete|patch)\(", content))
+
+
+def _extract_http_routes(content: str) -> list[tuple[str, str]]:
+    """Read literal source routes only; prose and dynamic route construction are excluded."""
+    pattern = re.compile(
+        r"(?m)(?:@|\b)(?:app|router)\.(get|post|put|delete|patch)\(\s*[\"']([^\"']+)[\"']",
+        flags=re.IGNORECASE,
+    )
+    routes: set[tuple[str, str]] = set()
+    for match in pattern.finditer(content):
+        method, route = match.group(1).upper(), match.group(2)
+        if route.startswith("/") and "\n" not in route and "\r" not in route and len(route) <= 512:
+            routes.add((method, route))
+    return sorted(routes)
 
 
 def _evidence_for(root: Path, name: str, content: str, package: str, dependencies: set[str]) -> str | None:

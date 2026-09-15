@@ -36,8 +36,12 @@ own application entry point once for each case. For a multi-agent web app, that
 entry point should invoke the normal backend workflow; its internal agents,
 retrievers, tool calls, and handoffs run as they normally would.
 
-The current protocol cannot drive a browser UI by URL alone. Connect the adapter
-to an existing local backend API, local command, or Python function. If the
+For a browser-only local application, use the built-in `browser_journey`
+connector instead of adding an adapter. It supports explicit approved login,
+local session reuse, and declarative post-login workflow checks. It is limited
+to a loopback origin and reports safe step diagnostics only. For a non-browser
+agent or a workflow that needs richer evidence, connect the adapter to an
+existing local backend API, local command, or Python function. If the
 application has no callable backend entry point, add a local test-only endpoint
 that calls the normal workflow. Keep it private to the local environment.
 
