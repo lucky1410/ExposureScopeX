@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: exposurescopex-eval-runner
-Version: 0.5.1
+Version: 0.7.2
 Summary: Run local-first ExposureScopeX AI pre-release evaluations in a customer environment.
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
@@ -15,6 +15,11 @@ application, agent, or multi-agent system. It runs next to the AI system being
 tested and prints results in the local terminal. A normal `run` command does
 not connect to ExposureScopeX and does not upload prompts, model outputs, source
 code, traces, environment variables, stderr, credentials, or results.
+
+For a plain-language explanation of the evidence each local metric needs, see
+[`PRE-D_EVIDENCE_GUIDE.md`](PRE-D_EVIDENCE_GUIDE.md). It separates the
+organization's expected behavior from the redacted observations the application
+emits and explains why a metric may be `NOT MEASURABLE`.
 
 Use the optional shared workflow only when a team wants ExposureScopeX to retain
 a governed release decision and formal report.
@@ -98,7 +103,8 @@ esx-eval run --config .\esx-eval.json --out .\out\evaluation.json --discovery .\
 
 The HTML report contains an **Assurance Graph** linking confirmed components,
 local evidence, required metrics, and the reason no local result is a governed
-release decision. Missing evidence is always labelled `NOT MEASURABLE`.
+release decision. Missing evidence is always labelled `NOT MEASURABLE`; metrics
+that are incompatible with a browser-only workflow are labelled `NOT APPLICABLE`.
 
 ### Browser journeys
 
@@ -112,10 +118,78 @@ py -m pip install "exposurescopex-eval-runner[browser]"
 playwright install chromium
 ```
 
-Use `adapter.type: "browser_journey"`, a loopback `base_url`, and an
-`input.journey` action list containing `goto`, `fill`, `click`, `press`,
-`expect_text`, or `expect_visible`. A passing assertion returns the configured
-`pass` label. This is deterministic journey verification, not model confidence.
+Use `adapter.type: "browser_journey"` and a loopback `base_url`. Browser mode
+is a deterministic workflow check, not a model-quality score. Its local
+scorecard measures declared workflow coverage: which journeys reached their
+approved visible signal, which need assertion review, and which stopped at
+session setup. It never converts a browser pass/fail result into a model label
+or a synthetic confidence value.
+
+For classification and confidence calibration, use the JSON API or local
+adapter connection. The dataset needs at least two expected outcome classes,
+and the application must return observed confidence values from `0` to `1`.
+Constant confidence remains calculable but is visibly flagged because it cannot
+show behavior across confidence levels. This prevents an all-pass browser plan
+or a constant `1.0` value from appearing as a perfect AI-quality score. A
+generated browser plan contains exactly the cases it states; selecting an HTTP
+`release` profile does not create twelve hidden browser journeys.
+
+Each `input.journey` can use `goto`, `fill`, `click`, `press`,
+`wait_for_url`, `wait_for_text`, `wait_for_selector`, `wait_for_navigation`,
+`wait_for_stable`, `assert_path`, `assert_title`, `expect_text`, or
+`expect_visible`. Use an explicit wait or assertion after an SPA action rather
+than relying on a generic page-load check.
+
+For a protected local app, add an explicit `auth` object and mark only
+post-login cases with `"requires_auth": true`. The runner reads a dedicated
+test account from environment variables, saves an optional local session-state
+file for reuse, and never writes credential values or cookies to a result,
+report, audit log, or upload package.
+
+For an identity-provider login, use `session_bootstrap` instead of `auth`, then
+run `esx-eval browser-auth --config ./esx-eval.json`. The visible browser lets
+the tester complete approved SSO and must return to the loopback application
+before ESX saves a session. The saved state contains only local-application
+cookies and local storage; identity-provider cookies are discarded.
+
+```json
+{
+  "adapter": {
+    "type": "browser_journey",
+    "base_url": "http://127.0.0.1:3000",
+    "session_state_path": ".esx/auth-session.json",
+    "auth": {
+      "login_path": "/login",
+      "username_env": "ESX_TEST_USERNAME",
+      "password_env": "ESX_TEST_PASSWORD",
+      "username_selector": "input[name='email']",
+      "password_selector": "input[name='password']",
+      "submit_selector": "button[type='submit']",
+      "success": {"type": "wait_for_text", "value": "Dashboard"}
+    }
+  },
+  "dataset": {
+    "cases": [{
+      "case_id": "dashboard-ready-001",
+      "requires_auth": true,
+      "input": {"journey": [
+        {"type": "goto", "path": "/dashboard"},
+        {"type": "wait_for_text", "value": "Dashboard"},
+        {"type": "assert_path", "path": "/dashboard"}
+      ]},
+      "expected_label": "pass"
+    }]
+  }
+}
+```
+
+The local report distinguishes discovered components, customer-approved scope,
+requested cases, executed pre-auth/authenticated cases, and measured dimensions.
+An authenticated case blocked before session setup is reported as a **coverage
+limitation**, excluded from quality scores, and never labelled as an application
+failure. An executed browser assertion that does not match its approved signal
+is labelled **assertion review**, not a confirmed product defect. Optional
+screenshots remain only beside the local plan.
 
 ### Automatic local telemetry
 
@@ -132,8 +206,15 @@ operational metadata: service, span name, selected `gen_ai` usage/tool fields,
 and opaque `esx` identifiers. Prompts, outputs, documents, tool arguments,
 credentials, and arbitrary attributes are discarded. Pass this file to
 `run --telemetry` or `report --telemetry` to show evidence coverage in the
-Assurance Graph. It does not invent advanced scores; those require the redacted
-measurement records defined in `ADAPTER_V2.md`.
+Assurance Graph. When the records contain a complete supported evidence set,
+the runner derives its advanced metric inputs locally before it calculates the
+report. Incomplete evidence remains `NOT MEASURABLE`; raw span count and browser
+success never become an invented score. See `CONNECTORS.md` for OpenTelemetry,
+Python, LangChain, and LangGraph integration paths. Use browser workflows for
+protected UI coverage and local telemetry or an adapter for groundedness,
+security behavior, agent trajectories, approved tool-use quality, RAG quality,
+and provider cost metrics. The report explains the exact redacted evidence
+required for every unmeasured dimension.
 
 ## Security boundary
 
@@ -223,7 +304,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.5.1"
+   $version = "0.7.2"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -429,7 +510,7 @@ make a governed decision.
 
 The default starter evaluates classification and confidence. Add `--full-metrics`
 when the system can produce the redacted records for groundedness, security,
-trajectory and tool policy, RAG, robustness, cross-judge agreement,
+trajectory, approved tool-use quality, RAG, robustness, cross-judge agreement,
 reproducibility, and cost/latency. The runner calculates all of those metrics
 locally from those records. The protocol is documented in
 [`ADAPTER_V2.md`](ADAPTER_V2.md). The runner keeps raw test data local; it only
