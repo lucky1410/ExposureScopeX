@@ -107,6 +107,17 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
         }
         scope = create_scope(discovery, [workflow_id])
     plan = build_risk_plan(scope, profile_name)
+    if connection_type == "browser":
+        # A declared UI journey proves reachability and its approved signal. It
+        # does not expose a model label or confidence, so use its own baseline.
+        plan["required_dimensions"] = [
+            "workflow_coverage",
+            *(
+                dimension for dimension in plan["required_dimensions"]
+                if dimension not in {"classification", "confidence"}
+            ),
+        ]
+        plan["notice"] += " Browser journeys use workflow coverage as their baseline; model classification and confidence require a connected API or adapter."
     workflow_catalog = build_workflow_pack_catalog(discovery, scope)
     if values.get("confirm_plan") is not True:
         raise ValueError("Confirm the reviewed scope and plan before creating the local evaluation")
@@ -285,7 +296,7 @@ This folder was generated locally by `esx-eval setup` on {host_os}. It evaluates
 
 1. Start the application locally, or use an approved staging URL.
 2. Open `esx-eval.json` and review every labelled test case. Replace, remove, or add cases to match the product's real requirements.
-3. The runner uses the approved {connection} at `{adapter.get('url', adapter.get('base_url'))}`.{" It reads the decision label from `" + adapter['response_label_path'] + "` and a numeric confidence from `" + adapter['response_confidence_path'] + "`." if adapter['type'] == 'http_json_target' else " It verifies the configured local browser assertion."}
+3. The runner uses the approved {connection} at `{adapter.get('url', adapter.get('base_url'))}`.{" It reads the decision label from `" + adapter['response_label_path'] + "` and a numeric confidence from `" + adapter['response_confidence_path'] + "`." if adapter['type'] == 'http_json_target' else " It measures declared workflow coverage from the configured browser assertion; it does not infer model labels or confidence from a UI pass/fail result."}
 4. Run:
 
 ```text
@@ -304,6 +315,13 @@ Assurance Graph. The plan expects these dimensions when the confirmed scope
 supports them: {", ".join((plan or {}).get("required_dimensions", ["classification", "confidence"]))}.
 
 Grounding, RAG, trajectory, tool-use, security detection, robustness, repeatability, judge agreement, and provider cost metrics require redacted local evidence. The generated plan enables local telemetry automatically: when the application emits supported OpenTelemetry or connector metadata, PRE-D derives every complete metric input it can without an adapter. Metrics with incomplete evidence remain `NOT MEASURABLE`, never invented.
+
+For a model-quality scorecard, use the JSON API or local adapter connection and
+include at least two expected outcome classes plus observed model confidence
+values. Constant confidence is flagged as limited because it cannot show
+behavior across confidence levels. Browser workflow coverage and model quality
+are displayed in separate scorecards so a successful UI assertion cannot appear
+as a perfect AI quality score.
 
 For trajectory measurement, add only the product's approved opaque milestone IDs to `telemetry.trajectory.required_milestones` in `esx-eval.json`. For tool-use quality, add approved opaque tool IDs by case to `telemetry.tool_use.expected_tools_by_case`. For robustness, mark one labelled case as `telemetry.robustness.baseline_case_id`, then emit controlled paraphrase, perturbation, or repeat observations. For RAG recall, add only the expected opaque document IDs to `telemetry.rag.relevant_document_ids`. The local report names these fields only when they are needed. Do not add prompt text, answers, or document content.
 

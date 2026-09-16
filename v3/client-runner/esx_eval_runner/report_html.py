@@ -8,11 +8,16 @@ from typing import Any
 
 
 _METRIC_ORDER = (
-    "classification", "confidence", "groundedness", "security", "trajectory", "tool_use",
+    "workflow_coverage", "classification", "confidence", "groundedness", "security", "trajectory", "tool_use",
     "rag", "robustness", "judge_agreement", "reproducibility", "cost_efficiency",
 )
 
 _MEASUREMENT_GUIDANCE = {
+    "workflow_coverage": {
+        "title": "Workflow assurance",
+        "required": "A declared browser journey with an approved observable signal and local step diagnostics.",
+        "source": "Local Playwright browser execution only.",
+    },
     "classification": {
         "title": "Classification quality",
         "required": "One expected outcome and one observed outcome for every completed case. At least two expected classes are needed for a meaningful quality score.",
@@ -87,6 +92,7 @@ def _metric_status(metric: object) -> str:
 
 def _primary_signal(name: str, metric: dict[str, Any]) -> str:
     fields = {
+        "workflow_coverage": ("workflow_execution_rate", "Workflow execution", "percent"),
         "classification": ("accuracy", "Accuracy", "percent"),
         "confidence": ("expected_calibration_error", "Expected calibration error", "number"),
         "groundedness": ("supported_claim_rate", "Supported claims", "percent"),
@@ -111,20 +117,29 @@ def _primary_signal(name: str, metric: dict[str, Any]) -> str:
 
 
 def _metric_names(metrics: dict[str, Any]) -> list[str]:
-    names = [name for name in _METRIC_ORDER if name in metrics]
-    names.extend(name for name in metrics if name not in names)
+    names = [
+        name for name in _METRIC_ORDER
+        if name in metrics and _metric_status(metrics.get(name)) != "not_applicable"
+    ]
+    names.extend(
+        name for name in metrics
+        if name not in names and _metric_status(metrics.get(name)) != "not_applicable"
+    )
     return names
 
 
-def _metric_cards(metrics: dict[str, Any]) -> str:
+def _metric_cards(metrics: dict[str, Any], names: list[str] | None = None) -> str:
     cards = []
-    for name in _metric_names(metrics):
+    for name in names if names is not None else _metric_names(metrics):
         metric = metrics.get(name, {})
         if not isinstance(metric, dict):
             metric = {}
         status = _metric_status(metric)
         measured = status == "measured"
         detail = _primary_signal(name, metric) if measured else str(metric.get("reason", "No compatible local evidence was supplied."))
+        limitations = metric.get("limitations", [])
+        if measured and isinstance(limitations, list) and limitations:
+            detail += " " + str(limitations[0])
         cards.append(
             "<article class='metric-card'>"
             f"<div class='metric-top'><h3>{_escape(_title(name))}</h3><span class='badge {_escape(status)}'>{'MEASURED' if measured else 'EVIDENCE NEEDED'}</span></div>"
@@ -135,8 +150,7 @@ def _metric_cards(metrics: dict[str, Any]) -> str:
 
 def _measurement_readiness_section(metrics: dict[str, Any]) -> str:
     """Explain the source requirements for every locally calculated metric."""
-    names = list(_METRIC_ORDER)
-    names.extend(name for name in metrics if name not in names)
+    names = _metric_names(metrics)
     rows = []
     for name in names:
         metric = metrics.get(name, {})
@@ -198,7 +212,14 @@ def _executive_readout(report: dict[str, Any]) -> str:
     blocked = int(executed.get("blocked_case_count", 0))
     measured_count = int(measured.get("dimension_count", 0))
     required_count = int(measured.get("required_dimension_count", 0))
-    if blocked:
+    execution = report.get("execution", {})
+    execution = execution if isinstance(execution, dict) else {}
+    if execution.get("adapter_type") == "browser_journey":
+        conclusion = (
+            "This is a browser workflow-assurance run. A completed journey proves only its approved user-visible signal; "
+            "it does not create a model classification or confidence score."
+        )
+    elif blocked:
         conclusion = f"{blocked} protected workflow case(s) stopped before session setup completed. This is a runner coverage boundary, not an application finding."
     elif completed == 0:
         conclusion = "No workflow reached the application. This run cannot support a product-quality conclusion."
@@ -355,13 +376,18 @@ def render_local_report(report: dict[str, Any]) -> str:
     subject = subject if isinstance(subject, dict) else {}
     metrics = report.get("metrics", {})
     metrics = metrics if isinstance(metrics, dict) else {}
-    measured = sum(_metric_status(metric) == "measured" for metric in metrics.values())
-    total = len(metrics)
+    metric_names = _metric_names(metrics)
+    workflow_names = [name for name in metric_names if name == "workflow_coverage"]
+    model_names = [name for name in metric_names if name != "workflow_coverage"]
+    measured = sum(_metric_status(metrics[name]) == "measured" for name in metric_names)
+    total = len(metric_names)
     posture = "Evidence complete" if total and measured == total else "Evidence incomplete"
     payload = _escape(json.dumps(report, indent=2, ensure_ascii=True))
     return """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D Local Evaluation Report</title><style>
 :root{--ink:#0b1416;--panel:#142328;--line:#395055;--paper:#f5f1e9;--muted:#b9c5c3;--lime:#c9f36b;--coral:#ff8464;--gold:#f5cc67;--green:#6fdb9a;--white:#f8fbf7}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 100% 0,#243f3f 0,transparent 31rem),#0b1416;color:var(--white);font:16px Georgia,serif}main{max-width:1280px;margin:0 auto;padding:28px}.hero{padding:38px;background:linear-gradient(135deg,rgba(28,51,54,.98),rgba(13,25,28,.98));border:1px solid var(--line);box-shadow:10px 10px 0 rgba(0,0,0,.22)}.hero-top,.section-heading,.metric-top,summary{display:flex;justify-content:space-between;gap:24px;align-items:flex-start}.eyebrow{margin:0 0 12px;color:var(--coral);font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.16em}.hero h1{max-width:740px;margin:0;font-size:clamp(38px,6vw,74px);line-height:.9;font-weight:400;letter-spacing:-.055em}.hero h1 em{color:var(--coral);font-weight:400}.hero-copy{max-width:610px;margin:22px 0 0;color:var(--muted);font-size:18px;line-height:1.5}.local-badge,.badge{display:inline-block;padding:8px 10px;border:1px solid var(--line);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;white-space:nowrap}.local-badge{color:var(--lime);border-color:rgba(201,243,107,.45)}.hero-meta{display:flex;gap:14px;flex-wrap:wrap;margin-top:32px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.hero-meta span{color:var(--white)}.posture{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(230px,.75fr);gap:14px;margin:18px 0}.posture-card{padding:24px;background:var(--paper);color:var(--ink);border-left:5px solid var(--coral)}.posture-card h2{margin:4px 0 8px;font-size:30px;font-weight:400;letter-spacing:-.03em}.posture-card p{margin:0;line-height:1.45;color:#435452}.posture-stat{padding:24px;background:#183529;border:1px solid #315846}.posture-stat strong{display:block;color:var(--lime);font-size:44px;font-weight:400;line-height:1}.posture-stat span{display:block;margin-top:8px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase}.panel{margin-top:18px;padding:26px;background:rgba(20,35,40,.94);border:1px solid var(--line)}.section-heading h2{margin:0;font-size:32px;font-weight:400;letter-spacing:-.035em}.section-heading>p{max-width:500px;margin:4px 0;color:var(--muted);line-height:1.5}.metric-grid,.coverage-grid,.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:22px}.metric-card{min-height:145px;padding:17px;background:#101d20;border:1px solid var(--line)}.metric-card h3{margin:0;font-size:17px;font-weight:400}.metric-card p{margin:22px 0 0;color:var(--muted);font-size:14px;line-height:1.42}.badge.measured{color:var(--green);border-color:rgba(111,219,154,.5)}.badge.not_measurable{color:var(--gold);border-color:rgba(245,204,103,.5)}.readiness-list{display:grid;gap:8px;margin-top:20px}.readiness-card{background:#101d20;border:1px solid var(--line);border-left:4px solid var(--gold)}.readiness-card.measured{border-left-color:var(--green)}.readiness-card summary{padding:16px;cursor:pointer;list-style:none}.readiness-card summary::-webkit-details-marker{display:none}.readiness-card summary strong{display:block;font-size:18px;font-weight:400}.readiness-card summary small{display:block;max-width:700px;margin-top:4px;color:var(--muted);font-size:13px;line-height:1.4}.readiness-card summary b{color:var(--gold);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;white-space:nowrap}.readiness-card.measured summary b{color:var(--green)}.readiness-detail{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:0 16px 16px}.readiness-detail p{margin:0;color:var(--muted);line-height:1.5}.readiness-detail span{display:block;margin-bottom:5px;color:var(--white);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.1em}.boundary-note{margin:18px 0 0;padding:14px;border-left:4px solid var(--gold);background:#312b1c;color:#f4e7bd;line-height:1.48}.coverage-stat{min-height:137px;padding:17px;background:#101d20;border-top:3px solid #597077}.coverage-stat strong{display:block;color:var(--lime);font-size:34px;font-weight:400}.coverage-stat span{display:block;margin-top:8px;font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase}.coverage-stat small{display:block;margin-top:8px;color:var(--muted);font-size:12px;line-height:1.35}.table-wrap{overflow-x:auto;margin-top:18px}table{width:100%;border-collapse:collapse;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}th,td{padding:12px 8px;border-top:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase}.action-card{display:flex;gap:16px;padding:18px;background:linear-gradient(130deg,#193229,#102024);border:1px solid #35604a}.action-card>span{color:var(--lime);font-size:34px;line-height:1}.action-card h3{margin:2px 0 7px;font-size:18px;font-weight:400}.action-card p{margin:0;color:var(--muted);font-size:14px;line-height:1.45}.graph ul{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px;padding:0;margin:22px 0 0;list-style:none}.graph li{padding:12px;border:1px solid var(--line);background:#101d20}.graph strong{display:block;font-size:14px}.graph span{display:block;margin-top:5px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}details.raw{margin-top:18px;padding:16px;background:#0b1416;border:1px solid var(--line)}details.raw summary{cursor:pointer;font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}pre{overflow:auto;margin:14px 0 0;padding:16px;background:#050b0d;color:#cce0dd;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45}@media(max-width:720px){main{padding:12px}.hero,.panel{padding:20px}.hero-top,.section-heading{display:block}.local-badge{margin-top:16px}.posture{grid-template-columns:1fr}.readiness-detail{grid-template-columns:1fr}.section-heading>p{margin-top:14px}.hero h1{font-size:48px}}@media print{body{background:#fff;color:#111}main{max-width:none;padding:0}.hero,.panel,.metric-card,.readiness-card,.coverage-stat,.action-card,.graph li{background:#fff;color:#111;box-shadow:none;border-color:#888}.hero-copy,.section-heading>p,.metric-card p,.readiness-card summary small,.readiness-detail p,.coverage-stat small,.action-card p,.graph span{color:#333}.hero h1 em,.eyebrow{color:#a33}.posture-card{border-color:#a33}.posture-stat{background:#eee;color:#111}.posture-stat strong{color:#164}.boundary-note{background:#fff4d8;color:#111}.local-badge,.badge{color:#111!important;border-color:#555!important}}</style></head><body><main>
 <section class="hero"><div class="hero-top"><div><p class="eyebrow">PRE-D / LOCAL ASSURANCE REPORT</p><h1>Evidence before <em>confidence.</em></h1></div><span class="local-badge">LOCAL ONLY / NOT UPLOADED</span></div><p class="hero-copy">A decision-grade account of what reached the application, what was measured, and which evidence is still required. It does not turn missing access or hidden telemetry into a product verdict.</p><div class="hero-meta"><div>SUBJECT <span>""" + _escape(subject.get("agent_id", "unknown")) + "</span></div><div>VERSION <span>" + _escape(subject.get("subject_version", "unknown")) + "</span></div><div>DATASET <span>" + _escape(subject.get("dataset_version", "unknown")) + "</span></div><div>RUNNER <span>" + _escape(report.get("runner_version", "unknown")) + "</span></div></div></section>" + """
 <section class="posture"><article class="posture-card"><p class="eyebrow">EVIDENCE POSTURE</p><h2>""" + _escape(posture) + "</h2><p>" + _escape(report.get("notice", "This report was calculated locally.")) + '</p></article><article class="posture-stat"><strong>' + _escape(f"{measured}/{total}") + "</strong><span>Metric dimensions measured</span></article></section>" + """
-""" + _executive_readout(report) + """
-<section class="panel"><div class="section-heading"><div><p class="eyebrow">LOCAL SCORECARD</p><h2>Evidence-backed measurements</h2></div><p>Each card shows the state of a distinct claim. A score is shown only when the required local evidence was present and compatible with the metric.</p></div><div class="metric-grid">""" + _metric_cards(metrics) + "</div></section>" + _evidence_source_section(report) + _measurement_readiness_section(metrics) + _coverage_section(report) + _next_actions(report) + _diagnostic_section(report) + _graph_section(report) + """<details class="raw"><summary>VIEW REDACTED RESULT DATA</summary><pre>""" + payload + "</pre></details></main></body></html>"
+""" + _executive_readout(report) + (
+"""<section class="panel"><div class="section-heading"><div><p class="eyebrow">WORKFLOW ASSURANCE SCORECARD</p><h2>Declared journeys, measured honestly</h2></div><p>A pass means the approved browser journey reached its observable signal. It is not a model classification, confidence, safety, or groundedness score.</p></div><div class="metric-grid">""" + _metric_cards(metrics, workflow_names) + "</div></section>"
+if workflow_names else ""
+) + """<section class="panel"><div class="section-heading"><div><p class="eyebrow">MODEL AND EVIDENCE SCORECARD</p><h2>Evidence-backed AI measurements</h2></div><p>These measurements are separate from browser workflow coverage. A score is shown only when compatible local labels, observed outputs, and telemetry evidence were supplied.</p></div><div class="metric-grid">""" + _metric_cards(metrics, model_names) + "</div></section>" + _evidence_source_section(report) + _measurement_readiness_section(metrics) + _coverage_section(report) + _next_actions(report) + _diagnostic_section(report) + _graph_section(report) + """<details class="raw"><summary>VIEW REDACTED RESULT DATA</summary><pre>""" + payload + "</pre></details></main></body></html>"

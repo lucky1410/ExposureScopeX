@@ -57,6 +57,16 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(confidence["correctness_brier_score"], 0.3625)
         self.assertEqual(confidence["expected_calibration_error"], 0.525)
 
+    def test_one_class_cannot_claim_model_quality_and_constant_confidence_is_flagged(self) -> None:
+        one_class = classification_metrics(["pass", "pass"], ["pass", "pass"])
+        constant_confidence = confidence_metrics(
+            ["safe", "unsafe"], ["safe", "unsafe"], [1.0, 1.0],
+        )
+        self.assertEqual(one_class["measurement_status"], "not_measurable")
+        self.assertIn("two ground-truth classes", one_class["reason"])
+        self.assertEqual(constant_confidence["measurement_status"], "measured")
+        self.assertIn("identical", constant_confidence["limitations"][1])
+
     def test_default_starter_shape_can_contain_one_case(self) -> None:
         self.assertEqual(_starter_cases(1), [{
             "case_id": "benign-001",
@@ -343,7 +353,7 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(hunt["executed"], 1)
         self.assertEqual(audit["executed"], 0)
 
-    def test_blocked_auth_cases_are_visible_but_excluded_from_quality_scores(self) -> None:
+    def test_blocked_auth_cases_are_visible_but_excluded_from_model_quality_scores(self) -> None:
         cases = [
             {"case_id": "login", "expected_label": "safe"},
             {"case_id": "public-boundary", "expected_label": "unsafe"},
@@ -365,6 +375,7 @@ class LocalRunTests(unittest.TestCase):
         scored_cases, scored_response = _browser_scored_inputs(cases, response, summary)
         predicted, confidences = _normalise_results(scored_cases, scored_response)
         metrics = calculate_local_metrics({
+            "execution": {"adapter_type": "browser_journey", "case_count": 3, **summary},
             "evaluation": {
                 "expected_labels": [item["expected_label"] for item in scored_cases],
                 "predicted_labels": predicted,
@@ -376,7 +387,8 @@ class LocalRunTests(unittest.TestCase):
             metrics,
         )
         self.assertEqual(predicted, ["safe", "unsafe"])
-        self.assertEqual(metrics["classification"]["accuracy"], 1.0)
+        self.assertEqual(metrics["workflow_coverage"]["measurement_status"], "measured")
+        self.assertEqual(metrics["classification"]["measurement_status"], "not_applicable")
         self.assertEqual(coverage["executed"]["requested_case_count"], 3)
         self.assertEqual(coverage["executed"]["case_count"], 2)
         self.assertEqual(coverage["executed"]["blocked_case_count"], 1)
@@ -404,7 +416,7 @@ class LocalRunTests(unittest.TestCase):
         }
         response = {
             "results": [
-                {"case_id": "sign-in", "predicted_label": "safe", "confidence": 0.9},
+                {"case_id": "sign-in", "predicted_label": "safe"},
                 {"case_id": "protected", "execution_status": "blocked"},
             ],
             "measurements": {}, "browser_session_status": "interactive_auth_required",
@@ -418,8 +430,11 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(package["execution"]["case_count"], 2)
         self.assertEqual(package["execution"]["scored_case_count"], 1)
         self.assertEqual(package["execution"]["blocked_case_count"], 1)
+        self.assertEqual(package["evaluation"]["scorecard_type"], "workflow_assurance")
+        self.assertEqual(package["evaluation"]["required_dimensions"], ["workflow_coverage"])
         self.assertEqual(package["evaluation"]["expected_labels"], ["safe"])
         self.assertEqual(package["evaluation"]["predicted_labels"], ["safe"])
+        self.assertEqual(package["evaluation"]["confidences"], [])
 
     def test_browser_auth_rejects_literal_credentials(self) -> None:
         adapter = {
@@ -468,6 +483,19 @@ class LocalRunTests(unittest.TestCase):
             self.assertIn("python3 -m pip", guide)
             self.assertIn("./out/evaluation.json", guide)
 
+    def test_guided_browser_plan_uses_workflow_assurance_baseline(self) -> None:
+        with TemporaryDirectory() as directory:
+            path, config = create_guided_plan({
+                "directory": str(Path(directory) / "browser-evaluation"),
+                "agent_id": "browser-app", "subject_version": "2.0.0",
+                "project_key": "demo", "url": "http://127.0.0.1:3000",
+                "profile": "smoke", "connection_type": "browser", "browser_path": "/",
+                "browser_expected_text": "Welcome", "confirm_plan": True,
+            })
+            self.assertEqual(config["evaluation"]["required_dimensions"], ["workflow_coverage"])
+            plan = read_json(path.parent / "risk-plan.json")
+            self.assertEqual(plan["required_dimensions"], ["workflow_coverage"])
+
     def test_run_automatically_includes_setup_scope_and_plan_in_local_report(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -511,6 +539,20 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("Answer claims linked to cited evidence IDs", page)
         self.assertIn("Expected relevant document IDs", page)
         self.assertIn("Browser journeys prove user-visible workflow behavior", page)
+
+    def test_local_html_separates_browser_coverage_from_model_measurement(self) -> None:
+        report = {
+            "execution": {"adapter_type": "browser_journey", "case_count": 1, "browser_case_diagnostics": []},
+            "metrics": {
+                "workflow_coverage": {"measurement_status": "measured", "workflow_execution_rate": 1.0},
+                "classification": {"measurement_status": "not_applicable", "reason": "Browser assertion only."},
+                "confidence": {"measurement_status": "not_applicable", "reason": "No model confidence."},
+            },
+        }
+        page = render_local_report(report)
+        self.assertIn("WORKFLOW ASSURANCE SCORECARD", page)
+        self.assertIn("MODEL AND EVIDENCE SCORECARD", page)
+        self.assertNotIn("Classification quality", page)
 
     def test_discovery_scope_plan_and_assurance_graph_are_reviewable(self) -> None:
         discovery = {

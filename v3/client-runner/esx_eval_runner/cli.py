@@ -446,6 +446,9 @@ def init_command(args: argparse.Namespace) -> int:
 
 def _metric_line(title: str, metrics: dict[str, object], fields: list[tuple[str, str]]) -> None:
     """Print measured fields or explain why the local adapter could not measure them."""
+    if metrics["measurement_status"] == "not_applicable":
+        print(f"{title}: NOT APPLICABLE - {metrics['reason']}")
+        return
     if metrics["measurement_status"] != "measured":
         print(f"{title}: NOT MEASURABLE - {metrics['reason']}")
         return
@@ -495,14 +498,27 @@ def _print_local_results(config: dict[str, object], package: dict[str, object], 
     print("Status: COMPLETED LOCALLY (not uploaded; not a platform release decision)")
     print(f"Subject: {evaluation['agent_id']} {evaluation['subject_version']}")
     print(f"Dataset: {evaluation['dataset_version']}")
-    if classification["measurement_status"] == "measured":
+    is_browser_workflow = execution.get("adapter_type") == "browser_journey"
+    if is_browser_workflow:
+        workflow = metrics["workflow_coverage"]
+        print("Scorecard: WORKFLOW ASSURANCE (browser assertions are not AI-model predictions)")
+        _metric_line(
+            "Workflow coverage", workflow,
+            [
+                ("workflow_execution_rate", "execution rate"),
+                ("workflow_signal_match_rate", "signal match rate"),
+                ("session_blocked_case_count", "session blocks"),
+            ],
+        )
+    elif classification["measurement_status"] == "measured":
+        print("Scorecard: MODEL QUALITY (labelled adapter outcomes and observed confidence)")
         print(f"Cases: {classification['sample_size']} | Correct: {correct_count} | Accuracy: {classification['accuracy']:.3f}")
         print(f"Macro precision: {classification['macro_precision']:.3f} | Macro recall: {classification['macro_recall']:.3f} | Macro F1: {classification['macro_f1']:.3f}")
     else:
         print(f"Classification: NOT MEASURABLE - {classification['reason']}")
-    if confidence["measurement_status"] == "measured":
+    if not is_browser_workflow and confidence["measurement_status"] == "measured":
         print(f"Brier score: {confidence['correctness_brier_score']:.6f} | Expected calibration error: {confidence['expected_calibration_error']:.6f}")
-    else:
+    elif not is_browser_workflow:
         print(f"Confidence: NOT MEASURABLE - {confidence['reason']}")
     print(f"Duration: {execution['duration_ms']} ms | Required metrics: {', '.join(evaluation['required_dimensions'])}")
     if classification.get("sample_size", 0) and classification["sample_size"] < 20:
@@ -521,8 +537,12 @@ def _print_local_results(config: dict[str, object], package: dict[str, object], 
             if isinstance(item, dict) and diagnostics_by_case.get(item.get("case_id"), {}).get("outcome") != "blocked"
         ]
         score_by_case = {
-            str(item["case_id"]): (actual, observed, confidence)
-            for item, actual, observed, confidence in zip(scored_cases, expected, predicted, confidences, strict=True)
+            str(item["case_id"]): (
+                actual,
+                observed,
+                confidences[index] if index < len(confidences) else None,
+            )
+            for index, (item, actual, observed) in enumerate(zip(scored_cases, expected, predicted, strict=True))
         }
         print("\nCASE RESULTS")
         for item in dataset["cases"]:
@@ -532,8 +552,13 @@ def _print_local_results(config: dict[str, object], package: dict[str, object], 
                 print(f"{item['case_id']}: BLOCKED AT SESSION SETUP | persona={diagnostic.get('persona', 'default')} | reason={diagnostic.get('failure_kind', 'authenticated_session_unavailable')}")
                 continue
             actual, observed, confidence = score_by_case[str(item["case_id"])]
-            outcome = "CORRECT" if actual == observed else "INCORRECT"
-            print(f"{item['case_id']}: {outcome} | expected={actual} | predicted={observed} | confidence={confidence:.3f}")
+            outcome = (
+                "SIGNAL MATCH" if actual == observed else "ASSERTION NEEDS REVIEW"
+            ) if is_browser_workflow else ("CORRECT" if actual == observed else "INCORRECT")
+            details = f"{item['case_id']}: {outcome} | expected={actual} | observed={observed}"
+            if confidence is not None:
+                details += f" | confidence={confidence:.3f}"
+            print(details)
     print("\nNo prompts, model outputs, source files, tool data, environment variables, or credentials were sent to ExposureScopeX.")
     return metrics
 

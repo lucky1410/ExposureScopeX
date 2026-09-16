@@ -6,6 +6,11 @@ tested and prints results in the local terminal. A normal `run` command does
 not connect to ExposureScopeX and does not upload prompts, model outputs, source
 code, traces, environment variables, stderr, credentials, or results.
 
+For a plain-language explanation of the evidence each local metric needs, see
+[`PRE-D_EVIDENCE_GUIDE.md`](PRE-D_EVIDENCE_GUIDE.md). It separates the
+organization's expected behavior from the redacted observations the application
+emits and explains why a metric may be `NOT MEASURABLE`.
+
 Use the optional shared workflow only when a team wants ExposureScopeX to retain
 a governed release decision and formal report.
 
@@ -88,7 +93,8 @@ esx-eval run --config .\esx-eval.json --out .\out\evaluation.json --discovery .\
 
 The HTML report contains an **Assurance Graph** linking confirmed components,
 local evidence, required metrics, and the reason no local result is a governed
-release decision. Missing evidence is always labelled `NOT MEASURABLE`.
+release decision. Missing evidence is always labelled `NOT MEASURABLE`; metrics
+that are incompatible with a browser-only workflow are labelled `NOT APPLICABLE`.
 
 ### Browser journeys
 
@@ -103,9 +109,20 @@ playwright install chromium
 ```
 
 Use `adapter.type: "browser_journey"` and a loopback `base_url`. Browser mode
-is a deterministic workflow check, not a model-confidence score. A generated
-browser plan contains exactly the cases it states; selecting an HTTP `release`
-profile does not create twelve hidden browser journeys.
+is a deterministic workflow check, not a model-quality score. Its local
+scorecard measures declared workflow coverage: which journeys reached their
+approved visible signal, which need assertion review, and which stopped at
+session setup. It never converts a browser pass/fail result into a model label
+or a synthetic confidence value.
+
+For classification and confidence calibration, use the JSON API or local
+adapter connection. The dataset needs at least two expected outcome classes,
+and the application must return observed confidence values from `0` to `1`.
+Constant confidence remains calculable but is visibly flagged because it cannot
+show behavior across confidence levels. This prevents an all-pass browser plan
+or a constant `1.0` value from appearing as a perfect AI-quality score. A
+generated browser plan contains exactly the cases it states; selecting an HTTP
+`release` profile does not create twelve hidden browser journeys.
 
 Each `input.journey` can use `goto`, `fill`, `click`, `press`,
 `wait_for_url`, `wait_for_text`, `wait_for_selector`, `wait_for_navigation`,

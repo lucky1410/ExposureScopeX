@@ -308,7 +308,6 @@ def _result(adapter: dict[str, Any], case: dict[str, Any], passed: bool | None) 
     return {
         "case_id": case["case_id"],
         "predicted_label": adapter.get("pass_label", "pass") if passed else adapter.get("fail_label", "fail"),
-        "confidence": 1.0,
     }
 
 

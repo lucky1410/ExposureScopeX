@@ -24,6 +24,11 @@ def _unavailable(reason: str, **partial: Any) -> dict[str, Any]:
     return {"measurement_status": "not_measurable", "reason": reason, **partial}
 
 
+def _not_applicable(reason: str) -> dict[str, Any]:
+    """Keep a metric out of a scorecard when its evidence type is incompatible."""
+    return {"measurement_status": "not_applicable", "reason": reason}
+
+
 def claims_metrics(claims: list[dict[str, Any]] | None) -> dict[str, Any]:
     if not claims:
         return _unavailable("No claims with evidence references were supplied; groundedness cannot be inferred.")
@@ -106,6 +111,11 @@ def confidence_metrics(expected: list[str], predicted: list[str], confidences: l
             "No cases reached an application workflow; confidence calibration is unavailable.",
             sample_size=0, bins=[],
         )
+    if len(set(expected)) < 2:
+        return _unavailable(
+            "At least two ground-truth classes are required for a decision-grade confidence scorecard; a one-class workflow plan cannot validate confidence behavior.",
+            sample_size=len(expected), ground_truth_class_count=len(set(expected)), bins=[],
+        )
     correctness = [float(actual == guess) for actual, guess in zip(expected, predicted, strict=True)]
     brier = _ratio(sum((confidence - correct) ** 2 for confidence, correct in zip(confidences, correctness, strict=True)), len(correctness))
     ece = 0.0
@@ -119,7 +129,53 @@ def confidence_metrics(expected: list[str], predicted: list[str], confidences: l
         average = _ratio(sum(confidences[position] for position in members), len(members))
         ece += _ratio(len(members), len(confidences)) * abs(accuracy - average)
         bins.append({"lower": lower, "upper": upper, "count": len(members), "accuracy": _rounded(accuracy), "average_confidence": _rounded(average)})
-    return {"measurement_status": "measured", "correctness_brier_score": _rounded(brier), "expected_calibration_error": _rounded(ece), "bins": bins, "definition": "Calibration of predicted-label confidence against correctness."}
+    return {
+        "measurement_status": "measured",
+        "sample_size": len(expected),
+        "ground_truth_class_count": len(set(expected)),
+        "unique_confidence_count": len(set(confidences)),
+        "correct_outcome_count": int(sum(correctness)),
+        "incorrect_outcome_count": len(correctness) - int(sum(correctness)),
+        "correctness_brier_score": _rounded(brier),
+        "expected_calibration_error": _rounded(ece),
+        "bins": bins,
+        "limitations": [
+            *(
+                ["Fewer than 20 labelled cases: the formula is exact for this set, but not a stable release-quality estimate."]
+                if len(expected) < 20 else []
+            ),
+            *(
+                ["All submitted confidence values were identical, so this run cannot show calibration behavior across confidence levels."]
+                if len(set(confidences)) < 2 else []
+            ),
+        ],
+        "definition": "Calibration of observed model confidence against labelled prediction correctness.",
+    }
+
+
+def workflow_coverage_metrics(execution: dict[str, Any] | None) -> dict[str, Any]:
+    """Measure browser journey coverage without relabelling it as model quality."""
+    if not execution or execution.get("adapter_type") != "browser_journey":
+        return _not_applicable("Workflow coverage applies only to declared browser journeys.")
+    requested = execution.get("case_count", 0)
+    diagnostics = execution.get("browser_case_diagnostics", [])
+    if not isinstance(requested, int) or requested < 1 or not isinstance(diagnostics, list):
+        return _unavailable("Browser execution diagnostics are incomplete; workflow coverage cannot be calculated.")
+    completed = [item for item in diagnostics if isinstance(item, dict) and item.get("outcome") in {"passed", "failed"}]
+    passed = [item for item in completed if item.get("outcome") == "passed"]
+    failed = [item for item in completed if item.get("outcome") == "failed"]
+    blocked = [item for item in diagnostics if isinstance(item, dict) and item.get("outcome") == "blocked"]
+    return {
+        "measurement_status": "measured",
+        "requested_case_count": requested,
+        "executed_case_count": len(completed),
+        "passed_case_count": len(passed),
+        "assertion_review_case_count": len(failed),
+        "session_blocked_case_count": len(blocked),
+        "workflow_execution_rate": _rounded(_ratio(len(completed), requested)),
+        "workflow_signal_match_rate": _rounded(_ratio(len(passed), len(completed))) if completed else None,
+        "definition": "Declared browser journeys that reached their approved observable signal. This is workflow coverage, not an AI-model quality score.",
+    }
 
 
 def security_metrics(security: dict[str, Any] | None) -> dict[str, Any]:
@@ -312,12 +368,22 @@ def calculate_local_metrics(package: dict[str, Any]) -> dict[str, dict[str, Any]
     expected = evaluation["expected_labels"]
     predicted = evaluation["predicted_labels"]
     confidences = evaluation["confidences"]
+    execution = package.get("execution")
+    execution = execution if isinstance(execution, dict) else None
+    is_browser_journey = bool(execution and execution.get("adapter_type") == "browser_journey")
     # Packages keep validated measurements directly on evaluation so their
     # schema remains compatible with the optional shared-platform upload.
     measurements = evaluation
     return {
-        "classification": classification_metrics(expected, predicted),
-        "confidence": confidence_metrics(expected, predicted, confidences),
+        "workflow_coverage": workflow_coverage_metrics(execution),
+        "classification": (
+            _not_applicable("Browser pass/fail assertions are workflow evidence, not model-classification predictions.")
+            if is_browser_journey else classification_metrics(expected, predicted)
+        ),
+        "confidence": (
+            _not_applicable("The browser runner does not observe model confidence and never infers it from an assertion result.")
+            if is_browser_journey else confidence_metrics(expected, predicted, confidences)
+        ),
         "groundedness": claims_metrics(measurements.get("claims")),
         "security": security_metrics(measurements.get("security")),
         "trajectory": trajectory_metrics(measurements.get("trajectory")),

@@ -32,7 +32,8 @@ ADAPTER_RESPONSE_SCHEMA_VERSION_V1 = "esx-client-adapter-response-1.0"
 ADAPTER_REQUEST_SCHEMA_VERSION_V2 = "esx-client-adapter-request-2.0"
 ADAPTER_RESPONSE_SCHEMA_VERSION_V2 = "esx-client-adapter-response-2.0"
 BASE_DIMENSIONS = {"classification", "confidence"}
-SUPPORTED_DIMENSIONS = BASE_DIMENSIONS | {
+WORKFLOW_DIMENSIONS = {"workflow_coverage"}
+SUPPORTED_DIMENSIONS = BASE_DIMENSIONS | WORKFLOW_DIMENSIONS | {
     "groundedness",
     "security",
     "trajectory",
@@ -173,15 +174,24 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
     ):
         raise RunnerError("evaluation.required_dimensions must be a non-empty string array")
     dimensions = set(required_dimensions)
-    if len(dimensions) != len(required_dimensions) or not BASE_DIMENSIONS.issubset(dimensions):
+    if len(dimensions) != len(required_dimensions):
+        raise RunnerError("evaluation.required_dimensions must contain unique values")
+    if adapter_type == "browser_journey":
+        # Older browser plans declared classification/confidence even though a
+        # browser can only observe workflow assertions. Keep them runnable and
+        # normalize them to workflow coverage in the local result package.
+        if "workflow_coverage" not in dimensions and not BASE_DIMENSIONS.issubset(dimensions):
+            raise RunnerError("browser_journey evaluations must include workflow_coverage (or both legacy classification and confidence dimensions)")
+    elif not BASE_DIMENSIONS.issubset(dimensions):
         raise RunnerError("evaluation.required_dimensions must include unique classification and confidence values")
     unsupported = sorted(dimensions - SUPPORTED_DIMENSIONS)
     if unsupported:
         raise RunnerError("Unsupported evaluation dimensions: " + ", ".join(unsupported))
     telemetry = config.get("telemetry")
     telemetry_enabled = isinstance(telemetry, dict) and telemetry.get("enabled") is True
-    if adapter["type"] in {"command_json_v1", "http_json_target", "browser_journey"} and dimensions != BASE_DIMENSIONS and not telemetry_enabled:
-        raise RunnerError("This connector supports classification and confidence only; enable redacted local telemetry or use command_json_v2 for advanced measurements")
+    advanced_dimensions = dimensions - BASE_DIMENSIONS - WORKFLOW_DIMENSIONS
+    if adapter["type"] in {"command_json_v1", "http_json_target", "browser_journey"} and advanced_dimensions and not telemetry_enabled:
+        raise RunnerError("This connector needs redacted local telemetry for advanced measurements; use command_json_v2 or enable telemetry")
     return evaluation, cases, adapter
 
 
@@ -513,27 +523,31 @@ def _invoke_http_json_target(
     return response, duration_ms, sha256(request_summary), response_hash.hexdigest()
 
 
-def _normalise_results(cases: list[dict[str, Any]], response: dict[str, Any]) -> tuple[list[str], list[float]]:
+def _normalise_results(
+    cases: list[dict[str, Any]], response: dict[str, Any], *, require_confidence: bool = True,
+) -> tuple[list[str], list[float]]:
     results = response.get("results")
     if not isinstance(results, list) or len(results) != len(cases):
         raise RunnerError("Local adapter must return exactly one result for every submitted case")
     by_case: dict[str, dict[str, Any]] = {}
     for item in results:
         if not isinstance(item, dict) or not isinstance(item.get("case_id"), str):
-            raise RunnerError("Every adapter result needs case_id, predicted_label, and confidence")
+            raise RunnerError("Every adapter result needs case_id and predicted_label")
         if item["case_id"] in by_case:
             raise RunnerError("Local adapter returned duplicate case_id values")
         if not isinstance(item.get("predicted_label"), str) or not item["predicted_label"]:
             raise RunnerError("Every adapter result needs a non-empty predicted_label")
         _safe_reference(item["predicted_label"], "adapter predicted_label")
         confidence = item.get("confidence")
-        if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or confidence < 0 or confidence > 1:
+        if require_confidence and (not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or confidence < 0 or confidence > 1):
             raise RunnerError("Every adapter result confidence must be a number between 0 and 1")
         by_case[item["case_id"]] = item
     expected_ids = {item["case_id"] for item in cases}
     if set(by_case) != expected_ids:
         raise RunnerError("Local adapter result case_id values do not match the submitted dataset")
-    return [by_case[item["case_id"]]["predicted_label"] for item in cases], [float(by_case[item["case_id"]]["confidence"]) for item in cases]
+    labels = [by_case[item["case_id"]]["predicted_label"] for item in cases]
+    confidences = [float(by_case[item["case_id"]]["confidence"]) for item in cases] if require_confidence else []
+    return labels, confidences
 
 
 def _strict_object(value: object, field: str, *, required: set[str], allowed: set[str]) -> dict[str, Any]:
@@ -945,7 +959,7 @@ def _normalise_measurements(
         },
     }
     output: dict[str, Any] = {}
-    for dimension in set(required_dimensions) - BASE_DIMENSIONS:
+    for dimension in set(required_dimensions) - BASE_DIMENSIONS - WORKFLOW_DIMENSIONS:
         field = field_by_dimension[dimension]
         if field not in raw:
             if allow_partial:
@@ -1019,6 +1033,14 @@ def _github_source(token: str) -> dict[str, Any]:
 
 def build_package(config: dict[str, Any], *, github_oidc_token: str | None = None) -> dict[str, Any]:
     evaluation, cases, adapter = _validate_config(config)
+    evaluation = dict(evaluation)
+    if adapter["type"] == "browser_journey":
+        # Browser outcomes are declared workflow assertions. Replace the old
+        # classification/confidence baseline with the truthful coverage metric.
+        required = [item for item in evaluation.get("required_dimensions", []) if item not in BASE_DIMENSIONS]
+        if "workflow_coverage" not in required:
+            required.insert(0, "workflow_coverage")
+        evaluation["required_dimensions"] = required
     browser_summary: dict[str, Any] = {}
     scored_cases = cases
     scored_response: dict[str, Any]
@@ -1033,7 +1055,9 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
         response, duration_ms, request_sha, response_sha = _invoke_command_adapter(adapter, cases, evaluation)
     if adapter["type"] != "browser_journey":
         scored_response = response
-    predicted_labels, confidences = _normalise_results(scored_cases, scored_response)
+    predicted_labels, confidences = _normalise_results(
+        scored_cases, scored_response, require_confidence=adapter["type"] != "browser_journey",
+    )
     telemetry_config = config.get("telemetry")
     telemetry_enabled = isinstance(telemetry_config, dict) and telemetry_config.get("enabled") is True
     measurements = _normalise_measurements(
@@ -1080,6 +1104,7 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
             "dataset_version": evaluation["dataset_version"],
             "policy_id": evaluation.get("policy_id", "esx-ai-evaluator-release-1.0"),
             "required_dimensions": evaluation.get("required_dimensions", ["classification", "confidence"]),
+            "scorecard_type": "workflow_assurance" if adapter["type"] == "browser_journey" else "model_evaluation",
             # Only cases that reached the application workflow feed quality metrics.
             "expected_labels": [item["expected_label"] for item in scored_cases],
             "predicted_labels": predicted_labels,
