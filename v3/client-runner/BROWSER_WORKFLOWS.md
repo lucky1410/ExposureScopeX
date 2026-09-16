@@ -50,6 +50,38 @@ application before saving the session. It keeps only that application's
 cookies and local storage; identity-provider state is discarded. Re-run the
 bootstrap whenever the saved session expires or the test account changes.
 
+Check a saved session before a larger suite:
+
+```text
+esx-eval browser-session --config ./esx-eval.json --persona analyst
+```
+
+`session_usable` means the approved login route reached the configured local
+post-login signal. `reauthentication_required` means the runner did not treat
+the session as valid; bootstrap that persona again before running protected
+workflows.
+
+## Record a workflow instead of hand-writing JSON
+
+Use the local recorder to turn one approved, authenticated browser journey
+into a review-required case. It records only stable control selectors when
+available. It never records typed values, pressed keys, page text, cookies,
+local storage, credentials, or identity-provider state.
+
+```text
+esx-eval browser-record --config ./esx-eval.json --out ./investigations-recording.json --case-id investigations-queue --start-path /investigations --expected-text "Investigations queue"
+esx-eval preflight --config ./esx-eval.json
+```
+
+Add `--add` only after reviewing `investigations-recording.json`. The resulting
+case is still explicit scope: recording a journey does not authorize another
+route, infer business intent, or turn discovery into coverage.
+
+The preflight command runs without opening the application. It warns about
+duplicate case IDs, repeated success signals, short or non-exact text matches,
+missing assertions, and protected workflows that have no session setup. Fix a
+warning before relying on a browser signal-match result.
+
 ## Add role-based workflow coverage
 
 After repository discovery, `workflow-packs.json` contains review-required
@@ -124,6 +156,10 @@ The local report separates:
 - **Assertion review**: executed workflow cases whose approved expected signal
   did not match. This is evidence to review, not an independently confirmed
   application defect.
+- **Browser-only smoke summary**: a plain-language statement of whether an
+  approved session was available, a declared page was reached, its visible
+  signal matched, or the signal needs refinement. It is not an AI-quality
+  score.
 - **Measured**: dimensions backed by validated local evidence.
 
 On a browser outcome, the report records the case ID, persona, capability area,
@@ -133,3 +169,8 @@ console/page/request failure counts. It never records browser text, entered
 values, credentials, cookies, or local storage. To retain a local image of the
 failure state, enable `capture_failure_screenshots`; these files are not added
 to the evaluation package or report.
+
+When a workflow fails, PRE-D also lists up to three local `data-testid` or `id`
+selector candidates found on the page. They are hints only: review them to
+ensure they represent the intended user-visible state before replacing an
+assertion. No page text is collected for this guidance.

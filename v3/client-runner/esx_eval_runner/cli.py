@@ -22,6 +22,7 @@ from .runner import RunnerError, attach_local_measurements, build_package, gener
 from .setup import serve_setup
 from .telemetry import derive_telemetry_measurements, serve_collector, telemetry_summary
 from .workflows import add_candidate_to_config, apply_reusable_pack, export_reusable_pack
+from .preflight import lint_browser_plan
 
 
 _PROJECT_KEY = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
@@ -858,6 +859,55 @@ def browser_auth_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def browser_record_command(args: argparse.Namespace) -> int:
+    """Record a local journey and optionally add the reviewed case to its plan."""
+    config = read_json(args.config)
+    adapter = config.get("adapter")
+    if not isinstance(adapter, dict) or adapter.get("type") != "browser_journey":
+        raise RunnerError("browser-record requires an esx-eval.json browser_journey plan")
+    from .browser import record_browser_flow
+
+    recorded = record_browser_flow(
+        adapter, start_path=args.start_path,
+        expected_text=args.expected_text, case_id=args.case_id, persona=args.persona,
+        requires_auth=not args.anonymous,
+    )
+    _write_json(args.out, recorded)
+    if args.add:
+        cases = config.get("dataset", {}).get("cases")
+        if not isinstance(cases, list):
+            raise RunnerError("Config dataset.cases is invalid")
+        case = recorded["case"]
+        if any(isinstance(item, dict) and item.get("case_id") == case["case_id"] for item in cases):
+            raise RunnerError(f"Case '{case['case_id']}' already exists; review the recorded file and choose a new case ID")
+        cases.append(case)
+        _write_json(args.config, config)
+    print(json.dumps({
+        "recording": str(args.out), "status": recorded["status"], "added_to_plan": bool(args.add),
+        "next": "Run `esx-eval preflight --config ...` before executing this recorded workflow.",
+    }, indent=2))
+    return 0
+
+
+def browser_session_command(args: argparse.Namespace) -> int:
+    """Check a saved local browser session before spending time on a full run."""
+    config = read_json(args.config)
+    adapter = config.get("adapter")
+    if not isinstance(adapter, dict) or adapter.get("type") != "browser_journey":
+        raise RunnerError("browser-session requires an esx-eval.json browser_journey plan")
+    from .browser import check_browser_session
+
+    print(json.dumps(check_browser_session(adapter, args.persona), indent=2))
+    return 0
+
+
+def preflight_command(args: argparse.Namespace) -> int:
+    """Explain weak browser-plan evidence before it becomes a misleading result."""
+    result = lint_browser_plan(read_json(args.config))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def persona_command(args: argparse.Namespace) -> int:
     """Add or list isolated, reviewer-defined browser personas."""
     config = read_json(args.config)
@@ -1025,6 +1075,20 @@ def parser() -> argparse.ArgumentParser:
     browser_auth = commands.add_parser("browser-auth", help="Complete an approved interactive login and save local browser session state")
     browser_auth.add_argument("--config", required=True, help="Setup-generated browser esx-eval.json with session_bootstrap")
     browser_auth.add_argument("--persona", help="Configured persona ID; omit for the plan's default login profile")
+    browser_record = commands.add_parser("browser-record", help="Record approved local clicks into a review-required workflow")
+    browser_record.add_argument("--config", required=True, help="Setup-generated browser esx-eval.json")
+    browser_record.add_argument("--out", required=True, help="New local recorded-workflow.json path")
+    browser_record.add_argument("--case-id", required=True, help="New lowercase workflow case ID")
+    browser_record.add_argument("--start-path", default="/", help="Approved same-origin starting path")
+    browser_record.add_argument("--expected-text", required=True, help="One stable visible phrase proving the completed workflow")
+    browser_record.add_argument("--persona", default="default", help="Approved authenticated persona to use")
+    browser_record.add_argument("--anonymous", action="store_true", help="Record a pre-auth journey without a saved session")
+    browser_record.add_argument("--add", action="store_true", help="Explicitly add the recorded case to the local plan after recording")
+    browser_session = commands.add_parser("browser-session", help="Check whether a saved local browser session is still usable")
+    browser_session.add_argument("--config", required=True, help="Setup-generated browser esx-eval.json")
+    browser_session.add_argument("--persona", default="default", help="Approved persona whose local session should be checked")
+    preflight = commands.add_parser("preflight", help="Warn about weak or ambiguous browser signals before a local run")
+    preflight.add_argument("--config", required=True, help="Browser esx-eval.json plan to review")
     persona = commands.add_parser("persona", help="Manage isolated approved browser personas")
     persona_commands = persona.add_subparsers(dest="persona_action", required=True)
     persona_list = persona_commands.add_parser("list", help="List local browser personas")
@@ -1101,6 +1165,12 @@ def main(argv: list[str] | None = None) -> int:
             return run_command(args)
         if args.command == "browser-auth":
             return browser_auth_command(args)
+        if args.command == "browser-record":
+            return browser_record_command(args)
+        if args.command == "browser-session":
+            return browser_session_command(args)
+        if args.command == "preflight":
+            return preflight_command(args)
         if args.command == "persona":
             return persona_command(args)
         if args.command == "workflow-pack":

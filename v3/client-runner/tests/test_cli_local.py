@@ -25,6 +25,7 @@ from esx_eval_runner.browser import _local_only_session_state, validate_browser_
 from esx_eval_runner.connectors import LocalEvidenceEmitter, langchain_callback, record_anthropic_message_usage, record_openai_response_usage
 from esx_eval_runner.discovery import discover_repository
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
+from esx_eval_runner.preflight import lint_browser_plan
 from esx_eval_runner.profiles import build_cases
 from esx_eval_runner.report_html import render_local_report
 from esx_eval_runner.runner import RunnerError, _adapter_command, _browser_execution_summary, _browser_scored_inputs, _normalise_results, _verify_target_attestation, attach_local_measurements, build_package, canonical_json, read_json
@@ -47,6 +48,29 @@ ADAPTER_COMMAND = [
 
 
 class LocalRunTests(unittest.TestCase):
+    def test_browser_preflight_flags_repeated_and_weak_signals(self) -> None:
+        config = {
+            "adapter": {"type": "browser_journey", "base_url": "http://127.0.0.1:3000"},
+            "dataset": {"cases": [
+                {"case_id": "home", "input": {"journey": [{"type": "goto", "path": "/"}, {"type": "wait_for_text", "value": "Home"}]}, "requires_auth": False},
+                {"case_id": "home", "input": {"journey": [{"type": "goto", "path": "/settings"}, {"type": "wait_for_text", "value": "Home"}]}, "requires_auth": True},
+            ]},
+        }
+        result = lint_browser_plan(config)
+        codes = {warning["code"] for warning in result["warnings"]}
+        self.assertEqual(result["status"], "review_needed")
+        self.assertTrue({"duplicate_case_id", "weak_text_signal", "ambiguous_text_match", "repeated_success_signal", "missing_auth_setup"} <= codes)
+
+    def test_browser_report_has_plain_language_smoke_summary(self) -> None:
+        report = {
+            "subject": {}, "metrics": {"workflow_coverage": {"measurement_status": "measured", "workflow_execution_rate": 1.0}},
+            "execution": {"adapter_type": "browser_journey", "requested_case_count": 2, "passed_case_count": 1, "failed_case_count": 1, "blocked_case_count": 0, "browser_session_status": "reused_local_session"},
+            "coverage": {"executed": {"requested_case_count": 2, "case_count": 2, "blocked_case_count": 0, "failed_case_count": 1}, "measured": {"dimension_count": 1, "required_dimension_count": 1}, "discovered": {}, "approved": {}},
+        }
+        rendered = render_local_report(report)
+        self.assertIn("BROWSER-ONLY SMOKE SUMMARY", rendered)
+        self.assertIn("Coverage reached; signal needs refinement", rendered)
+
     def test_local_formulas_reveal_misclassification_and_overconfidence(self) -> None:
         expected = ["safe", "unsafe", "safe", "unsafe"]
         predicted = ["safe", "safe", "unsafe", "unsafe"]

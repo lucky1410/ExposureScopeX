@@ -9,6 +9,7 @@ esx_eval_runner/connectors.py
 esx_eval_runner/discovery.py
 esx_eval_runner/http_bridge.py
 esx_eval_runner/local_metrics.py
+esx_eval_runner/preflight.py
 esx_eval_runner/profiles.py
 esx_eval_runner/report_html.py
 esx_eval_runner/runner.py

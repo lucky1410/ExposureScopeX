@@ -160,6 +160,132 @@ def bootstrap_browser_session(adapter: dict[str, Any]) -> dict[str, str]:
         raise RunnerError("Could not save the approved local browser session: local_storage_failed") from exc
 
 
+def record_browser_flow(
+    adapter: dict[str, Any], *, start_path: str, expected_text: str, case_id: str,
+    persona: str = "default", requires_auth: bool = True,
+) -> dict[str, Any]:
+    """Record approved local clicks as a review-required, content-free journey.
+
+    Typed values, keystrokes, page text, cookies, and credentials are deliberately
+    excluded. The tester supplies the one stable signal that proves the journey.
+    """
+    validate_browser_adapter(adapter)
+    _validate_path(start_path, "browser recorder start_path")
+    if not isinstance(expected_text, str) or not expected_text.strip() or len(expected_text.strip()) > 500:
+        raise RunnerError("browser recorder expected_text must be non-empty text up to 500 characters")
+    if not isinstance(case_id, str) or not _SAFE_IDENTIFIER.fullmatch(case_id):
+        raise RunnerError("browser recorder case_id must use lowercase letters, digits, and hyphens")
+    state, status, error = _recording_session(adapter, persona)
+    if requires_auth and state is None:
+        raise RunnerError(f"Cannot record protected workflow: {error or status}. Complete browser-auth first.")
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise RunnerError("Browser recording requires `pip install exposurescopex-eval-runner[browser]` and `playwright install chromium`") from exc
+    events: list[str] = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=False)
+        context = browser.new_context(storage_state=state) if state is not None else browser.new_context()
+        try:
+            context.expose_binding("__esx_record_click", lambda _source, payload: _record_selector(events, payload))
+            context.add_init_script("""
+                (() => {
+                  const escape = value => CSS.escape(String(value));
+                  const selectorFor = element => {
+                    const node = element.closest('button,a,input,select,textarea,[role],[data-testid],[id]');
+                    if (!node) return null;
+                    if (node.dataset && node.dataset.testid) return `[data-testid="${escape(node.dataset.testid)}"]`;
+                    if (node.id) return `#${escape(node.id)}`;
+                    const label = node.getAttribute('aria-label');
+                    if (label) return `[aria-label="${escape(label)}"]`;
+                    const role = node.getAttribute('role');
+                    if (role) return `[role="${escape(role)}"]`;
+                    return null;
+                  };
+                  document.addEventListener('click', event => {
+                    const selector = selectorFor(event.target);
+                    if (selector && window.__esx_record_click) window.__esx_record_click(selector);
+                  }, true);
+                })();
+            """)
+            page = context.new_page()
+            page.goto(urljoin(adapter["base_url"], start_path), wait_until="domcontentloaded", timeout=int(adapter.get("action_timeout_ms", 15_000)))
+            print("Use the opened local application to complete one approved journey. Typed values are not recorded. Return here and press Enter to create a review-required plan.")
+            input()
+        finally:
+            context.close()
+            browser.close()
+    journey: list[dict[str, Any]] = [{"type": "goto", "path": start_path}]
+    for selector in dict.fromkeys(events):
+        journey.extend((
+            {"type": "click", "selector": selector},
+            {"type": "wait_for_stable", "settle_ms": 250, "retry_count": 2, "retry_delay_ms": 250},
+        ))
+    journey.append({"type": "wait_for_text", "value": expected_text.strip(), "retry_count": 2, "retry_delay_ms": 250})
+    return {
+        "schema_version": "esx-recorded-browser-workflow-1.0",
+        "status": "review_required",
+        "notice": "Review every recorded selector and the expected signal before adding this workflow to an evaluation plan.",
+        "case": {
+            "case_id": case_id,
+            "input": {"journey": journey},
+            "expected_label": "pass",
+            "requires_auth": requires_auth,
+            "persona": persona if requires_auth else "anonymous",
+            "capability_area": "general",
+            "workflow_pack": "recorded-local-flow",
+        },
+    }
+
+
+def _recording_session(adapter: dict[str, Any], persona: str) -> tuple[dict[str, Any] | None, str, str | None]:
+    """Read a pre-approved local session without opening an automatic login flow."""
+    selected = browser_adapter_for_persona(adapter, persona)
+    state_path = _local_path(selected.get("session_state_path"))
+    if state_path and state_path.is_file():
+        try:
+            return _local_only_session_state(json.loads(state_path.read_text(encoding="utf-8")), selected["base_url"]), "reused_local_session", None
+        except (OSError, json.JSONDecodeError, RunnerError):
+            return None, "session_unavailable", "saved_session_unreadable"
+    return None, "interactive_auth_required", "session_bootstrap_required"
+
+
+def _record_selector(events: list[str], payload: object) -> None:
+    if isinstance(payload, str) and len(payload) <= 500 and "\n" not in payload and "\r" not in payload:
+        events.append(payload)
+
+
+def check_browser_session(adapter: dict[str, Any], persona: str = "default") -> dict[str, str]:
+    """Check whether a saved session still reaches its approved local signal."""
+    validate_browser_adapter(adapter)
+    selected = browser_adapter_for_persona(adapter, persona)
+    state, status, reason = _recording_session(adapter, persona)
+    if state is None:
+        return {"persona": persona, "session_status": status, "result": "reauthentication_required", "reason": reason or "saved_session_unavailable"}
+    auth = selected.get("session_bootstrap") or selected.get("auth")
+    if not isinstance(auth, dict):
+        return {"persona": persona, "session_status": status, "result": "session_file_present", "reason": "no_local_session_check_is_configured"}
+    try:
+        from playwright.sync_api import Error as PlaywrightError
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise RunnerError("Browser session checks require `pip install exposurescopex-eval-runner[browser]` and `playwright install chromium`") from exc
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            context = browser.new_context(storage_state=state)
+            page = context.new_page()
+            try:
+                page.goto(urljoin(selected["base_url"], auth["login_path"]), wait_until="domcontentloaded", timeout=int(selected.get("action_timeout_ms", 15_000)))
+                _perform(page, selected["base_url"], auth["success"], int(selected.get("action_timeout_ms", 15_000)))
+                return {"persona": persona, "session_status": status, "result": "session_usable"}
+            finally:
+                context.close()
+                browser.close()
+    except (PlaywrightError, RunnerError, OSError) as exc:
+        return {"persona": persona, "session_status": "stale_or_invalid", "result": "reauthentication_required", "reason": _failure_kind(exc, playwright_error=PlaywrightError)}
+
+
 def browser_adapter_for_persona(adapter: dict[str, Any], persona: str | None) -> dict[str, Any]:
     """Resolve an isolated persona profile without inheriting another persona's session."""
     selected = persona or "default"
@@ -290,6 +416,9 @@ def _run_case(
                     "failure_kind": step["failure_kind"],
                     "browser_health": observations,
                 })
+                suggestions = _selector_suggestions(page)
+                if suggestions:
+                    diagnostic["selector_suggestions"] = suggestions
                 screenshot = _capture_failure_screenshot(page, adapter, str(case["case_id"]))
                 if screenshot:
                     diagnostic["failure_screenshot"] = screenshot
@@ -549,6 +678,29 @@ def _capture_failure_screenshot(page: Any, adapter: dict[str, Any], case_id: str
         return str(target)
     except Exception:
         return None
+
+
+def _selector_suggestions(page: Any) -> list[str]:
+    """Offer local, attribute-only selectors without retaining page content."""
+    try:
+        candidates = page.locator("[data-testid], [id]").evaluate_all(
+            """elements => elements.slice(0, 50).map(element => ({
+                testid: element.getAttribute('data-testid'), id: element.id
+            }))"""
+        )
+    except Exception:
+        return []
+    suggestions: list[str] = []
+    for candidate in candidates if isinstance(candidates, list) else []:
+        if not isinstance(candidate, dict):
+            continue
+        testid = candidate.get("testid")
+        identifier = candidate.get("id")
+        if isinstance(testid, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", testid):
+            suggestions.append(f'[data-testid="{testid}"]')
+        elif isinstance(identifier, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,79}", identifier):
+            suggestions.append(f"#{identifier}")
+    return list(dict.fromkeys(suggestions))[:12]
 
 
 def _write_local_session_state(state_path: Path, state: object, base_url: str) -> None:

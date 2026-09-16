@@ -242,6 +242,34 @@ def _executive_readout(report: dict[str, Any]) -> str:
     <p>""" + _escape(conclusion) + "</p></div><div class='coverage-grid'>" + cards + "</div></section>"
 
 
+def _browser_smoke_summary(report: dict[str, Any]) -> str:
+    """Translate browser diagnostics into a plain-language coverage conclusion."""
+    execution = report.get("execution", {})
+    if not isinstance(execution, dict) or execution.get("adapter_type") != "browser_journey":
+        return ""
+    requested = int(execution.get("requested_case_count", 0))
+    passed = int(execution.get("passed_case_count", 0))
+    review = int(execution.get("failed_case_count", 0))
+    blocked = int(execution.get("blocked_case_count", 0))
+    session = str(execution.get("browser_session_status", "not_requested")).replace("_", " ")
+    if blocked:
+        headline = "Protected workflow not reached"
+        detail = "Authentication or session setup needs attention before the blocked journeys can test the application. This is not a product defect."
+    elif review:
+        headline = "Coverage reached; signal needs refinement"
+        detail = "The browser reached every planned workflow, but one or more approved success signals did not match. Review those assertions before treating them as application defects."
+    else:
+        headline = "Coverage proven for this plan"
+        detail = "Every declared browser journey reached its approved visible signal. This confirms workflow reachability only, not deeper AI-quality behavior."
+    return """<section class='smoke-summary panel'>
+    <div class='section-heading'><div><p class='eyebrow'>BROWSER-ONLY SMOKE SUMMARY</p><h2>""" + _escape(headline) + """</h2></div>
+    <p>""" + _escape(detail) + """</p></div><div class='coverage-grid'>
+    <div class='coverage-stat'><strong>""" + _escape(session) + """</strong><span>Session</span><small>Authenticated session state is local and scoped to the approved application.</small></div>
+    <div class='coverage-stat'><strong>""" + _escape(f"{passed}/{requested}") + """</strong><span>Visible signals matched</span><small>Completed journeys whose approved observable signal was present.</small></div>
+    <div class='coverage-stat'><strong>""" + _escape(review) + """</strong><span>Signals to refine</span><small>Assertion review items, not confirmed application defects.</small></div>
+    </div></section>"""
+
+
 def _coverage_section(report: dict[str, Any]) -> str:
     coverage = report.get("coverage")
     if not isinstance(coverage, dict):
@@ -341,7 +369,7 @@ def _diagnostic_section(report: dict[str, Any]) -> str:
         f"<td>{_escape(str(item.get('outcome', 'unknown')).replace('_', ' '))}</td>"
         f"<td>{_escape(str(item.get('failure_stage', 'workflow_execution')).replace('_', ' '))}</td>"
         f"<td>{_escape(item.get('completed_step_count', 0))}/{_escape(item.get('total_attempt_count', 0))}</td>"
-        f"<td>{_escape(item.get('failed_action', item.get('failure_kind', '')))}</td></tr>"
+        f"<td>{_escape(item.get('failed_action', item.get('failure_kind', '')))}{_selector_suggestion_text(item)}</td></tr>"
         for item in diagnostics if isinstance(item, dict)
     )
     session = str(execution.get("browser_session_status", "not_requested")).replace("_", " ")
@@ -349,6 +377,16 @@ def _diagnostic_section(report: dict[str, Any]) -> str:
     <div class='section-heading'><div><p class='eyebrow'>BROWSER TRACE</p><h2>Execution diagnostics</h2></div>
     <p>Session: """ + _escape(session) + """. A session-setup block means the browser did not enter the protected workflow; it is a runner coverage boundary, not a product finding.</p></div>
     <div class='table-wrap'><table><thead><tr><th>Case</th><th>Area</th><th>Persona</th><th>Outcome</th><th>Stage</th><th>Steps</th><th>Failure point</th></tr></thead><tbody>""" + rows + "</tbody></table></div></section>"
+
+
+def _selector_suggestion_text(item: dict[str, Any]) -> str:
+    suggestions = item.get("selector_suggestions", [])
+    if not isinstance(suggestions, list):
+        return ""
+    safe = [str(value) for value in suggestions[:3] if isinstance(value, str)]
+    if not safe:
+        return ""
+    return "<br><small>Local selector candidates: " + _escape(", ".join(safe)) + "</small>"
 
 
 def _graph_section(report: dict[str, Any]) -> str:
@@ -390,4 +428,4 @@ def render_local_report(report: dict[str, Any]) -> str:
 """ + _executive_readout(report) + (
 """<section class="panel"><div class="section-heading"><div><p class="eyebrow">WORKFLOW ASSURANCE SCORECARD</p><h2>Declared journeys, measured honestly</h2></div><p>A pass means the approved browser journey reached its observable signal. It is not a model classification, confidence, safety, or groundedness score.</p></div><div class="metric-grid">""" + _metric_cards(metrics, workflow_names) + "</div></section>"
 if workflow_names else ""
-) + """<section class="panel"><div class="section-heading"><div><p class="eyebrow">MODEL AND EVIDENCE SCORECARD</p><h2>Evidence-backed AI measurements</h2></div><p>These measurements are separate from browser workflow coverage. A score is shown only when compatible local labels, observed outputs, and telemetry evidence were supplied.</p></div><div class="metric-grid">""" + _metric_cards(metrics, model_names) + "</div></section>" + _evidence_source_section(report) + _measurement_readiness_section(metrics) + _coverage_section(report) + _next_actions(report) + _diagnostic_section(report) + _graph_section(report) + """<details class="raw"><summary>VIEW REDACTED RESULT DATA</summary><pre>""" + payload + "</pre></details></main></body></html>"
+) + _browser_smoke_summary(report) + """<section class="panel"><div class="section-heading"><div><p class="eyebrow">MODEL AND EVIDENCE SCORECARD</p><h2>Evidence-backed AI measurements</h2></div><p>These measurements are separate from browser workflow coverage. A score is shown only when compatible local labels, observed outputs, and telemetry evidence were supplied.</p></div><div class="metric-grid">""" + _metric_cards(metrics, model_names) + "</div></section>" + _evidence_source_section(report) + _measurement_readiness_section(metrics) + _coverage_section(report) + _next_actions(report) + _diagnostic_section(report) + _graph_section(report) + """<details class="raw"><summary>VIEW REDACTED RESULT DATA</summary><pre>""" + payload + "</pre></details></main></body></html>"
