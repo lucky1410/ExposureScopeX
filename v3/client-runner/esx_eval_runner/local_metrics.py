@@ -153,6 +153,69 @@ def confidence_metrics(expected: list[str], predicted: list[str], confidences: l
     }
 
 
+def decision_evidence_metrics(observations: object) -> dict[str, Any]:
+    """Measure explicit evidence-reference and abstention behavior locally.
+
+    Identifier overlap is intentionally reported as evidence-reference
+    alignment, not groundedness. Groundedness also needs per-claim support and
+    citation-integrity observations from a local adapter or telemetry source.
+    """
+    if not isinstance(observations, list) or not observations:
+        return _not_applicable("This run did not request decision evidence or abstention observations.")
+    records = [item for item in observations if isinstance(item, dict)]
+    evidence_cases = [item for item in records if "expected_evidence_ids" in item]
+    abstention_cases = [item for item in records if "must_abstain" in item]
+    if not evidence_cases and not abstention_cases:
+        return _not_applicable("This run did not include decision evidence or abstention expectations.")
+    missing_evidence = [item.get("case_id", "unknown") for item in evidence_cases if "observed_evidence_ids" not in item]
+    missing_abstention = [item.get("case_id", "unknown") for item in abstention_cases if "abstained" not in item]
+    result: dict[str, Any] = {
+        "decision_case_count": len(records),
+        "evidence_reference_case_count": len(evidence_cases),
+        "abstention_case_count": len(abstention_cases),
+        "definition": "Evidence-reference alignment and abstention behavior from explicit local decision metadata; this is not a groundedness or hallucination score.",
+    }
+    if missing_evidence or missing_abstention:
+        gaps = []
+        if missing_evidence:
+            gaps.append("evidence IDs for " + ", ".join(str(item) for item in missing_evidence[:5]))
+        if missing_abstention:
+            gaps.append("abstained flag for " + ", ".join(str(item) for item in missing_abstention[:5]))
+        return _unavailable("The decision endpoint did not return " + " and ".join(gaps) + ".", **result)
+    if evidence_cases:
+        expected_ids = [
+            evidence_id for item in evidence_cases
+            for evidence_id in item.get("expected_evidence_ids", [])
+        ]
+        observed_ids = [
+            evidence_id for item in evidence_cases
+            for evidence_id in item.get("observed_evidence_ids", [])
+        ]
+        matching = sum(
+            len(set(item.get("expected_evidence_ids", [])) & set(item.get("observed_evidence_ids", [])))
+            for item in evidence_cases
+        )
+        exact = sum(
+            set(item.get("expected_evidence_ids", [])) == set(item.get("observed_evidence_ids", []))
+            for item in evidence_cases
+        )
+        result.update({
+            "evidence_reference_precision": _rounded(_ratio(matching, len(observed_ids))),
+            "evidence_reference_recall": _rounded(_ratio(matching, len(expected_ids))),
+            "exact_evidence_reference_rate": _rounded(_ratio(exact, len(evidence_cases))),
+        })
+    if abstention_cases:
+        correct = sum(item.get("must_abstain") is item.get("abstained") for item in abstention_cases)
+        false_abstentions = sum(not item.get("must_abstain") and item.get("abstained") for item in abstention_cases)
+        missed_abstentions = sum(item.get("must_abstain") and not item.get("abstained") for item in abstention_cases)
+        result.update({
+            "correct_abstention_rate": _rounded(_ratio(correct, len(abstention_cases))),
+            "false_abstention_count": false_abstentions,
+            "missed_abstention_count": missed_abstentions,
+        })
+    return {"measurement_status": "measured", **result}
+
+
 def workflow_coverage_metrics(execution: dict[str, Any] | None) -> dict[str, Any]:
     """Measure browser journey coverage without relabelling it as model quality."""
     if not execution or execution.get("adapter_type") != "browser_journey":
@@ -384,6 +447,7 @@ def calculate_local_metrics(package: dict[str, Any]) -> dict[str, dict[str, Any]
             _not_applicable("The browser runner does not observe model confidence and never infers it from an assertion result.")
             if is_browser_journey else confidence_metrics(expected, predicted, confidences)
         ),
+        "decision_evidence": decision_evidence_metrics(measurements.get("decision_observations")),
         "groundedness": claims_metrics(measurements.get("claims")),
         "security": security_metrics(measurements.get("security")),
         "trajectory": trajectory_metrics(measurements.get("trajectory")),

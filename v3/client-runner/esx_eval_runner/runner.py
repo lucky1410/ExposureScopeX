@@ -160,6 +160,12 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
         if not isinstance(item.get("input"), dict) or not isinstance(item.get("expected_label"), str) or not item["expected_label"]:
             raise RunnerError("Every dataset case needs object input and expected_label")
         _safe_reference(item["expected_label"], "dataset expected_label")
+        if "task" in item:
+            _safe_reference(item["task"], "dataset task")
+        if "expected_evidence_ids" in item:
+            _safe_references(item["expected_evidence_ids"], "dataset expected_evidence_ids")
+        if "must_abstain" in item:
+            _boolean(item["must_abstain"], "dataset must_abstain")
         if adapter_type == "browser_journey":
             from .browser import validate_browser_case
             validate_browser_case(item, adapter)
@@ -213,12 +219,19 @@ def _validate_http_target(adapter: dict[str, Any]) -> None:
         raise RunnerError("A non-local target requires allow_remote=true and target_environment=staging; production targets are not supported")
     _validate_tls_config(adapter.get("tls"), required=not loopback)
     _validate_target_attestation(adapter, required=not loopback)
-    if adapter.get("request_mode", "message") not in {"message", "input"}:
-        raise RunnerError("http_json_target.request_mode must be message or input")
+    if adapter.get("request_mode", "message") not in {"message", "input", "decision"}:
+        raise RunnerError("http_json_target.request_mode must be message, input, or decision")
     for name in ("response_label_path", "response_confidence_path"):
         value = adapter.get(name)
         if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", value):
             raise RunnerError(f"http_json_target.{name} must be a dotted JSON object path")
+    for name in ("response_evidence_ids_path", "response_abstained_path"):
+        value = adapter.get(name)
+        if value is not None and (
+            not isinstance(value, str)
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", value)
+        ):
+            raise RunnerError(f"http_json_target.{name} must be a dotted JSON object path when supplied")
     headers = adapter.get("headers_from_env", {})
     if not isinstance(headers, dict) or not all(
         isinstance(header, str) and header and isinstance(env_name, str) and re.fullmatch(r"[A-Z_][A-Z0-9_]*", env_name)
@@ -485,11 +498,16 @@ def _invoke_http_json_target(
     attestation_sha256 = _verify_target_attestation(adapter, opener)
     for index, case in enumerate(cases):
         input_data = case["input"]
-        if adapter.get("request_mode", "message") == "message":
+        request_mode = adapter.get("request_mode", "message")
+        if request_mode == "message":
             message = input_data.get("message") if isinstance(input_data, dict) else None
             if not isinstance(message, str):
                 raise RunnerError("http_json_target request_mode=message requires every case input.message to be a string")
             body: dict[str, Any] = {"message": message}
+        elif request_mode == "decision":
+            # A decision endpoint receives the opaque case reference plus the
+            # locally held input needed to exercise the real decision path.
+            body = {"case_id": case["case_id"], "input": input_data}
         else:
             body = {"input": input_data}
         request_summary.append({"case_id": case["case_id"], "body_sha256": sha256(body)})
@@ -513,7 +531,18 @@ def _invoke_http_json_target(
             raise RunnerError("HTTP target did not return a JSON object") from exc
         label = _read_json_path(payload, adapter["response_label_path"])
         confidence = _read_json_path(payload, adapter["response_confidence_path"])
-        results.append({"case_id": case["case_id"], "predicted_label": label, "confidence": confidence})
+        result: dict[str, Any] = {"case_id": case["case_id"], "predicted_label": label, "confidence": confidence}
+        evidence_path = adapter.get("response_evidence_ids_path")
+        if evidence_path:
+            result["evidence_ids"] = _safe_references(
+                _read_json_path(payload, evidence_path), "HTTP target response evidence_ids"
+            )
+        abstained_path = adapter.get("response_abstained_path")
+        if abstained_path:
+            result["abstained"] = _boolean(
+                _read_json_path(payload, abstained_path), "HTTP target response abstained"
+            )
+        results.append(result)
         if index < len(cases) - 1 and adapter.get("minimum_delay_ms", 100):
             time.sleep(adapter.get("minimum_delay_ms", 100) / 1000)
     response = {"schema_version": ADAPTER_RESPONSE_SCHEMA_VERSION_V2, "results": results, "measurements": {}}
@@ -548,6 +577,48 @@ def _normalise_results(
     labels = [by_case[item["case_id"]]["predicted_label"] for item in cases]
     confidences = [float(by_case[item["case_id"]]["confidence"]) for item in cases] if require_confidence else []
     return labels, confidences
+
+
+def _decision_observations(cases: list[dict[str, Any]], response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Retain only opaque decision-evidence metadata for a local scorecard.
+
+    Evidence identifiers can establish reference alignment and abstention
+    behavior. They deliberately do not convert a raw answer into a
+    groundedness claim without a validated local claim-support observation.
+    """
+    results = response.get("results")
+    if not isinstance(results, list):
+        return []
+    results_by_case = {
+        item.get("case_id"): item for item in results
+        if isinstance(item, dict) and isinstance(item.get("case_id"), str)
+    }
+    observations: list[dict[str, Any]] = []
+    for case in cases:
+        result = results_by_case.get(case["case_id"])
+        if not isinstance(result, dict):
+            continue
+        evidence_requested = "expected_evidence_ids" in case
+        abstention_requested = "must_abstain" in case
+        evidence_observed = "evidence_ids" in result
+        abstention_observed = "abstained" in result
+        if not (evidence_requested or abstention_requested or evidence_observed or abstention_observed):
+            continue
+        observation: dict[str, Any] = {"case_id": case["case_id"]}
+        if evidence_requested:
+            observation["expected_evidence_ids"] = _safe_references(
+                case["expected_evidence_ids"], "dataset expected_evidence_ids"
+            )
+        if evidence_observed:
+            observation["observed_evidence_ids"] = _safe_references(
+                result["evidence_ids"], "adapter result evidence_ids"
+            )
+        if abstention_requested:
+            observation["must_abstain"] = _boolean(case["must_abstain"], "dataset must_abstain")
+        if abstention_observed:
+            observation["abstained"] = _boolean(result["abstained"], "adapter result abstained")
+        observations.append(observation)
+    return observations
 
 
 def _strict_object(value: object, field: str, *, required: set[str], allowed: set[str]) -> dict[str, Any]:
@@ -1058,6 +1129,10 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
     predicted_labels, confidences = _normalise_results(
         scored_cases, scored_response, require_confidence=adapter["type"] != "browser_journey",
     )
+    decision_observations = (
+        _decision_observations(scored_cases, scored_response)
+        if adapter["type"] != "browser_journey" else []
+    )
     telemetry_config = config.get("telemetry")
     telemetry_enabled = isinstance(telemetry_config, dict) and telemetry_config.get("enabled") is True
     measurements = _normalise_measurements(
@@ -1104,11 +1179,13 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
             "dataset_version": evaluation["dataset_version"],
             "policy_id": evaluation.get("policy_id", "esx-ai-evaluator-release-1.0"),
             "required_dimensions": evaluation.get("required_dimensions", ["classification", "confidence"]),
-            "scorecard_type": "workflow_assurance" if adapter["type"] == "browser_journey" else "model_evaluation",
+            "scorecard_type": "workflow_assurance" if adapter["type"] == "browser_journey" else evaluation.get("scorecard_type", "decision_evaluation"),
+            "decision_task": evaluation.get("decision_task"),
             # Only cases that reached the application workflow feed quality metrics.
             "expected_labels": [item["expected_label"] for item in scored_cases],
             "predicted_labels": predicted_labels,
             "confidences": confidences,
+            "decision_observations": decision_observations,
             **measurements,
         },
     }

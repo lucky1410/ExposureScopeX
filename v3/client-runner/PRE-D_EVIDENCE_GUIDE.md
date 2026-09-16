@@ -85,6 +85,23 @@ the opaque `case_id`.
 
 ## Start with the lowest-effort option
 
+### Local decision evaluation
+
+Use **Decision evaluation** in `esx-eval setup` when the application can expose
+one local endpoint that invokes its real decision path. Import labelled cases
+with at least two expected labels. PRE-D sends `case_id` and `input`, then
+calculates accuracy, precision, recall, F1, and confidence calibration from
+the returned label and confidence. This is entirely local; it does not require
+an ExposureScopeX account or platform connection.
+
+Optional opaque `evidence_ids` and an `abstained` boolean support
+evidence-reference alignment and abstention checks. They are useful but do not
+prove that an answer is grounded. Groundedness requires local claim-support,
+citation-validity, and evidence-integrity observations.
+
+See [`DECISION_EVALUATION.md`](DECISION_EVALUATION.md) for the dataset and
+endpoint contract.
+
 ### Browser-only workflow evidence
 
 Use browser journeys when you need to prove that a user can sign in and reach a
@@ -157,6 +174,7 @@ Use this checklist before reading a local report as a release decision:
 | `MEASURED` | PRE-D received all required evidence and calculated the metric. | Review the score, sample size, evidence coverage, and limitations. |
 | `NOT MEASURABLE` | Required evidence is absent or incomplete. | Follow the report's named missing-evidence instruction. |
 | `NOT APPLICABLE` | The metric does not fit this run type. | Example: classification for a browser-only workflow plan. |
+| `NOT RUN` | This evidence layer was not connected for this plan. | Example: decision evaluation in a browser-only plan. |
 | `ASSERTION REVIEW` | A browser signal did not match. | Review the journey and signal; it is not automatically a product defect. |
 | `SESSION BLOCKED` | Authentication did not complete, so the workflow was not reached. | Repair the approved test session and run again. |
 

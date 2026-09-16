@@ -792,6 +792,11 @@ def report_command(args: argparse.Namespace) -> int:
         "schema_version": "esx-local-assurance-report-1.0", "status": "completed_locally",
         "package_id": package["package_id"], "runner_version": package["runner_version"],
         "subject": {"agent_id": package["evaluation"]["agent_id"], "subject_version": package["evaluation"]["subject_version"], "dataset_version": package["evaluation"]["dataset_version"]},
+        "evaluation": {
+            "scorecard_type": package["evaluation"].get("scorecard_type", "decision_evaluation"),
+            "decision_task": package["evaluation"].get("decision_task"),
+            "required_dimensions": package["evaluation"].get("required_dimensions", []),
+        },
         "metrics": metrics, "coverage": coverage, "execution": package.get("execution", {}), "assurance_graph": graph,
         "notice": "This Assurance Graph was assembled locally from the specified scope and evidence. It is not a shared release decision.",
     }

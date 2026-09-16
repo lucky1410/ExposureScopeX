@@ -1,0 +1,38 @@
+[
+  {
+    "case_id": "triage-001",
+    "input": {
+      "title": "Suspicious mailbox rule creation",
+      "signal_ids": ["signal-001", "signal-004"]
+    },
+    "expected": {
+      "label": "escalate",
+      "allowed_evidence_ids": ["signal-001", "signal-004"],
+      "must_abstain": false
+    }
+  },
+  {
+    "case_id": "triage-002",
+    "input": {
+      "title": "Known maintenance event",
+      "signal_ids": ["signal-018"]
+    },
+    "expected": {
+      "label": "do-not-escalate",
+      "allowed_evidence_ids": ["signal-018"],
+      "must_abstain": false
+    }
+  },
+  {
+    "case_id": "triage-003",
+    "input": {
+      "title": "Insufficient evidence for a verdict",
+      "signal_ids": []
+    },
+    "expected": {
+      "label": "needs-review",
+      "allowed_evidence_ids": [],
+      "must_abstain": true
+    }
+  }
+]

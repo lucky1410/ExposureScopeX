@@ -24,12 +24,12 @@ from esx_eval_runner.assurance import build_assurance_graph, build_coverage_mode
 from esx_eval_runner.browser import _local_only_session_state, validate_browser_adapter, validate_browser_case
 from esx_eval_runner.connectors import LocalEvidenceEmitter, langchain_callback, record_anthropic_message_usage, record_openai_response_usage
 from esx_eval_runner.discovery import discover_repository
-from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics
+from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics, decision_evidence_metrics
 from esx_eval_runner.preflight import lint_browser_plan
 from esx_eval_runner.profiles import build_cases
 from esx_eval_runner.report_html import render_local_report
 from esx_eval_runner.runner import RunnerError, _adapter_command, _browser_execution_summary, _browser_scored_inputs, _normalise_results, _verify_target_attestation, attach_local_measurements, build_package, canonical_json, read_json
-from esx_eval_runner.setup import _guided_setup_html_with_evidence, _probe_local_http_target, create_guided_plan, create_http_plan
+from esx_eval_runner.setup import _guided_setup_html_with_evidence, _pred_local_setup_html, _probe_local_http_target, create_guided_plan, create_http_plan
 from esx_eval_runner.telemetry import derive_telemetry_measurements, redact_otel_payload, telemetry_summary
 from esx_eval_runner.workflows import add_candidate_to_config, apply_reusable_pack, build_workflow_pack_catalog, export_reusable_pack
 
@@ -68,7 +68,7 @@ class LocalRunTests(unittest.TestCase):
             "coverage": {"executed": {"requested_case_count": 2, "case_count": 2, "blocked_case_count": 0, "failed_case_count": 1}, "measured": {"dimension_count": 1, "required_dimension_count": 1}, "discovered": {}, "approved": {}},
         }
         rendered = render_local_report(report)
-        self.assertIn("BROWSER-ONLY SMOKE SUMMARY", rendered)
+        self.assertIn("BROWSER WORKFLOW RESULT", rendered)
         self.assertIn("Coverage reached; signal needs refinement", rendered)
 
     def test_local_formulas_reveal_misclassification_and_overconfidence(self) -> None:
@@ -90,6 +90,23 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("two ground-truth classes", one_class["reason"])
         self.assertEqual(constant_confidence["measurement_status"], "measured")
         self.assertIn("identical", constant_confidence["limitations"][1])
+
+    def test_decision_evidence_measures_references_and_abstention_without_claiming_groundedness(self) -> None:
+        metric = decision_evidence_metrics([
+            {
+                "case_id": "triage-001", "expected_evidence_ids": ["sig-001", "sig-002"],
+                "observed_evidence_ids": ["sig-001", "sig-002"], "must_abstain": False, "abstained": False,
+            },
+            {
+                "case_id": "triage-002", "expected_evidence_ids": ["sig-003"],
+                "observed_evidence_ids": ["sig-003", "extra-001"], "must_abstain": True, "abstained": True,
+            },
+        ])
+        self.assertEqual(metric["measurement_status"], "measured")
+        self.assertEqual(metric["evidence_reference_precision"], 0.75)
+        self.assertEqual(metric["evidence_reference_recall"], 1.0)
+        self.assertEqual(metric["correct_abstention_rate"], 1.0)
+        self.assertIn("not a groundedness", metric["definition"])
 
     def test_default_starter_shape_can_contain_one_case(self) -> None:
         self.assertEqual(_starter_cases(1), [{
@@ -195,6 +212,65 @@ class LocalRunTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_decision_endpoint_receives_case_and_input_and_retains_only_safe_metadata(self) -> None:
+        class Target(BaseHTTPRequestHandler):
+            received: list[dict[str, object]] = []
+
+            def log_message(self, _format: str, *_args: object) -> None:
+                return
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers["Content-Length"])
+                request = json.loads(self.rfile.read(length))
+                Target.received.append(request)
+                response = json.dumps({
+                    "label": "escalate" if request["case_id"] == "triage-001" else "do-not-escalate",
+                    "confidence": 0.87,
+                    "evidence_ids": ["signal-001"],
+                    "abstained": False,
+                    "summary": "This raw explanation must not be retained by PRE-D.",
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Target)
+        worker = Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            config = {
+                "schema_version": "esx-client-runner-config-1.0",
+                "evaluation": {
+                    "name": "Decision target", "agent_id": "vini", "subject_version": "1.0.0",
+                    "project_key": "demo", "dataset_version": "triage-1.0",
+                    "scorecard_type": "decision_evaluation", "decision_task": "investigation-triage",
+                    "required_dimensions": ["classification", "confidence"],
+                },
+                "dataset": {"version": "triage-1.0", "cases": [
+                    {"case_id": "triage-001", "input": {"signal": "one"}, "expected_label": "escalate", "expected_evidence_ids": ["signal-001"], "must_abstain": False},
+                    {"case_id": "triage-002", "input": {"signal": "two"}, "expected_label": "do-not-escalate", "expected_evidence_ids": ["signal-001"], "must_abstain": False},
+                ]},
+                "adapter": {
+                    "type": "http_json_target", "url": f"http://127.0.0.1:{server.server_port}/eval",
+                    "request_mode": "decision", "response_label_path": "label",
+                    "response_confidence_path": "confidence", "response_evidence_ids_path": "evidence_ids",
+                    "response_abstained_path": "abstained", "target_environment": "local", "minimum_delay_ms": 0,
+                },
+            }
+            package = build_package(config)
+            self.assertEqual(Target.received, [
+                {"case_id": "triage-001", "input": {"signal": "one"}},
+                {"case_id": "triage-002", "input": {"signal": "two"}},
+            ])
+            self.assertEqual(package["evaluation"]["decision_observations"][0]["observed_evidence_ids"], ["signal-001"])
+            self.assertNotIn("summary", json.dumps(package))
+            self.assertEqual(calculate_local_metrics(package)["decision_evidence"]["measurement_status"], "measured")
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_zero_adapter_probe_suggests_redacted_response_fields(self) -> None:
         test_case = self
 
@@ -286,6 +362,63 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("esx-help", page)
         self.assertIn("TEST LOCAL CONNECTION", page)
         self.assertIn("/api/test-connection", page)
+
+    def test_pred_local_setup_makes_decision_evaluation_the_explicit_default(self) -> None:
+        page = _pred_local_setup_html("test-token", None)
+        self.assertIn("Decision evaluation is selected", page)
+        self.assertIn("Does not measure decision quality", page)
+        self.assertIn("optional local telemetry", page)
+        self.assertIn("LABELLED CASES", page)
+
+    def test_guided_decision_plan_uses_local_labels_and_metadata_only_evidence(self) -> None:
+        with TemporaryDirectory() as directory:
+            path, config = create_guided_plan({
+                "directory": str(Path(directory) / "decision"), "agent_id": "vini", "subject_version": "2.1.0",
+                "project_key": "demo", "url": "http://127.0.0.1:8000/eval", "profile": "custom",
+                "connection_type": "decision", "decision_task": "investigation-triage",
+                "response_label_path": "label", "response_confidence_path": "confidence",
+                "response_evidence_ids_path": "evidence_ids", "response_abstained_path": "abstained",
+                "decision_cases": [
+                    {"case_id": "triage-001", "input": {"signal": "one"}, "expected": {"label": "escalate", "allowed_evidence_ids": ["sig-001"], "must_abstain": False}},
+                    {"case_id": "triage-002", "input": {"signal": "two"}, "expected": {"label": "do-not-escalate", "must_abstain": True}},
+                ],
+                "confirm_plan": True,
+            })
+            self.assertEqual(config["adapter"]["request_mode"], "decision")
+            self.assertEqual(config["evaluation"]["scorecard_type"], "decision_evaluation")
+            self.assertEqual(config["dataset"]["cases"][0]["expected_evidence_ids"], ["sig-001"])
+            self.assertTrue(config["dataset"]["cases"][1]["must_abstain"])
+            self.assertIn("Decision evaluation contract", (path.parent / "README.md").read_text(encoding="utf-8"))
+
+    def test_direct_decision_endpoint_keeps_only_evidence_references_and_abstention_metadata(self) -> None:
+        config = {
+            "schema_version": "esx-client-runner-config-1.0",
+            "evaluation": {
+                "name": "VINI decision evaluation", "agent_id": "vini", "subject_version": "2.1.0",
+                "project_key": "demo", "dataset_version": "triage-1.0",
+                "required_dimensions": ["classification", "confidence"], "scorecard_type": "decision_evaluation",
+                "decision_task": "investigation-triage",
+            },
+            "dataset": {"version": "triage-1.0", "cases": [
+                {"case_id": "triage-001", "task": "investigation-triage", "input": {"signal": "one"}, "expected_label": "escalate", "expected_evidence_ids": ["sig-001"], "must_abstain": False},
+                {"case_id": "triage-002", "task": "investigation-triage", "input": {"signal": "two"}, "expected_label": "do-not-escalate", "must_abstain": True},
+            ]},
+            "adapter": {
+                "type": "http_json_target", "url": "http://127.0.0.1:8000/eval", "request_mode": "decision",
+                "response_label_path": "label", "response_confidence_path": "confidence",
+                "response_evidence_ids_path": "evidence_ids", "response_abstained_path": "abstained",
+                "target_environment": "local",
+            },
+        }
+        response = {"schema_version": "esx-client-adapter-response-2.0", "measurements": {}, "results": [
+            {"case_id": "triage-001", "predicted_label": "escalate", "confidence": 0.9, "evidence_ids": ["sig-001"], "abstained": False},
+            {"case_id": "triage-002", "predicted_label": "do-not-escalate", "confidence": 0.8, "evidence_ids": [], "abstained": True},
+        ]}
+        with patch("esx_eval_runner.runner._invoke_http_json_target", return_value=(response, 1, "a" * 64, "b" * 64)):
+            package = build_package(config)
+        self.assertEqual(package["evaluation"]["decision_observations"][0]["observed_evidence_ids"], ["sig-001"])
+        self.assertNotIn("summary", json.dumps(package))
+        self.assertEqual(calculate_local_metrics(package)["decision_evidence"]["measurement_status"], "measured")
 
     def test_guided_browser_setup_requires_loopback_and_a_visible_assertion(self) -> None:
         with TemporaryDirectory() as directory:
@@ -562,7 +695,8 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("MEASUREMENT READINESS", page)
         self.assertIn("Answer claims linked to cited evidence IDs", page)
         self.assertIn("Expected relevant document IDs", page)
-        self.assertIn("Browser journeys prove user-visible workflow behavior", page)
+        self.assertIn("PRE-D telemetry evidence", page)
+        self.assertIn("PRE-D local release readiness", page)
 
     def test_local_html_separates_browser_coverage_from_model_measurement(self) -> None:
         report = {
@@ -574,8 +708,9 @@ class LocalRunTests(unittest.TestCase):
             },
         }
         page = render_local_report(report)
-        self.assertIn("WORKFLOW ASSURANCE SCORECARD", page)
-        self.assertIn("MODEL AND EVIDENCE SCORECARD", page)
+        self.assertIn("BROWSER WORKFLOW RESULT", page)
+        self.assertIn("Decision evaluation", page)
+        self.assertIn("NOT RUN", page)
         self.assertNotIn("Classification quality", page)
 
     def test_discovery_scope_plan_and_assurance_graph_are_reviewable(self) -> None:

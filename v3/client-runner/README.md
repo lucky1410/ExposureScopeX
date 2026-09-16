@@ -11,16 +11,23 @@ For a plain-language explanation of the evidence each local metric needs, see
 organization's expected behavior from the redacted observations the application
 emits and explains why a metric may be `NOT MEASURABLE`.
 
+For labelled local AI and business decisions, start with
+[`DECISION_EVALUATION.md`](DECISION_EVALUATION.md). It shows the direct local
+endpoint and dataset contract used for accuracy, precision, recall, F1,
+confidence, evidence-reference, and abstention checks. A ready-to-import
+synthetic starter dataset is available at
+[`examples/decision-evaluation.sample.json`](examples/decision-evaluation.sample.json).
+
 Use the optional shared workflow only when a team wants ExposureScopeX to retain
 a governed release decision and formal report.
 
-## Recommended experience: test an application workflow
+## Recommended experience: evaluate local decisions
 
-For a normal AI web application, use the local setup page rather than writing
-an adapter. It generates an editable, versioned test plan for one real
-user-facing HTTP workflow. That workflow can orchestrate any number of
-internal agents, tools, retrievers, and models; the runner does not require a
-separate call for every internal agent.
+For a normal AI application, use the local setup page rather than writing an
+adapter. **Decision evaluation** is the default: it imports labelled local
+cases and calls one local endpoint that invokes the real product decision path.
+That path can orchestrate any number of internal agents, tools, retrievers, and
+models; PRE-D does not require a separate call for every internal agent.
 
 ```text
 esx-eval setup --directory ./my-application-evaluation
@@ -29,10 +36,11 @@ esx-eval setup --directory ./my-application-evaluation
 The page opens only on `127.0.0.1`. It can scan a local repository for
 framework, API-route, tool, retrieval, and observability hints without
 exporting source content. The customer explicitly selects what is in scope,
-then chooses a local JSON API or a loopback browser journey, reviews a
-`smoke`, `release`, `red_team`, or custom baseline, and creates the plan.
-Every generated case remains editable in `esx-eval.json`; teams can add their
-own product, domain, and organization-policy cases.
+then chooses a local decision API, generic JSON API, or loopback browser
+journey. Decision setup imports a labelled dataset and maps response fields
+without requiring users to type JSON paths. Generic API profiles remain
+available for baseline checks, and browser journeys remain available for
+protected UI coverage.
 
 Discovery does not treat architecture documents, backlog items, comments, or
 plain text as implemented technology. Each finding identifies whether it came
@@ -47,13 +55,14 @@ Graph. Planned advanced checks are clearly shown as `NOT MEASURABLE` until
 compatible redacted local evidence is available; the runner never invents a
 score.
 
-For the normal zero-adapter path, enter a loopback API URL and select **Test
-local connection**. The setup page sends one fixed harmless JSON request,
-shows a value-redacted response structure, and suggests the outcome and
-confidence fields for the customer to confirm. Users do not need to understand
-or type JSON paths such as `decision.label`. The endpoint must accept a POST
-body shaped like `{"message": "..."}` and return a text outcome plus a numeric
-confidence between `0` and `1`.
+For the normal zero-adapter decision path, enter a loopback decision API URL,
+import labelled cases, and select **Test local connection**. The setup page
+sends one fixed harmless request, shows a value-redacted response structure,
+and suggests label, confidence, evidence-ID, and abstention fields for the
+customer to confirm. The decision endpoint receives
+`{"case_id": "...", "input": {...}}` and returns a text label plus a numeric
+confidence between `0` and `1`. See `DECISION_EVALUATION.md` for the complete
+local contract.
 
 The automatic connection check accepts loopback URLs only. A non-local staging
 target remains an advanced, managed configuration: it requires HTTPS, mTLS,
@@ -294,7 +303,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.8.0"
+   $version = "0.9.0"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -306,7 +315,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
    On macOS or Linux, the equivalent install command is:
 
    ```bash
-   python3 -m pip install ./exposurescopex_eval_runner-0.8.0-py3-none-any.whl
+   python3 -m pip install ./exposurescopex_eval_runner-0.9.0-py3-none-any.whl
    ```
 
 4. Start a local test copy of the AI application. It needs one endpoint that
