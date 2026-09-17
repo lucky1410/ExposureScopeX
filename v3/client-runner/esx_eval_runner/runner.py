@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import hashlib
 import ipaddress
 import json
+import math
 from pathlib import Path
 import re
 import ssl
@@ -59,17 +60,26 @@ class RunnerError(RuntimeError):
 
 
 def canonical_json(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False,
+    ).encode("utf-8")
 
 
 def sha256(value: object) -> str:
     return hashlib.sha256(canonical_json(value)).hexdigest()
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard number {value}")
+
+
 def read_json(path: str | Path) -> dict[str, Any]:
     try:
-        loaded = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        loaded = json.loads(
+            Path(path).read_text(encoding="utf-8"),
+            parse_constant=_reject_json_constant,
+        )
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise RunnerError(f"Cannot read JSON file: {path}") from exc
     if not isinstance(loaded, dict):
         raise RunnerError("JSON document must be an object")
@@ -568,7 +578,10 @@ def _normalise_results(
             raise RunnerError("Every adapter result needs a non-empty predicted_label")
         _safe_reference(item["predicted_label"], "adapter predicted_label")
         confidence = item.get("confidence")
-        if require_confidence and (not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or confidence < 0 or confidence > 1):
+        if require_confidence and (
+            not isinstance(confidence, (int, float)) or isinstance(confidence, bool)
+            or not math.isfinite(float(confidence)) or confidence < 0 or confidence > 1
+        ):
             raise RunnerError("Every adapter result confidence must be a number between 0 and 1")
         by_case[item["case_id"]] = item
     expected_ids = {item["case_id"] for item in cases}
@@ -657,7 +670,10 @@ def _boolean(value: object, field: str) -> bool:
 
 
 def _score(value: object, field: str) -> float:
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0 or value > 1:
+    if (
+        not isinstance(value, (int, float)) or isinstance(value, bool)
+        or not math.isfinite(float(value)) or value < 0 or value > 1
+    ):
         raise RunnerError(f"{field} must be a number between 0 and 1")
     return float(value)
 
@@ -669,7 +685,10 @@ def _non_negative_integer(value: object, field: str) -> int:
 
 
 def _non_negative_number(value: object, field: str) -> float:
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+    if (
+        not isinstance(value, (int, float)) or isinstance(value, bool)
+        or not math.isfinite(float(value)) or value < 0
+    ):
         raise RunnerError(f"{field} must be a non-negative number")
     return float(value)
 
@@ -1102,6 +1121,37 @@ def _github_source(token: str) -> dict[str, Any]:
     }
 
 
+def _dataset_health(cases: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize benchmark quality without retaining any case inputs."""
+    labels: dict[str, int] = {}
+    fingerprints: list[str] = []
+    for case in cases:
+        label = str(case["expected_label"])
+        labels[label] = labels.get(label, 0) + 1
+        fingerprints.append(sha256(case["input"]))
+    sample_size = len(cases)
+    duplicate_input_count = sample_size - len(set(fingerprints))
+    majority_rate = max(labels.values()) / sample_size if sample_size else 0.0
+    warnings: list[str] = []
+    if sample_size < 20:
+        warnings.append("Fewer than 20 labelled cases; treat aggregate metrics as an early local signal, not a stable release estimate.")
+    if len(labels) < 2:
+        warnings.append("Only one expected class is represented; classification and calibration quality cannot be validated.")
+    if majority_rate > 0.8:
+        warnings.append("More than 80% of cases share one expected class; macro metrics and per-class results require careful review.")
+    if duplicate_input_count:
+        warnings.append(f"{duplicate_input_count} case input(s) duplicate another case and may inflate apparent coverage.")
+    return {
+        "sample_size": sample_size,
+        "class_count": len(labels),
+        "class_distribution": labels,
+        "majority_class_rate": round(majority_rate, 6),
+        "duplicate_input_count": duplicate_input_count,
+        "unique_case_id_count": len({str(case["case_id"]) for case in cases}),
+        "warnings": warnings,
+    }
+
+
 def build_package(config: dict[str, Any], *, github_oidc_token: str | None = None) -> dict[str, Any]:
     evaluation, cases, adapter = _validate_config(config)
     evaluation = dict(evaluation)
@@ -1182,9 +1232,11 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
             "scorecard_type": "workflow_assurance" if adapter["type"] == "browser_journey" else evaluation.get("scorecard_type", "decision_evaluation"),
             "decision_task": evaluation.get("decision_task"),
             # Only cases that reached the application workflow feed quality metrics.
+            "case_ids": [item["case_id"] for item in scored_cases],
             "expected_labels": [item["expected_label"] for item in scored_cases],
             "predicted_labels": predicted_labels,
             "confidences": confidences,
+            "dataset_health": _dataset_health(scored_cases),
             "decision_observations": decision_observations,
             **measurements,
         },

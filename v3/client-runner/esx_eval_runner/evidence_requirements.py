@@ -39,7 +39,7 @@ METRIC_REQUIREMENTS: dict[str, dict[str, str]] = {
         "source": "Local decision endpoint or adapter response metadata.",
     },
     "decision_evidence": {
-        "title": "Decision evidence and abstention",
+        "title": "Decision evidence alignment and abstention",
         "user_supplies": "Expected allowed evidence IDs and/or whether the correct outcome must abstain for each relevant case.",
         "application_emits": "Opaque evidence IDs and/or an abstained true/false value for the same case.",
         "minimum": "At least one case with an explicit evidence or abstention expectation. This measures reference alignment and abstention, not groundedness.",
@@ -391,8 +391,17 @@ def build_measurement_readiness(
         reason = ""
         if isinstance(metric, dict) and isinstance(metric.get("reason"), str):
             reason = metric["reason"]
+        trust_status = (
+            str(metric.get("trust_status", "missing"))
+            if isinstance(metric, dict) else "missing"
+        )
         if status == "measured":
-            next_step = "This metric was calculated from validated local evidence. Review its sample size and limitations before using it as a decision input."
+            if isinstance(metric, dict) and metric.get("representativeness") == "non_representative":
+                next_step = "Replace the all-zero usage observations with representative local execution telemetry before using this result as a decision input."
+            elif trust_status == "declared":
+                next_step = "This metric is structurally valid but target-declared. Do not present it as independently verified without a supported local validation source."
+            else:
+                next_step = "This metric was calculated from locally verified evidence. Review its sample size and limitations before using it as a decision input."
         elif status == "not_applicable":
             next_step = "This plan does not collect this evidence type. Use the matching local connection or test pack before expecting this score."
         elif status == "not_requested":
@@ -403,11 +412,15 @@ def build_measurement_readiness(
             "metric": name,
             "title": requirement["title"],
             "status": status,
+            "trust_status": trust_status,
             "reason": reason,
             "user_supplies": requirement["user_supplies"],
             "application_emits": requirement["application_emits"],
             "minimum": requirement["minimum"],
-            "source": requirement["source"],
+            "source": (
+                str(metric.get("evidence_source"))
+                if isinstance(metric, dict) and metric.get("evidence_source") else requirement["source"]
+            ),
             "next_step": next_step,
         })
     return entries

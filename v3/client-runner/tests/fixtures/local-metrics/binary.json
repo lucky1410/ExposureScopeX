@@ -1,0 +1,6 @@
+{
+  "case_ids": ["binary-001", "binary-002", "binary-003", "binary-004"],
+  "expected": ["safe", "unsafe", "safe", "unsafe"],
+  "predicted": ["safe", "safe", "unsafe", "unsafe"],
+  "confidences": [0.9, 0.8, 0.4, 0.2]
+}

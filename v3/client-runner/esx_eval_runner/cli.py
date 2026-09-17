@@ -16,10 +16,10 @@ from urllib.request import Request, urlopen
 from .audit import append_audit_event, verify_audit_log
 from .assurance import build_assurance_graph, build_coverage_model, build_risk_plan, create_scope
 from .evidence_requirements import (
-    build_measurement_readiness, inspect_evidence_preflight,
+    build_measurement_readiness, inspect_evidence_preflight, metric_names,
     render_evidence_requirements_markdown,
 )
-from .local_metrics import calculate_local_metrics
+from .local_metrics import calculate_local_metrics, summarize_metric_trust
 from .discovery import discover_repository
 from .report_html import render_local_report
 from .runner import RunnerError, attach_local_measurements, build_package, generate_keypair, read_json, sha256, sign_package
@@ -514,7 +514,9 @@ def _metric_line(title: str, metrics: dict[str, object], fields: list[tuple[str,
             values.append(f"{label}: {value:.3f}")
         else:
             values.append(f"{label}: {value}")
-    print(f"{title}: " + " | ".join(values))
+    trust = "VERIFIED" if metrics.get("trust_status") == "verified" else "DECLARED"
+    representative = " | NON-REPRESENTATIVE" if metrics.get("representativeness") == "non_representative" else ""
+    print(f"[{trust}] {title}: " + " | ".join(values) + representative)
 
 
 def _print_advanced_metrics(metrics: dict[str, dict[str, object]], dimensions: list[str]) -> None:
@@ -553,6 +555,14 @@ def _print_local_results(config: dict[str, object], package: dict[str, object], 
     print("Status: COMPLETED LOCALLY (not uploaded; not a platform release decision)")
     print(f"Subject: {evaluation['agent_id']} {evaluation['subject_version']}")
     print(f"Dataset: {evaluation['dataset_version']}")
+    active_names = metric_names(metrics, evaluation["required_dimensions"])
+    trust_summary = summarize_metric_trust(metrics, active_names)
+    print(
+        "Metric trust: "
+        f"{trust_summary['verified']} verified | "
+        f"{trust_summary['declared']} declared | "
+        f"{trust_summary['missing']} missing"
+    )
     is_browser_workflow = execution.get("adapter_type") == "browser_journey"
     if is_browser_workflow:
         workflow = metrics["workflow_coverage"]
@@ -573,6 +583,10 @@ def _print_local_results(config: dict[str, object], package: dict[str, object], 
         print(f"Classification: NOT MEASURABLE - {classification['reason']}")
     if not is_browser_workflow and confidence["measurement_status"] == "measured":
         print(f"Brier score: {confidence['correctness_brier_score']:.6f} | Expected calibration error: {confidence['expected_calibration_error']:.6f}")
+        if confidence["expected_calibration_error"] > 0.15:
+            print("Confidence warning: calibration error requires review before release, even when classification accuracy is high.")
+        if confidence.get("confidence_diversity_warning"):
+            print(f"Confidence warning: only {confidence['unique_confidence_count']} unique confidence value(s) were observed; at least 5 are needed.")
     elif not is_browser_workflow:
         print(f"Confidence: NOT MEASURABLE - {confidence['reason']}")
     print(f"Duration: {execution['duration_ms']} ms | Required metrics: {', '.join(evaluation['required_dimensions'])}")
@@ -739,7 +753,7 @@ def run_command(args: argparse.Namespace) -> int:
     coverage = build_coverage_model(package, local_metrics, discovery=discovery, scope=scope)
     report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.json")
     report = {
-        "schema_version": "esx-local-evaluation-report-1.0",
+        "schema_version": "esx-local-evaluation-report-1.1",
         "status": "completed_locally",
         "package_id": package["package_id"],
         "runner_version": package["runner_version"],
@@ -752,8 +766,13 @@ def run_command(args: argparse.Namespace) -> int:
             "scorecard_type": package["evaluation"].get("scorecard_type", "decision_evaluation"),
             "decision_task": package["evaluation"].get("decision_task"),
             "required_dimensions": package["evaluation"].get("required_dimensions", []),
+            "dataset_health": package["evaluation"].get("dataset_health", {}),
         },
         "metrics": local_metrics,
+        "metric_trust_summary": summarize_metric_trust(
+            local_metrics,
+            metric_names(local_metrics, package["evaluation"].get("required_dimensions", [])),
+        ),
         "measurement_readiness": measurement_readiness,
         "evidence_preflight": evidence_preflight,
         "coverage": coverage,
@@ -907,7 +926,10 @@ def report_command(args: argparse.Namespace) -> int:
         )
         package = attach_local_measurements(package, measurements, provenance)
     plan = _optional_json(plan_path)
-    metrics = _planned_metrics(calculate_local_metrics(package), plan)
+    try:
+        metrics = _planned_metrics(calculate_local_metrics(package), plan)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RunnerError(f"Local package metric inputs are invalid: {exc}") from exc
     discovery = _optional_json(discovery_path)
     scope = _optional_json(scope_path)
     graph = build_assurance_graph(
@@ -920,15 +942,20 @@ def report_command(args: argparse.Namespace) -> int:
         if config_path else None
     )
     report = {
-        "schema_version": "esx-local-assurance-report-1.0", "status": "completed_locally",
+        "schema_version": "esx-local-assurance-report-1.1", "status": "completed_locally",
         "package_id": package["package_id"], "runner_version": package["runner_version"],
         "subject": {"agent_id": package["evaluation"]["agent_id"], "subject_version": package["evaluation"]["subject_version"], "dataset_version": package["evaluation"]["dataset_version"]},
         "evaluation": {
             "scorecard_type": package["evaluation"].get("scorecard_type", "decision_evaluation"),
             "decision_task": package["evaluation"].get("decision_task"),
             "required_dimensions": package["evaluation"].get("required_dimensions", []),
+            "dataset_health": package["evaluation"].get("dataset_health", {}),
         },
         "metrics": metrics,
+        "metric_trust_summary": summarize_metric_trust(
+            metrics,
+            metric_names(metrics, package["evaluation"].get("required_dimensions", [])),
+        ),
         "measurement_readiness": build_measurement_readiness(
             metrics, package["evaluation"].get("required_dimensions", []),
         ),

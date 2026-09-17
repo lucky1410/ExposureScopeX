@@ -12,6 +12,9 @@ import math
 from typing import Any
 
 
+METRIC_CALCULATION_VERSION = "pred-local-metrics-1.0"
+
+
 def _ratio(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator else 0.0
 
@@ -52,7 +55,44 @@ def claims_metrics(claims: list[dict[str, Any]] | None) -> dict[str, Any]:
     }
 
 
-def classification_metrics(expected: list[str], predicted: list[str]) -> dict[str, Any]:
+def _validate_decision_inputs(
+    expected: list[str], predicted: list[str],
+    confidences: list[float] | None = None, case_ids: list[str] | None = None,
+) -> None:
+    if not isinstance(expected, list) or not isinstance(predicted, list):
+        raise ValueError("expected and predicted labels must be lists")
+    if len(expected) != len(predicted):
+        raise ValueError("expected and predicted labels must have equal lengths")
+    if any(not isinstance(label, str) or not label for label in [*expected, *predicted]):
+        raise ValueError("expected and predicted labels must be non-empty strings")
+    if confidences is not None:
+        if not isinstance(confidences, list) or len(confidences) != len(expected):
+            raise ValueError("confidence values must cover every labelled case")
+        if any(
+            not isinstance(value, (int, float)) or isinstance(value, bool)
+            or not math.isfinite(float(value)) or value < 0 or value > 1
+            for value in confidences
+        ):
+            raise ValueError("confidence values must be finite numbers between 0 and 1")
+    if case_ids is not None:
+        if (
+            not isinstance(case_ids, list) or len(case_ids) != len(expected)
+            or any(not isinstance(item, str) or not item for item in case_ids)
+            or len(set(case_ids)) != len(case_ids)
+        ):
+            raise ValueError("case IDs must be unique non-empty strings covering every labelled case")
+
+
+def _case_references(expected: list[str], case_ids: list[str] | None) -> list[str]:
+    if case_ids is not None:
+        return case_ids
+    return [f"position-{index:04d}" for index in range(1, len(expected) + 1)]
+
+
+def classification_metrics(
+    expected: list[str], predicted: list[str], case_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    _validate_decision_inputs(expected, predicted, case_ids=case_ids)
     if not expected:
         return _unavailable(
             "No cases reached an application workflow; classification quality is unavailable.",
@@ -64,6 +104,7 @@ def classification_metrics(expected: list[str], predicted: list[str]) -> dict[st
         matrix[actual][guess] += 1
     total = len(expected)
     per_class: dict[str, dict[str, Any]] = {}
+    raw_per_class: dict[str, dict[str, float]] = {}
     for label in labels:
         tp = matrix[label][label]
         fp = sum(matrix[actual][label] for actual in labels if actual != label)
@@ -72,19 +113,27 @@ def classification_metrics(expected: list[str], predicted: list[str]) -> dict[st
         support = sum(matrix[label].values())
         precision = _ratio(tp, tp + fp)
         recall = _ratio(tp, tp + fn)
+        f1 = _ratio(2 * precision * recall, precision + recall)
+        false_positive_rate = _ratio(fp, fp + tn)
+        false_negative_rate = _ratio(fn, fn + tp)
+        raw_per_class[label] = {
+            "precision": precision, "recall": recall, "f1": f1,
+            "false_positive_rate": false_positive_rate,
+            "false_negative_rate": false_negative_rate,
+        }
         per_class[label] = {
             "tp": tp, "fp": fp, "fn": fn, "tn": tn, "support": support,
             "precision": _rounded(precision), "recall": _rounded(recall),
-            "f1": _rounded(_ratio(2 * precision * recall, precision + recall)),
-            "false_positive_rate": _rounded(_ratio(fp, fp + tn)),
-            "false_negative_rate": _rounded(_ratio(fn, fn + tp)),
+            "f1": _rounded(f1),
+            "false_positive_rate": _rounded(false_positive_rate),
+            "false_negative_rate": _rounded(false_negative_rate),
         }
 
     def macro(metric: str) -> float:
-        return _ratio(sum(item[metric] for item in per_class.values()), len(labels))
+        return _ratio(sum(item[metric] for item in raw_per_class.values()), len(labels))
 
     def weighted(metric: str) -> float:
-        return _ratio(sum(item[metric] * item["support"] for item in per_class.values()), total)
+        return _ratio(sum(raw_per_class[label][metric] * per_class[label]["support"] for label in labels), total)
 
     result = {
         "labels": labels,
@@ -99,13 +148,27 @@ def classification_metrics(expected: list[str], predicted: list[str]) -> dict[st
         "weighted_f1": _rounded(weighted("f1")),
         "per_class": per_class,
         "sample_size": total,
+        "calculation_version": METRIC_CALCULATION_VERSION,
+        "case_results": [
+            {
+                "case_id": case_id, "expected_label": actual,
+                "predicted_label": guess, "correct": actual == guess,
+            }
+            for case_id, actual, guess in zip(
+                _case_references(expected, case_ids), expected, predicted, strict=True,
+            )
+        ],
     }
     if len(set(expected)) < 2:
         return _unavailable("At least two ground-truth classes are required for classification quality metrics.", **result)
     return {"measurement_status": "measured", **result}
 
 
-def confidence_metrics(expected: list[str], predicted: list[str], confidences: list[float]) -> dict[str, Any]:
+def confidence_metrics(
+    expected: list[str], predicted: list[str], confidences: list[float],
+    case_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    _validate_decision_inputs(expected, predicted, confidences, case_ids)
     if not expected:
         return _unavailable(
             "No cases reached an application workflow; confidence calibration is unavailable.",
@@ -129,27 +192,45 @@ def confidence_metrics(expected: list[str], predicted: list[str], confidences: l
         average = _ratio(sum(confidences[position] for position in members), len(members))
         ece += _ratio(len(members), len(confidences)) * abs(accuracy - average)
         bins.append({"lower": lower, "upper": upper, "count": len(members), "accuracy": _rounded(accuracy), "average_confidence": _rounded(average)})
+    unique_confidence_count = len(set(confidences))
+    rounded_ece = _rounded(ece)
+    calibration_warning = rounded_ece > 0.15
+    confidence_diversity_warning = unique_confidence_count < 5
     return {
         "measurement_status": "measured",
         "sample_size": len(expected),
         "ground_truth_class_count": len(set(expected)),
-        "unique_confidence_count": len(set(confidences)),
+        "unique_confidence_count": unique_confidence_count,
         "correct_outcome_count": int(sum(correctness)),
         "incorrect_outcome_count": len(correctness) - int(sum(correctness)),
         "correctness_brier_score": _rounded(brier),
-        "expected_calibration_error": _rounded(ece),
+        "expected_calibration_error": rounded_ece,
         "bins": bins,
+        "calibration_warning": calibration_warning,
+        "confidence_diversity_warning": confidence_diversity_warning,
+        "case_results": [
+            {
+                "case_id": case_id, "expected_label": actual,
+                "predicted_label": guess, "confidence": confidence,
+                "correct": actual == guess,
+                "overconfident_failure": actual != guess and confidence >= 0.8,
+            }
+            for case_id, actual, guess, confidence in zip(
+                _case_references(expected, case_ids), expected, predicted, confidences, strict=True,
+            )
+        ],
         "limitations": [
             *(
                 ["Fewer than 20 labelled cases: the formula is exact for this set, but not a stable release-quality estimate."]
                 if len(expected) < 20 else []
             ),
             *(
-                ["All submitted confidence values were identical, so this run cannot show calibration behavior across confidence levels."]
-                if len(set(confidences)) < 2 else []
+                [f"Only {unique_confidence_count} unique confidence value(s) were observed; at least 5 are needed to assess confidence behavior across useful levels."]
+                if confidence_diversity_warning else []
             ),
         ],
         "definition": "Calibration of observed model confidence against labelled prediction correctness.",
+        "calculation_version": METRIC_CALCULATION_VERSION,
     }
 
 
@@ -425,27 +506,123 @@ def cost_efficiency_metrics(cost: dict[str, Any] | None, expected: list[str], pr
     }
 
 
+def _annotate_metric_trust(
+    package: dict[str, Any], metrics: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """State what PRE-D verified versus what the target merely declared.
+
+    Schema validation makes evidence structurally usable; it does not make a
+    target-provided semantic judgment independent. Trace-derived operational
+    facts can be verified locally, while semantic support/outcome assertions
+    remain declared until PRE-D independently validates them.
+    """
+    execution = package.get("execution", {})
+    execution = execution if isinstance(execution, dict) else {}
+    local_evidence = execution.get("local_evidence", {})
+    local_evidence = local_evidence if isinstance(local_evidence, dict) else {}
+    telemetry_dimensions = {
+        item for item in local_evidence.get("derived_dimensions", [])
+        if isinstance(item, str)
+    }
+    baseline_verified = {
+        "workflow_coverage", "classification", "confidence", "decision_evidence",
+    }
+    trace_verified = {
+        "trajectory", "tool_use", "judge_agreement", "reproducibility",
+    }
+    annotated: dict[str, dict[str, Any]] = {}
+    for name, raw_metric in metrics.items():
+        metric = dict(raw_metric)
+        if metric.get("measurement_status") != "measured":
+            metric.update({
+                "trust_status": "missing",
+                "evidence_source": "No complete compatible local evidence was measured.",
+                "representativeness": "not_applicable",
+            })
+            annotated[name] = metric
+            continue
+
+        telemetry_derived = name in telemetry_dimensions
+        cost_is_metered = name == "cost_efficiency" and metric.get("cost_source") == "metered"
+        if name in baseline_verified:
+            trust_status = "verified"
+            evidence_source = {
+                "workflow_coverage": "Observed directly by the local PRE-D browser runner.",
+                "classification": "Calculated locally from labelled expectations and returned decisions.",
+                "confidence": "Calculated locally from decision correctness and returned confidence values.",
+                "decision_evidence": "Calculated locally from expected and returned evidence IDs and abstention outcomes.",
+            }[name]
+        elif telemetry_derived and (name in trace_verified or cost_is_metered):
+            trust_status = "verified"
+            evidence_source = "Calculated from redacted events observed by the local PRE-D telemetry collector."
+        else:
+            trust_status = "declared"
+            evidence_source = (
+                "Calculated from schema-validated semantic evidence emitted by the target through local telemetry."
+                if telemetry_derived else
+                "Calculated from schema-validated measurements declared by the target adapter."
+            )
+
+        metric["trust_status"] = trust_status
+        metric["evidence_source"] = evidence_source
+        metric["representativeness"] = "representative"
+        if name == "cost_efficiency" and all(
+            metric.get(field) == 0
+            for field in (
+                "total_cost_usd", "total_tokens", "median_latency_ms",
+                "p95_latency_ms", "max_latency_ms",
+            )
+        ):
+            metric["trust_status"] = "declared"
+            metric["representativeness"] = "non_representative"
+            limitations = metric.get("limitations", [])
+            limitations = list(limitations) if isinstance(limitations, list) else []
+            limitations.append(
+                "All cost, token, and latency observations are zero; this result is structurally valid but not representative of real execution usage."
+            )
+            metric["limitations"] = limitations
+        annotated[name] = metric
+    return annotated
+
+
+def summarize_metric_trust(
+    metrics: dict[str, dict[str, Any]], names: list[str] | None = None,
+) -> dict[str, int]:
+    """Count active metrics by evidence trust without inflating missing scores."""
+    selected = names if names is not None else list(metrics)
+    counts = {"verified": 0, "declared": 0, "missing": 0, "non_representative": 0}
+    for name in selected:
+        metric = metrics.get(name, {})
+        status = metric.get("trust_status", "missing") if isinstance(metric, dict) else "missing"
+        counts[status if status in counts else "missing"] += 1
+        if isinstance(metric, dict) and metric.get("representativeness") == "non_representative":
+            counts["non_representative"] += 1
+    return counts
+
+
 def calculate_local_metrics(package: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Calculate every supported local metric from an already validated package."""
     evaluation = package["evaluation"]
     expected = evaluation["expected_labels"]
     predicted = evaluation["predicted_labels"]
     confidences = evaluation["confidences"]
+    case_ids = evaluation.get("case_ids")
+    case_ids = case_ids if isinstance(case_ids, list) else None
     execution = package.get("execution")
     execution = execution if isinstance(execution, dict) else None
     is_browser_journey = bool(execution and execution.get("adapter_type") == "browser_journey")
     # Packages keep validated measurements directly on evaluation so their
     # schema remains compatible with the optional shared-platform upload.
     measurements = evaluation
-    return {
+    metrics = {
         "workflow_coverage": workflow_coverage_metrics(execution),
         "classification": (
             _not_applicable("Browser pass/fail assertions are workflow evidence, not model-classification predictions.")
-            if is_browser_journey else classification_metrics(expected, predicted)
+            if is_browser_journey else classification_metrics(expected, predicted, case_ids)
         ),
         "confidence": (
             _not_applicable("The browser runner does not observe model confidence and never infers it from an assertion result.")
-            if is_browser_journey else confidence_metrics(expected, predicted, confidences)
+            if is_browser_journey else confidence_metrics(expected, predicted, confidences, case_ids)
         ),
         "decision_evidence": decision_evidence_metrics(measurements.get("decision_observations")),
         "groundedness": claims_metrics(measurements.get("claims")),
@@ -458,3 +635,4 @@ def calculate_local_metrics(package: dict[str, Any]) -> dict[str, dict[str, Any]
         "reproducibility": _agreement(measurements.get("reproducibility"), "run_id", "run_count", "Repeated-run agreement measures stability, not correctness."),
         "cost_efficiency": cost_efficiency_metrics(measurements.get("cost_efficiency"), expected, predicted),
     }
+    return _annotate_metric_trust(package, metrics)

@@ -32,13 +32,14 @@ from esx_eval_runner.local_metrics import calculate_local_metrics, classificatio
 from esx_eval_runner.preflight import lint_browser_plan
 from esx_eval_runner.profiles import build_cases
 from esx_eval_runner.report_html import render_local_report
-from esx_eval_runner.runner import RunnerError, _adapter_command, _browser_execution_summary, _browser_scored_inputs, _normalise_results, _verify_target_attestation, attach_local_measurements, build_package, canonical_json, read_json
+from esx_eval_runner.runner import RunnerError, _adapter_command, _browser_execution_summary, _browser_scored_inputs, _dataset_health, _normalise_results, _verify_target_attestation, attach_local_measurements, build_package, canonical_json, read_json
 from esx_eval_runner.setup import _guided_setup_html_with_evidence, _pred_local_setup_html, _probe_local_http_target, create_guided_plan, create_http_plan
 from esx_eval_runner.telemetry import derive_telemetry_measurements, redact_otel_payload, telemetry_summary
 from esx_eval_runner.workflows import add_candidate_to_config, apply_reusable_pack, build_workflow_pack_catalog, export_reusable_pack
 
 
 ROOT = Path(__file__).resolve().parents[1]
+METRIC_FIXTURES = ROOT / "tests" / "fixtures" / "local-metrics"
 ADAPTER_COMMAND = [
     sys.executable,
     "-c",
@@ -76,28 +77,172 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("Coverage reached; signal needs refinement", rendered)
 
     def test_local_formulas_reveal_misclassification_and_overconfidence(self) -> None:
-        expected = ["safe", "unsafe", "safe", "unsafe"]
-        predicted = ["safe", "safe", "unsafe", "unsafe"]
-        classification = classification_metrics(expected, predicted)
-        confidence = confidence_metrics(expected, predicted, [0.9, 0.8, 0.4, 0.2])
+        fixture = read_json(METRIC_FIXTURES / "binary.json")
+        classification = classification_metrics(fixture["expected"], fixture["predicted"], fixture["case_ids"])
+        confidence = confidence_metrics(fixture["expected"], fixture["predicted"], fixture["confidences"], fixture["case_ids"])
         self.assertEqual(classification["accuracy"], 0.5)
         self.assertEqual(classification["macro_f1"], 0.5)
         self.assertEqual(confidence["correctness_brier_score"], 0.3625)
         self.assertEqual(confidence["expected_calibration_error"], 0.525)
+        self.assertTrue(confidence["calibration_warning"])
+        self.assertTrue(confidence["confidence_diversity_warning"])
+        self.assertEqual(
+            [item["case_id"] for item in confidence["case_results"] if item["overconfident_failure"]],
+            ["binary-002"],
+        )
+        self.assertEqual(classification["calculation_version"], "pred-local-metrics-1.0")
+        self.assertEqual(confidence["calculation_version"], "pred-local-metrics-1.0")
+
+    def test_decision_metric_inputs_reject_non_finite_and_misaligned_evidence(self) -> None:
+        with self.assertRaisesRegex(ValueError, "finite numbers"):
+            confidence_metrics(["safe", "unsafe"], ["safe", "unsafe"], [float("nan"), 0.9])
+        with self.assertRaisesRegex(ValueError, "finite numbers"):
+            confidence_metrics(["safe", "unsafe"], ["safe", "unsafe"], [float("inf"), 0.9])
+        with self.assertRaisesRegex(ValueError, "equal lengths"):
+            classification_metrics(["safe", "unsafe"], ["safe"])
+        with self.assertRaisesRegex(ValueError, "case IDs"):
+            classification_metrics(["safe", "unsafe"], ["safe", "unsafe"], ["same", "same"])
+
+    def test_json_evidence_rejects_non_standard_numbers(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.json"
+            path.write_text('{"confidence": NaN}', encoding="utf-8")
+            with self.assertRaisesRegex(RunnerError, "Cannot read JSON"):
+                read_json(path)
+        with self.assertRaises(ValueError):
+            canonical_json({"confidence": float("nan")})
+
+    def test_calibration_threshold_and_zero_one_bin_boundaries_are_deterministic(self) -> None:
+        threshold = confidence_metrics(
+            ["safe", "unsafe"], ["safe", "unsafe"], [0.85, 0.85],
+        )
+        self.assertEqual(threshold["expected_calibration_error"], 0.15)
+        self.assertFalse(threshold["calibration_warning"])
+
+        boundaries = confidence_metrics(
+            ["safe", "unsafe"], ["unsafe", "unsafe"], [0.0, 1.0],
+        )
+        self.assertEqual(boundaries["correctness_brier_score"], 0.0)
+        self.assertEqual(boundaries["expected_calibration_error"], 0.0)
+        self.assertEqual(sum(item["count"] for item in boundaries["bins"]), 2)
+
+    def test_macro_metrics_are_computed_before_display_rounding(self) -> None:
+        expected = ["a", "a", "a", "b", "b", "c", "b"]
+        predicted = ["b", "a", "b", "b", "c", "c", "c"]
+        metric = classification_metrics(expected, predicted)
+        self.assertEqual(metric["macro_precision"], 0.555556)
+
+    def test_metric_trust_separates_verified_declared_and_non_representative_results(self) -> None:
+        zero_usage = {
+            "case_id": "case-a", "input_tokens": 0, "output_tokens": 0,
+            "request_count": 1, "retry_count": 0, "tool_call_count": 0,
+            "cache_hit": False, "fallback_used": False, "cost_usd": 0.0,
+            "latency_ms": 0, "timed_out": False,
+        }
+        package = {
+            "execution": {"adapter_type": "command_json_v2"},
+            "evaluation": {
+                "required_dimensions": ["classification", "confidence", "groundedness", "trajectory", "cost_efficiency"],
+                "expected_labels": ["safe", "unsafe"],
+                "predicted_labels": ["safe", "safe"],
+                "confidences": [1.0, 1.0],
+                "decision_observations": [],
+                "claims": [{
+                    "claim_id": "claim-a", "evidence_ids": ["evidence-a"],
+                    "citations_valid": True, "evidence_integrity_valid": True,
+                    "entailment_score": 1.0,
+                }],
+                "trajectory": {
+                    "required_milestones": ["review"], "observed_milestones": ["review"],
+                    "action_count": 1, "redundant_actions": 0, "policy_violations": [],
+                    "scope_violations": [], "tool_misuse_events": [],
+                },
+                "cost_efficiency": {
+                    "cost_source": "provider_reported",
+                    "observations": [zero_usage, {**zero_usage, "case_id": "case-b"}],
+                },
+            },
+        }
+        metrics = calculate_local_metrics(package)
+        self.assertEqual(metrics["classification"]["trust_status"], "verified")
+        self.assertEqual(metrics["confidence"]["trust_status"], "verified")
+        self.assertEqual(metrics["groundedness"]["trust_status"], "declared")
+        self.assertEqual(metrics["trajectory"]["trust_status"], "declared")
+        self.assertEqual(metrics["cost_efficiency"]["representativeness"], "non_representative")
+
+        page = render_local_report({
+            "subject": {}, "execution": package["execution"],
+            "evaluation": {
+                "required_dimensions": package["evaluation"]["required_dimensions"],
+                "dataset_health": {
+                    "sample_size": 2, "class_count": 2,
+                    "class_distribution": {"safe": 1, "unsafe": 1},
+                    "duplicate_input_count": 0,
+                    "warnings": ["Fewer than 20 labelled cases."],
+                },
+            },
+            "metrics": metrics,
+        })
+        self.assertIn("These are not equally trustworthy", page)
+        self.assertIn("VERIFIED", page)
+        self.assertIn("DECLARED", page)
+        self.assertIn("NON-REPRESENTATIVE", page)
+        self.assertIn("Declared evidence support", page)
+        self.assertIn("Declared trajectory milestones", page)
+        self.assertIn("CALIBRATION WARNING", page)
+        self.assertIn("Evidence source", page)
+        self.assertIn("Action", page)
+        self.assertIn("DATASET HEALTH", page)
+        self.assertIn("DECISION DETAILS", page)
+        self.assertIn("Confusion matrix", page)
+        self.assertIn("Confidence calibration bins", page)
 
     def test_local_decision_metrics_match_a_hand_calculated_three_class_fixture(self) -> None:
         """Protect the scorecard math with values derived outside the runner."""
-        expected = ["a", "a", "b", "b", "c", "c"]
-        predicted = ["a", "b", "b", "c", "c", "a"]
-        confidences = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5]
-        classification = classification_metrics(expected, predicted)
-        confidence = confidence_metrics(expected, predicted, confidences)
+        fixture = read_json(METRIC_FIXTURES / "multiclass.json")
+        classification = classification_metrics(fixture["expected"], fixture["predicted"], fixture["case_ids"])
+        confidence = confidence_metrics(fixture["expected"], fixture["predicted"], fixture["confidences"], fixture["case_ids"])
         self.assertEqual(classification["accuracy"], 0.5)
         self.assertEqual(classification["macro_precision"], 0.5)
         self.assertEqual(classification["macro_recall"], 0.5)
         self.assertEqual(classification["macro_f1"], 0.5)
         self.assertEqual(confidence["correctness_brier_score"], 0.291667)
         self.assertEqual(confidence["expected_calibration_error"], 0.45)
+
+    def test_imbalanced_fixture_exposes_minority_class_failure(self) -> None:
+        fixture = read_json(METRIC_FIXTURES / "imbalanced.json")
+        metric = classification_metrics(fixture["expected"], fixture["predicted"], fixture["case_ids"])
+        self.assertEqual(metric["accuracy"], 0.9)
+        self.assertEqual(metric["macro_precision"], 0.45)
+        self.assertEqual(metric["macro_recall"], 0.5)
+        self.assertEqual(metric["macro_f1"], 0.473684)
+        self.assertEqual(metric["per_class"]["unsafe"]["recall"], 0.0)
+
+    def test_incomplete_fixture_stays_not_measurable(self) -> None:
+        fixture = read_json(METRIC_FIXTURES / "incomplete.json")
+        classification = classification_metrics(fixture["expected"], fixture["predicted"], fixture["case_ids"])
+        confidence = confidence_metrics(fixture["expected"], fixture["predicted"], fixture["confidences"], fixture["case_ids"])
+        self.assertEqual(classification["measurement_status"], "not_measurable")
+        self.assertEqual(confidence["measurement_status"], "not_measurable")
+
+    def test_poor_calibration_fixture_raises_both_confidence_warnings(self) -> None:
+        fixture = read_json(METRIC_FIXTURES / "poorly-calibrated.json")
+        metric = confidence_metrics(fixture["expected"], fixture["predicted"], fixture["confidences"], fixture["case_ids"])
+        self.assertEqual(metric["correctness_brier_score"], 0.725)
+        self.assertEqual(metric["expected_calibration_error"], 0.85)
+        self.assertTrue(metric["calibration_warning"])
+        self.assertTrue(metric["confidence_diversity_warning"])
+
+    def test_dataset_health_warns_about_small_imbalanced_duplicate_pack(self) -> None:
+        cases = [
+            {"case_id": f"case-{index}", "input": {"message": "same" if index < 2 else str(index)}, "expected_label": "safe" if index < 9 else "unsafe"}
+            for index in range(10)
+        ]
+        health = _dataset_health(cases)
+        self.assertEqual(health["sample_size"], 10)
+        self.assertEqual(health["class_distribution"], {"safe": 9, "unsafe": 1})
+        self.assertEqual(health["duplicate_input_count"], 1)
+        self.assertEqual(len(health["warnings"]), 3)
 
     def test_result_normalization_rejects_missing_case_results_and_invalid_confidence(self) -> None:
         cases = [
@@ -114,6 +259,12 @@ class LocalRunTests(unittest.TestCase):
                 {"case_id": "case-a", "predicted_label": "safe", "confidence": 0.9},
                 {"case_id": "other", "predicted_label": "unsafe", "confidence": 0.8},
             ]})
+        for invalid in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaisesRegex(RunnerError, "between 0 and 1"):
+                _normalise_results(cases, {"results": [
+                    {"case_id": "case-a", "predicted_label": "safe", "confidence": invalid},
+                    {"case_id": "case-b", "predicted_label": "unsafe", "confidence": 0.8},
+                ]})
 
     def test_one_class_cannot_claim_model_quality_and_constant_confidence_is_flagged(self) -> None:
         one_class = classification_metrics(["pass", "pass"], ["pass", "pass"])
@@ -123,7 +274,7 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(one_class["measurement_status"], "not_measurable")
         self.assertIn("two ground-truth classes", one_class["reason"])
         self.assertEqual(constant_confidence["measurement_status"], "measured")
-        self.assertIn("identical", constant_confidence["limitations"][1])
+        self.assertIn("unique confidence", constant_confidence["limitations"][1])
 
     def test_decision_evidence_measures_references_and_abstention_without_claiming_groundedness(self) -> None:
         metric = decision_evidence_metrics([
@@ -141,6 +292,13 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(metric["evidence_reference_recall"], 1.0)
         self.assertEqual(metric["correct_abstention_rate"], 1.0)
         self.assertIn("not a groundedness", metric["definition"])
+        report = render_local_report({
+            "subject": {},
+            "evaluation": {"required_dimensions": ["decision_evidence"]},
+            "metrics": {"decision_evidence": {**metric, "trust_status": "verified"}},
+        })
+        self.assertIn("Decision evidence alignment and abstention", report)
+        self.assertNotIn("hallucination score: 100", report.lower())
 
     def test_default_starter_shape_can_contain_one_case(self) -> None:
         self.assertEqual(_starter_cases(1), [{
@@ -942,7 +1100,9 @@ class LocalRunTests(unittest.TestCase):
             }
             attached = attach_local_measurements(package, measurements, provenance)
             self.assertEqual(attached["execution"]["local_evidence"]["record_count"], 8)
-            self.assertEqual(calculate_local_metrics(attached)["rag"]["measurement_status"], "measured")
+            attached_metrics = calculate_local_metrics(attached)
+            self.assertEqual(attached_metrics["rag"]["measurement_status"], "measured")
+            self.assertEqual(attached_metrics["rag"]["trust_status"], "declared")
 
     def test_redacted_tool_use_fixture_counts_separate_tool_spans(self) -> None:
         measurements, provenance = derive_telemetry_measurements(
@@ -970,6 +1130,7 @@ class LocalRunTests(unittest.TestCase):
         attached = attach_local_measurements(package, measurements, provenance)
         metrics = calculate_local_metrics(attached)
         self.assertEqual(metrics["tool_use"]["measurement_status"], "measured")
+        self.assertEqual(metrics["tool_use"]["trust_status"], "verified")
         self.assertEqual(metrics["tool_use"]["selection_f1"], 1.0)
         self.assertEqual(metrics["cost_efficiency"]["tool_call_count"], 2)
 
@@ -1182,7 +1343,10 @@ class LocalRunTests(unittest.TestCase):
             self.assertIn("ADVANCED LOCAL RESULTS", output.getvalue())
             self.assertIn("Cost and latency:", output.getvalue())
             report = read_json(output_path.with_name("evaluation.local-report.json"))
+            self.assertEqual(report["schema_version"], "esx-local-evaluation-report-1.1")
             self.assertEqual(report["metrics"]["security"]["detection_rate"], 1.0)
+            self.assertEqual(report["metric_trust_summary"]["verified"], 2)
+            self.assertEqual(report["metric_trust_summary"]["declared"], 9)
             readiness = {item["metric"]: item for item in report["measurement_readiness"]}
             self.assertEqual(readiness["rag"]["status"], "measured")
             self.assertIn("Retrieved IDs", readiness["rag"]["application_emits"])

@@ -1,0 +1,6 @@
+{
+  "case_ids": ["majority-001", "majority-002", "majority-003", "majority-004", "majority-005", "majority-006", "majority-007", "majority-008", "majority-009", "minority-001"],
+  "expected": ["safe", "safe", "safe", "safe", "safe", "safe", "safe", "safe", "safe", "unsafe"],
+  "predicted": ["safe", "safe", "safe", "safe", "safe", "safe", "safe", "safe", "safe", "safe"],
+  "confidences": [0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.95]
+}

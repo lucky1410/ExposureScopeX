@@ -123,8 +123,21 @@ esx-eval run --config .\esx-eval.json --out .\out\evaluation.json --discovery .\
 
 The HTML report contains an **Assurance Graph** linking confirmed components,
 local evidence, required metrics, and the reason no local result is a governed
-release decision. Missing evidence is always labelled `NOT MEASURABLE`; metrics
-that are incompatible with a browser-only workflow are labelled `NOT APPLICABLE`.
+release decision. Every metric card has a provenance state: `Verified` for
+labelled comparisons or independently observed local events, `Declared` for
+schema-valid evidence supplied by the target but not independently checked by
+PRE-D, and `Missing` when the evidence is insufficient. Each card states its
+score, why it received that state, its evidence source, and the next action.
+All-zero cost, token, and latency evidence is retained but marked
+`NON-REPRESENTATIVE`.
+
+For decision evaluations, the report also shows dataset health, class
+distribution, case-level outcomes, confusion matrix, per-class precision,
+recall and F1, Brier score, calibration bins, and overconfident failures. An
+ECE above `0.15` raises a calibration warning; fewer than five unique confidence
+values raises a confidence-range warning. These warnings do not alter the
+formula result, but prevent a structurally valid score from looking stronger
+than its evidence.
 
 ### Browser journeys
 
@@ -229,7 +242,10 @@ credentials, and arbitrary attributes are discarded. Pass this file to
 Assurance Graph. When the records contain a complete supported evidence set,
 the runner derives its advanced metric inputs locally before it calculates the
 report. Incomplete evidence remains `NOT MEASURABLE`; raw span count and browser
-success never become an invented score. See `CONNECTORS.md` for OpenTelemetry,
+success never become an invented score. Locally observed tool, trajectory, and
+agreement events can be verified as operational facts. Semantic assertions such
+as claim entailment, groundedness, or attack outcomes remain target-declared
+until PRE-D independently validates them. See `CONNECTORS.md` for OpenTelemetry,
 Python, LangChain, and LangGraph integration paths. Use browser workflows for
 protected UI coverage and local telemetry or an adapter for groundedness,
 security behavior, agent trajectories, approved tool-use quality, RAG quality,
@@ -324,7 +340,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.10.1"
+   $version = "0.11.0"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -336,7 +352,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
    On macOS or Linux, the equivalent install command is:
 
    ```bash
-   python3 -m pip install ./exposurescopex_eval_runner-0.10.1-py3-none-any.whl
+   python3 -m pip install ./exposurescopex_eval_runner-0.11.0-py3-none-any.whl
    ```
 
 4. Start a local test copy of the AI application. It needs one endpoint that

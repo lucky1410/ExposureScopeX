@@ -1,0 +1,6 @@
+{
+  "case_ids": ["multi-001", "multi-002", "multi-003", "multi-004", "multi-005", "multi-006"],
+  "expected": ["a", "a", "b", "b", "c", "c"],
+  "predicted": ["a", "b", "b", "c", "c", "a"],
+  "confidences": [1.0, 0.9, 0.8, 0.7, 0.6, 0.5]
+}
