@@ -123,10 +123,9 @@ def build_assurance_graph(
         evidence = str(component.get("verification_status", "customer_declared")).replace("_", " ")
         nodes.append({"id": component_id, "kind": str(component.get("kind", "unknown")), "label": f"{component.get('name', component_id)} [{evidence}]", "status": "in_scope"})
         edges.append({"from": subject_id, "to": component_id, "kind": "contains"})
+    # The graph reflects scores collected by this run. A risk plan may suggest
+    # future dimensions, but it must not be shown as an evidence gap today.
     required_dimensions = list(evaluation["required_dimensions"])
-    for dimension in (plan or {}).get("required_dimensions", []):
-        if isinstance(dimension, str) and dimension not in required_dimensions:
-            required_dimensions.append(dimension)
     for dimension in required_dimensions:
         metric = metrics.get(dimension, {"measurement_status": "not_measurable"})
         status = str(metric.get("measurement_status", "not_measurable"))

@@ -15,6 +15,10 @@ from urllib.request import Request, urlopen
 
 from .audit import append_audit_event, verify_audit_log
 from .assurance import build_assurance_graph, build_coverage_model, build_risk_plan, create_scope
+from .evidence_requirements import (
+    build_measurement_readiness, inspect_evidence_preflight,
+    render_evidence_requirements_markdown,
+)
 from .local_metrics import calculate_local_metrics
 from .discovery import discover_repository
 from .report_html import render_local_report
@@ -122,29 +126,38 @@ _FULL_METRIC_MEASUREMENTS_TEMPLATE = '''{
     {
       "claim_id": "REPLACE_WITH_CLAIM_ID",
       "evidence_ids": ["REPLACE_WITH_EVIDENCE_ID"],
-      "entailment_score": 0.0,
-      "citations_valid": false,
-      "evidence_integrity_valid": false
+      "entailment_score": "REPLACE_WITH_CLAIM_SUPPORT_SCORE_0_TO_1",
+      "citations_valid": "REPLACE_WITH_CITATION_VALID_BOOLEAN",
+      "evidence_integrity_valid": "REPLACE_WITH_EVIDENCE_INTEGRITY_BOOLEAN"
     }
   ],
   "security": {
     "cases": [
       {
-        "case_id": "REPLACE_WITH_SECURITY_CASE_ID",
-        "expected_attack_success": false,
-        "observed_attack_success": false,
-        "expected_detection": true,
-        "observed_detection": false,
-        "evidence_ids": ["REPLACE_WITH_SECURITY_EVIDENCE_ID"],
-        "evidence_integrity_valid": false
+        "case_id": "REPLACE_WITH_POSITIVE_SECURITY_CASE_ID",
+        "expected_attack_success": "REPLACE_WITH_POSITIVE_EXPECTED_ATTACK_BOOLEAN",
+        "observed_attack_success": "REPLACE_WITH_POSITIVE_OBSERVED_ATTACK_BOOLEAN",
+        "expected_detection": "REPLACE_WITH_POSITIVE_EXPECTED_DETECTION_TRUE",
+        "observed_detection": "REPLACE_WITH_POSITIVE_OBSERVED_DETECTION_BOOLEAN",
+        "evidence_ids": ["REPLACE_WITH_POSITIVE_SECURITY_EVIDENCE_ID"],
+        "evidence_integrity_valid": "REPLACE_WITH_POSITIVE_EVIDENCE_INTEGRITY_BOOLEAN"
+      },
+      {
+        "case_id": "REPLACE_WITH_NEGATIVE_SECURITY_CASE_ID",
+        "expected_attack_success": "REPLACE_WITH_NEGATIVE_EXPECTED_ATTACK_BOOLEAN",
+        "observed_attack_success": "REPLACE_WITH_NEGATIVE_OBSERVED_ATTACK_BOOLEAN",
+        "expected_detection": "REPLACE_WITH_NEGATIVE_EXPECTED_DETECTION_FALSE",
+        "observed_detection": "REPLACE_WITH_NEGATIVE_OBSERVED_DETECTION_BOOLEAN",
+        "evidence_ids": ["REPLACE_WITH_NEGATIVE_SECURITY_EVIDENCE_ID"],
+        "evidence_integrity_valid": "REPLACE_WITH_NEGATIVE_EVIDENCE_INTEGRITY_BOOLEAN"
       }
     ]
   },
   "trajectory": {
     "required_milestones": ["REPLACE_WITH_REQUIRED_MILESTONE"],
     "observed_milestones": ["REPLACE_WITH_OBSERVED_MILESTONE"],
-    "action_count": 0,
-    "redundant_actions": 0,
+    "action_count": "REPLACE_WITH_OBSERVED_ACTION_COUNT",
+    "redundant_actions": "REPLACE_WITH_REDUNDANT_ACTION_COUNT",
     "policy_violations": [],
     "scope_violations": [],
     "tool_misuse_events": []
@@ -155,10 +168,10 @@ _FULL_METRIC_MEASUREMENTS_TEMPLATE = '''{
         "case_id": "REPLACE_WITH_TOOL_CASE_ID",
         "expected_tool_names": ["REPLACE_WITH_APPROVED_TOOL"],
         "observed_tool_names": ["REPLACE_WITH_OBSERVED_TOOL"],
-        "authorized": false,
-        "result_valid": false,
+        "authorized": "REPLACE_WITH_TOOL_AUTHORIZED_BOOLEAN",
+        "result_valid": "REPLACE_WITH_TOOL_RESULT_VALID_BOOLEAN",
         "evidence_ids": ["REPLACE_WITH_TOOL_EVIDENCE_ID"],
-        "evidence_integrity_valid": false
+        "evidence_integrity_valid": "REPLACE_WITH_TOOL_EVIDENCE_INTEGRITY_BOOLEAN"
       }
     ]
   },
@@ -170,36 +183,36 @@ _FULL_METRIC_MEASUREMENTS_TEMPLATE = '''{
       {
         "claim_id": "REPLACE_WITH_RAG_CLAIM_ID",
         "evidence_ids": ["REPLACE_WITH_RAG_EVIDENCE_ID"],
-        "entailment_score": 0.0,
-        "citations_valid": false,
-        "evidence_integrity_valid": false
+      "entailment_score": "REPLACE_WITH_RAG_CLAIM_SUPPORT_SCORE_0_TO_1",
+      "citations_valid": "REPLACE_WITH_RAG_CITATION_VALID_BOOLEAN",
+      "evidence_integrity_valid": "REPLACE_WITH_RAG_EVIDENCE_INTEGRITY_BOOLEAN"
       }
     ],
-    "k": 1
+    "k": "REPLACE_WITH_RAG_K_POSITIVE_INTEGER"
   },
   "robustness": {
-    "baseline_correct": false,
-    "baseline_confidence": 0.0,
+    "baseline_correct": "REPLACE_WITH_BASELINE_CORRECT_BOOLEAN",
+    "baseline_confidence": "REPLACE_WITH_BASELINE_CONFIDENCE_0_TO_1",
     "baseline_label": "REPLACE_WITH_BASELINE_LABEL",
     "perturbations": [
       {
         "case_id": "REPLACE_WITH_PARAPHRASE_CASE_ID",
-        "correct": false,
-        "confidence": 0.0,
+        "correct": "REPLACE_WITH_PARAPHRASE_CORRECT_BOOLEAN",
+        "confidence": "REPLACE_WITH_PARAPHRASE_CONFIDENCE_0_TO_1",
         "predicted_label": "REPLACE_WITH_PARAPHRASE_LABEL",
         "variation_type": "paraphrase"
       },
       {
         "case_id": "REPLACE_WITH_PERTURBATION_CASE_ID",
-        "correct": false,
-        "confidence": 0.0,
+        "correct": "REPLACE_WITH_PERTURBATION_CORRECT_BOOLEAN",
+        "confidence": "REPLACE_WITH_PERTURBATION_CONFIDENCE_0_TO_1",
         "predicted_label": "REPLACE_WITH_PERTURBATION_LABEL",
         "variation_type": "perturbation"
       },
       {
         "case_id": "REPLACE_WITH_REPEAT_CASE_ID",
-        "correct": false,
-        "confidence": 0.0,
+        "correct": "REPLACE_WITH_REPEAT_CORRECT_BOOLEAN",
+        "confidence": "REPLACE_WITH_REPEAT_CONFIDENCE_0_TO_1",
         "predicted_label": "REPLACE_WITH_REPEAT_LABEL",
         "variation_type": "repeat"
       }
@@ -207,14 +220,14 @@ _FULL_METRIC_MEASUREMENTS_TEMPLATE = '''{
   },
   "judge_agreement": {
     "decisions": [
-      {"case_id": "REPLACE_WITH_JUDGE_CASE_ID", "judge_id": "REPLACE_WITH_JUDGE_A", "verdict": "inconclusive", "confidence": 0.0},
-      {"case_id": "REPLACE_WITH_JUDGE_CASE_ID", "judge_id": "REPLACE_WITH_JUDGE_B", "verdict": "inconclusive", "confidence": 0.0}
+      {"case_id": "REPLACE_WITH_JUDGE_CASE_ID", "judge_id": "REPLACE_WITH_JUDGE_A", "verdict": "REPLACE_WITH_JUDGE_A_VERDICT", "confidence": "REPLACE_WITH_JUDGE_A_CONFIDENCE_0_TO_1"},
+      {"case_id": "REPLACE_WITH_JUDGE_CASE_ID", "judge_id": "REPLACE_WITH_JUDGE_B", "verdict": "REPLACE_WITH_JUDGE_B_VERDICT", "confidence": "REPLACE_WITH_JUDGE_B_CONFIDENCE_0_TO_1"}
     ]
   },
   "reproducibility": {
     "decisions": [
-      {"case_id": "REPLACE_WITH_REPEATABILITY_CASE_ID", "run_id": "REPLACE_WITH_RUN_A", "verdict": "inconclusive"},
-      {"case_id": "REPLACE_WITH_REPEATABILITY_CASE_ID", "run_id": "REPLACE_WITH_RUN_B", "verdict": "inconclusive"}
+      {"case_id": "REPLACE_WITH_REPEATABILITY_CASE_ID", "run_id": "REPLACE_WITH_RUN_A", "verdict": "REPLACE_WITH_RUN_A_VERDICT"},
+      {"case_id": "REPLACE_WITH_REPEATABILITY_CASE_ID", "run_id": "REPLACE_WITH_RUN_B", "verdict": "REPLACE_WITH_RUN_B_VERDICT"}
     ]
   },
   "cost_efficiency": {
@@ -222,21 +235,43 @@ _FULL_METRIC_MEASUREMENTS_TEMPLATE = '''{
     "observations": [
       {
         "case_id": "REPLACE_WITH_COST_CASE_ID",
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "request_count": 1,
-        "retry_count": 0,
-        "tool_call_count": 0,
-        "cache_hit": false,
-        "fallback_used": false,
-        "cost_usd": 0.0,
-        "latency_ms": 0,
-        "timed_out": false
+        "input_tokens": "REPLACE_WITH_INPUT_TOKEN_COUNT",
+        "output_tokens": "REPLACE_WITH_OUTPUT_TOKEN_COUNT",
+        "request_count": "REPLACE_WITH_REQUEST_COUNT_AT_LEAST_1",
+        "retry_count": "REPLACE_WITH_RETRY_COUNT",
+        "tool_call_count": "REPLACE_WITH_TOOL_CALL_COUNT",
+        "cache_hit": "REPLACE_WITH_CACHE_HIT_BOOLEAN",
+        "fallback_used": "REPLACE_WITH_FALLBACK_USED_BOOLEAN",
+        "cost_usd": "REPLACE_WITH_COST_USD",
+        "latency_ms": "REPLACE_WITH_LATENCY_MS",
+        "timed_out": "REPLACE_WITH_TIMEOUT_BOOLEAN"
       }
     ]
   }
 }
 '''
+
+
+def _full_metric_measurements_template(cases: list[dict[str, object]]) -> str:
+    """Make cost coverage explicit for every generated labelled case."""
+    template = json.loads(_FULL_METRIC_MEASUREMENTS_TEMPLATE)
+    template["cost_efficiency"]["observations"] = [
+        {
+            "case_id": case["case_id"],
+            "input_tokens": "REPLACE_WITH_INPUT_TOKEN_COUNT",
+            "output_tokens": "REPLACE_WITH_OUTPUT_TOKEN_COUNT",
+            "request_count": "REPLACE_WITH_REQUEST_COUNT_AT_LEAST_1",
+            "retry_count": "REPLACE_WITH_RETRY_COUNT",
+            "tool_call_count": "REPLACE_WITH_TOOL_CALL_COUNT",
+            "cache_hit": "REPLACE_WITH_CACHE_HIT_BOOLEAN",
+            "fallback_used": "REPLACE_WITH_FALLBACK_USED_BOOLEAN",
+            "cost_usd": "REPLACE_WITH_COST_USD",
+            "latency_ms": "REPLACE_WITH_LATENCY_MS",
+            "timed_out": "REPLACE_WITH_TIMEOUT_BOOLEAN",
+        }
+        for case in cases
+    ]
+    return json.dumps(template, indent=2) + "\n"
 
 
 def _starter_readme(args: argparse.Namespace, dataset_version: str, mode: str) -> str:
@@ -248,8 +283,9 @@ def _starter_readme(args: argparse.Namespace, dataset_version: str, mode: str) -
 
 This folder also contains `full_metric_measurements.json`. It has named
 placeholders for all advanced areas. Replace each `REPLACE_WITH_*` value with
-redacted facts recorded by your local system. Do not add raw prompt text,
-answers, documents, credentials, or tool arguments.
+redacted facts recorded by your local system, using the required JSON type
+(for example a boolean must become `true` or `false`, not text). Do not add
+raw prompt text, answers, documents, credentials, or tool arguments.
 
 Examples of the information to fill:
 
@@ -267,8 +303,17 @@ Examples of the information to fill:
 - `cost_efficiency`: locally measured tokens, requests, retries, tool calls,
   cost, latency, timeouts, and fallbacks.
 
+Run the local validator before the evaluation. It catches incomplete fields,
+insufficient control coverage, and cost records that do not match the labelled
+case IDs before it calls the application:
+
+```powershell
+esx-eval evidence-check --config .\\esx-eval.json --measurements .\\full_metric_measurements.json --out .\\out\\evidence-readiness.json
+```
+
 The generated adapter reads this file automatically during a full-metric run.
-It stops safely until every placeholder has been replaced.
+It stops safely until every placeholder has been replaced. A custom adapter
+must return the same measurement object in its v2 JSON response.
 
 The runner calculates every listed advanced metric locally and writes the
 results to `out/evaluation.local-report.json`. A metric is reported as `NOT
@@ -293,11 +338,14 @@ MEASURABLE` when its required local evidence is absent; it is never guessed.
         "```\n\n"
         "Do not download the source archive or install the entire ExposureScopeX platform.\n\n"
         "## 2. What this starter contains\n\n"
-        f"- `esx-eval.json`: {args.case_count} labelled test-case placeholder(s), evaluation ID, and adapter settings.\n"
+        f"- `esx-eval.json`: {max(args.case_count, 2) if args.full_metrics else args.case_count} labelled test-case placeholder(s), evaluation ID, and adapter settings.\n"
         "- `local_adapter.py`: the one file you connect to your local model, RAG application, or agent.\n"
+        "- `PRE-D_EVIDENCE_REQUIREMENTS.md`: the exact local evidence needed before each requested metric can produce a result.\n"
         "- `out/evaluation.json`: created after a run; a local result package that stays on this machine.\n\n"
         "- `out/evaluation.local-report.json`: the derived local metrics report.\n\n"
-        "## 3. Fill the benchmark\n\n"
+        "## 3. Read the metric requirements\n\n"
+        "Open `PRE-D_EVIDENCE_REQUIREMENTS.md` before editing the test plan. It tells you what the team must define, what the application must emit, and the minimum evidence required for every selected metric. Then run `esx-eval evidence-check --config .\\esx-eval.json` before the evaluation; it validates the actual local artifacts and identifies the exact missing fields. Missing information produces `NOT MEASURABLE`; PRE-D never estimates a score.\n\n"
+        "## 4. Fill the benchmark\n\n"
         "Open `esx-eval.json` and replace every `REPLACE_WITH_*` message. For each case, "
         "the `input` is what the AI receives and `expected_label` is the team-approved "
         "ground truth. Define it from product, security, legal, or domain policy; the "
@@ -313,7 +361,7 @@ MEASURABLE` when its required local evidence is absent; it is never guessed.
         "Use `unsafe` when the expected outcome is refusal/blocking and `safe` when the "
         "expected outcome is an allowed answer. You may use your own compact labels if "
         "your adapter returns the same labels.\n\n"
-        "## 4. Connect your agent\n\n"
+        "## 5. Connect your agent\n\n"
         "Open `local_adapter.py` and replace only `evaluate_case()`. Call your system with "
         "the local case input, then return the observed category and confidence from 0 to 1.\n\n"
         "```python\n"
@@ -343,7 +391,7 @@ MEASURABLE` when its required local evidence is absent; it is never guessed.
         "to a compact evaluation label and meaningful confidence. The exact URL and JSON fields "
         "come from your application, not ExposureScopeX. Do not return a constant confidence of "
         "`1.0`.\n\n"
-        "## 5. Run locally\n\n"
+        "## 6. Run locally\n\n"
         "From this folder, run:\n\n"
         "```powershell\n"
         "esx-eval run --config .\\esx-eval.json --out .\\out\\evaluation.json\n"
@@ -396,6 +444,7 @@ def init_command(args: argparse.Namespace) -> int:
         raise RunnerError("--project-key must use lowercase letters, digits, and hyphens")
     if args.case_count < 1 or args.case_count > 10_000:
         raise RunnerError("--case-count must be a number between 1 and 10,000")
+    case_count = max(args.case_count, 2) if args.full_metrics else args.case_count
     target = Path(args.directory)
     if target.exists() and any(target.iterdir()):
         raise RunnerError(f"Refusing to overwrite non-empty directory: {target}")
@@ -418,7 +467,7 @@ def init_command(args: argparse.Namespace) -> int:
             "dataset_version": dataset_version,
             "required_dimensions": required_dimensions,
         },
-        "dataset": {"version": dataset_version, "cases": _starter_cases(args.case_count)},
+        "dataset": {"version": dataset_version, "cases": _starter_cases(case_count)},
         "adapter": {
             "type": "command_json_v2",
             "command": [sys.executable, "local_adapter.py"],
@@ -428,9 +477,12 @@ def init_command(args: argparse.Namespace) -> int:
     }
     _write_json(target / "esx-eval.json", config)
     (target / "local_adapter.py").write_text(_LOCAL_ADAPTER_TEMPLATE, encoding="utf-8")
+    (target / "PRE-D_EVIDENCE_REQUIREMENTS.md").write_text(
+        render_evidence_requirements_markdown(config), encoding="utf-8"
+    )
     if args.full_metrics:
         (target / "full_metric_measurements.json").write_text(
-            _FULL_METRIC_MEASUREMENTS_TEMPLATE, encoding="utf-8"
+            _full_metric_measurements_template(config["dataset"]["cases"]), encoding="utf-8"
         )
     mode = "all eleven metric areas" if args.full_metrics else "classification and confidence"
     (target / "README.md").write_text(
@@ -440,7 +492,9 @@ def init_command(args: argparse.Namespace) -> int:
         "starter_directory": str(target),
         "config": str(target / "esx-eval.json"),
         "instructions": str(target / "README.md"),
+        "evidence_requirements": str(target / "PRE-D_EVIDENCE_REQUIREMENTS.md"),
         "metric_profile": "full" if args.full_metrics else "basic",
+        "case_count": case_count,
     }))
     return 0
 
@@ -675,6 +729,12 @@ def run_command(args: argparse.Namespace) -> int:
     scope = _optional_json(_workflow_file(config, args.config, getattr(args, "scope", None), "scope_file"))
     plan = _optional_json(_workflow_file(config, args.config, getattr(args, "plan", None), "plan_file"))
     local_metrics = _planned_metrics(calculate_local_metrics(package), plan)
+    measurement_readiness = build_measurement_readiness(
+        local_metrics, package["evaluation"].get("required_dimensions", [])
+    )
+    evidence_preflight = _report_evidence_preflight(
+        config, args.config, telemetry_path, local_metrics,
+    )
     assurance_graph = build_assurance_graph(package, local_metrics, discovery=discovery, scope=scope, plan=plan, telemetry=telemetry)
     coverage = build_coverage_model(package, local_metrics, discovery=discovery, scope=scope)
     report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.json")
@@ -688,7 +748,14 @@ def run_command(args: argparse.Namespace) -> int:
             "subject_version": package["evaluation"]["subject_version"],
             "dataset_version": package["evaluation"]["dataset_version"],
         },
+        "evaluation": {
+            "scorecard_type": package["evaluation"].get("scorecard_type", "decision_evaluation"),
+            "decision_task": package["evaluation"].get("decision_task"),
+            "required_dimensions": package["evaluation"].get("required_dimensions", []),
+        },
         "metrics": local_metrics,
+        "measurement_readiness": measurement_readiness,
+        "evidence_preflight": evidence_preflight,
         "coverage": coverage,
         "execution": package["execution"],
         "assurance_graph": assurance_graph,
@@ -710,6 +777,66 @@ def run_command(args: argparse.Namespace) -> int:
         if "signature" not in package:
             print("To request a governed shared decision later, add signing settings and run again with --sign, then use esx-eval upload.")
     return 0
+
+
+def evidence_check_command(args: argparse.Namespace) -> int:
+    """Validate local metric prerequisites without invoking the target application."""
+    config = read_json(args.config)
+    # Preserve a configured-but-missing file so the preflight can name it.
+    telemetry_path = _workflow_file(config, args.config, args.telemetry, "telemetry_file")
+    supplied_measurements = getattr(args, "measurements", None)
+    default_measurements = Path(args.config).resolve().parent / "full_metric_measurements.json"
+    measurements_path = supplied_measurements or (str(default_measurements) if default_measurements.is_file() else None)
+    result = inspect_evidence_preflight(
+        config, telemetry_path=telemetry_path, measurements_path=measurements_path,
+    )
+    if args.out:
+        _write_json(args.out, result)
+    print(json.dumps({
+        "status": "completed_locally",
+        "report": str(args.out) if args.out else None,
+        "summary": result["summary"],
+        "notice": result["notice"],
+        "metrics": result["metrics"],
+    }, indent=2))
+    return 0
+
+
+def _report_evidence_preflight(
+    config: dict[str, object], config_path: str, telemetry_path: str | None,
+    metrics: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    """Carry exact evidence gaps into the completed report without hiding results."""
+    default_measurements = Path(config_path).resolve().parent / "full_metric_measurements.json"
+    result = inspect_evidence_preflight(
+        config,
+        telemetry_path=telemetry_path,
+        measurements_path=default_measurements if default_measurements.is_file() else None,
+    )
+    entries = result.get("metrics")
+    if not isinstance(entries, list):
+        return result
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        metric = metrics.get(entry.get("metric"))
+        metric = metric if isinstance(metric, dict) else {}
+        observed_status = metric.get("measurement_status")
+        observed_reason = metric.get("reason")
+        if observed_status == "measured":
+            entry["status"] = "measured"
+            entry["missing"] = []
+        elif observed_status == "not_applicable":
+            entry["status"] = "not_applicable"
+            entry["missing"] = [str(observed_reason)] if observed_reason else []
+        elif entry.get("status") in {"ready_to_collect", "evidence_ready"}:
+            # The plan was valid, but the completed adapter did not return the
+            # observation that was required to calculate this score.
+            entry["status"] = "evidence_incomplete"
+            entry["missing"] = [
+                str(observed_reason) if observed_reason else "The completed run did not return the required observed evidence.",
+            ]
+    return result
 
 
 def _audit_path(output_path: str | Path, config: dict[str, object]) -> Path:
@@ -788,6 +915,10 @@ def report_command(args: argparse.Namespace) -> int:
         plan=plan, telemetry=telemetry_summary(telemetry_path) if telemetry_path else None,
     )
     coverage = build_coverage_model(package, metrics, discovery=discovery, scope=scope)
+    evidence_preflight = (
+        _report_evidence_preflight(config, config_path, telemetry_path, metrics)
+        if config_path else None
+    )
     report = {
         "schema_version": "esx-local-assurance-report-1.0", "status": "completed_locally",
         "package_id": package["package_id"], "runner_version": package["runner_version"],
@@ -797,7 +928,12 @@ def report_command(args: argparse.Namespace) -> int:
             "decision_task": package["evaluation"].get("decision_task"),
             "required_dimensions": package["evaluation"].get("required_dimensions", []),
         },
-        "metrics": metrics, "coverage": coverage, "execution": package.get("execution", {}), "assurance_graph": graph,
+        "metrics": metrics,
+        "measurement_readiness": build_measurement_readiness(
+            metrics, package["evaluation"].get("required_dimensions", []),
+        ),
+        "evidence_preflight": evidence_preflight,
+        "coverage": coverage, "execution": package.get("execution", {}), "assurance_graph": graph,
         "notice": "This Assurance Graph was assembled locally from the specified scope and evidence. It is not a shared release decision.",
     }
     _write_json(args.out, report)
@@ -828,15 +964,14 @@ def _workflow_file(
 
 
 def _planned_metrics(metrics: dict[str, dict[str, object]], plan: dict[str, object] | None) -> dict[str, dict[str, object]]:
-    """Show planned dimensions as gaps until customer-local evidence is supplied."""
-    result = dict(metrics)
-    for dimension in (plan or {}).get("required_dimensions", []):
-        if isinstance(dimension, str) and dimension not in result:
-            result[dimension] = {
-                "measurement_status": "not_measurable",
-                "reason": "This dimension is in the confirmed risk plan, but no compatible redacted local measurement was supplied.",
-            }
-    return result
+    """Keep future risk-plan recommendations out of the active scorecard.
+
+    A discovered capability is useful guidance for a later pack, but it is not
+    proof that the selected local connection can collect that metric. The
+    current report therefore scores only the dimensions the user activated.
+    """
+    del plan
+    return dict(metrics)
 
 
 def view_command(args: argparse.Namespace) -> int:
@@ -1049,7 +1184,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--project-key", default="default", help="Approved ExposureScopeX project key")
     init.add_argument("--dataset-version", help="Version for this labelled test pack")
     init.add_argument("--subject-type", choices=["model", "rag", "agent", "multi_agent_system"], default="agent")
-    init.add_argument("--case-count", type=int, default=1, help="Number of local starter cases (1-10,000; default: 1)")
+    init.add_argument("--case-count", type=int, default=2, help="Number of local starter cases (1-10,000; default: 2, one safe and one unsafe)")
     init.add_argument("--full-metrics", action="store_true", help="Require grounding, security, trajectory, RAG, robustness, agreement, repeatability, and cost metrics")
     setup = commands.add_parser("setup", help="Open a local page to connect an app and generate a reviewable test plan")
     setup.add_argument("--directory", help="Suggested new folder for the generated local plan")
@@ -1077,6 +1212,11 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--scope", help="Optional confirmed local scope JSON to include in the Assurance Graph")
     run.add_argument("--plan", help="Optional reviewed local risk plan JSON to include in the Assurance Graph")
     run.add_argument("--telemetry", help="Optional redacted local telemetry JSONL to include in the Assurance Graph")
+    evidence_check = commands.add_parser("evidence-check", help="Check exactly which local inputs can produce each metric before a run")
+    evidence_check.add_argument("--config", required=True, help="Local esx-eval.json plan to inspect")
+    evidence_check.add_argument("--telemetry", help="Optional redacted local telemetry JSONL to validate")
+    evidence_check.add_argument("--measurements", help="Optional local command-v2 measurements JSON to validate")
+    evidence_check.add_argument("--out", help="Optional local evidence-readiness.json output path")
     browser_auth = commands.add_parser("browser-auth", help="Complete an approved interactive login and save local browser session state")
     browser_auth.add_argument("--config", required=True, help="Setup-generated browser esx-eval.json with session_bootstrap")
     browser_auth.add_argument("--persona", help="Configured persona ID; omit for the plan's default login profile")
@@ -1168,6 +1308,8 @@ def main(argv: list[str] | None = None) -> int:
             return telemetry_command(args)
         if args.command == "run":
             return run_command(args)
+        if args.command == "evidence-check":
+            return evidence_check_command(args)
         if args.command == "browser-auth":
             return browser_auth_command(args)
         if args.command == "browser-record":

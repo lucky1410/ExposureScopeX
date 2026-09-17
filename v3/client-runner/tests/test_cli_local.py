@@ -18,12 +18,16 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from esx_eval_runner.cli import _starter_cases, init_command, run_command
+from esx_eval_runner.cli import _starter_cases, evidence_check_command, init_command, run_command
 from esx_eval_runner.audit import append_audit_event, verify_audit_log
 from esx_eval_runner.assurance import build_assurance_graph, build_coverage_model, build_risk_plan, create_scope
 from esx_eval_runner.browser import _local_only_session_state, validate_browser_adapter, validate_browser_case
 from esx_eval_runner.connectors import LocalEvidenceEmitter, langchain_callback, record_anthropic_message_usage, record_openai_response_usage
 from esx_eval_runner.discovery import discover_repository
+from esx_eval_runner.evidence_requirements import (
+    build_measurement_readiness, inspect_evidence_preflight,
+    render_evidence_requirements_markdown,
+)
 from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics, decision_evidence_metrics
 from esx_eval_runner.preflight import lint_browser_plan
 from esx_eval_runner.profiles import build_cases
@@ -81,6 +85,36 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(confidence["correctness_brier_score"], 0.3625)
         self.assertEqual(confidence["expected_calibration_error"], 0.525)
 
+    def test_local_decision_metrics_match_a_hand_calculated_three_class_fixture(self) -> None:
+        """Protect the scorecard math with values derived outside the runner."""
+        expected = ["a", "a", "b", "b", "c", "c"]
+        predicted = ["a", "b", "b", "c", "c", "a"]
+        confidences = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5]
+        classification = classification_metrics(expected, predicted)
+        confidence = confidence_metrics(expected, predicted, confidences)
+        self.assertEqual(classification["accuracy"], 0.5)
+        self.assertEqual(classification["macro_precision"], 0.5)
+        self.assertEqual(classification["macro_recall"], 0.5)
+        self.assertEqual(classification["macro_f1"], 0.5)
+        self.assertEqual(confidence["correctness_brier_score"], 0.291667)
+        self.assertEqual(confidence["expected_calibration_error"], 0.45)
+
+    def test_result_normalization_rejects_missing_case_results_and_invalid_confidence(self) -> None:
+        cases = [
+            {"case_id": "case-a", "input": {}, "expected_label": "safe"},
+            {"case_id": "case-b", "input": {}, "expected_label": "unsafe"},
+        ]
+        with self.assertRaisesRegex(RunnerError, "confidence"):
+            _normalise_results(cases, {"results": [
+                {"case_id": "case-a", "predicted_label": "safe", "confidence": 1.01},
+                {"case_id": "case-b", "predicted_label": "unsafe", "confidence": 0.8},
+            ]})
+        with self.assertRaisesRegex(RunnerError, "do not match"):
+            _normalise_results(cases, {"results": [
+                {"case_id": "case-a", "predicted_label": "safe", "confidence": 0.9},
+                {"case_id": "other", "predicted_label": "unsafe", "confidence": 0.8},
+            ]})
+
     def test_one_class_cannot_claim_model_quality_and_constant_confidence_is_flagged(self) -> None:
         one_class = classification_metrics(["pass", "pass"], ["pass", "pass"])
         constant_confidence = confidence_metrics(
@@ -126,12 +160,82 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(status, 0)
             template = (target / "full_metric_measurements.json").read_text(encoding="utf-8")
             guide = (target / "README.md").read_text(encoding="utf-8")
-            self.assertIn("REPLACE_WITH_SECURITY_CASE_ID", template)
+            requirements = (target / "PRE-D_EVIDENCE_REQUIREMENTS.md").read_text(encoding="utf-8")
+            self.assertIn("REPLACE_WITH_POSITIVE_SECURITY_CASE_ID", template)
             self.assertIn("cost_efficiency", template)
+            self.assertIn("## Groundedness", requirements)
+            self.assertIn("**You define:**", requirements)
+            self.assertIn("**Minimum for a real result:**", requirements)
             self.assertIn("Expected terminal results", guide)
             self.assertIn("Connect your agent", guide)
             self.assertIn("Connecting a full web app", guide)
             self.assertIn("application repository", guide)
+            self.assertIn("evidence-check", guide)
+            self.assertEqual(len(read_json(target / "esx-eval.json")["dataset"]["cases"]), 2)
+
+    def test_evidence_preflight_names_the_exact_missing_metric_inputs(self) -> None:
+        config = {
+            "schema_version": "esx-client-runner-config-1.0",
+            "evaluation": {
+                "name": "preflight", "agent_id": "demo-agent", "subject_version": "1.0.0",
+                "project_key": "demo", "dataset_version": "preflight-1.0",
+                "required_dimensions": ["classification", "confidence", "groundedness", "security", "cost_efficiency"],
+            },
+            "dataset": {"version": "preflight-1.0", "cases": [
+                {"case_id": "safe-001", "input": {"message": "normal"}, "expected_label": "safe"},
+                {"case_id": "unsafe-001", "input": {"message": "restricted"}, "expected_label": "unsafe"},
+            ]},
+            "adapter": {"type": "command_json_v2", "command": ADAPTER_COMMAND},
+        }
+        measurements = {
+            "claims": [{
+                "claim_id": "claim-001", "evidence_ids": ["evidence-001"],
+                "entailment_score": 1.0, "citations_valid": True,
+                "evidence_integrity_valid": True,
+            }],
+            "security": {"cases": [{
+                "case_id": "security-positive", "expected_attack_success": False,
+                "observed_attack_success": False, "expected_detection": True,
+                "observed_detection": True, "evidence_ids": ["evidence-002"],
+                "evidence_integrity_valid": True,
+            }]},
+            "cost_efficiency": {"cost_source": "metered", "observations": [{
+                "case_id": "safe-001", "input_tokens": 10, "output_tokens": 5,
+                "request_count": 1, "cost_usd": 0.001, "latency_ms": 20,
+            }]},
+        }
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "esx-eval.json"
+            measurement_path = Path(directory) / "measurements.json"
+            output_path = Path(directory) / "evidence-readiness.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            measurement_path.write_text(json.dumps(measurements), encoding="utf-8")
+            terminal = io.StringIO()
+            with redirect_stdout(terminal):
+                status = evidence_check_command(argparse.Namespace(
+                    config=str(config_path), telemetry=None,
+                    measurements=str(measurement_path), out=str(output_path),
+                ))
+            result = read_json(output_path)
+        entries = {entry["metric"]: entry for entry in result["metrics"]}
+        self.assertEqual(entries["classification"]["status"], "ready_to_collect")
+        self.assertEqual(entries["groundedness"]["status"], "evidence_ready")
+        self.assertEqual(entries["security"]["status"], "evidence_incomplete")
+        self.assertIn("positive and negative", entries["security"]["missing"][0])
+        self.assertEqual(entries["cost_efficiency"]["status"], "evidence_incomplete")
+        self.assertIn("unsafe-001", entries["cost_efficiency"]["missing"][0])
+        self.assertEqual(status, 0)
+        self.assertIn("No target application was invoked", terminal.getvalue())
+        html = render_local_report({
+            "subject": {}, "evaluation": {"required_dimensions": []}, "metrics": {},
+            "evidence_preflight": result,
+        })
+        self.assertIn("What created each result", html)
+        self.assertIn("Missing cost observations for unsafe-001.", html)
+        invalid = {**config, "schema_version": "invalid"}
+        invalid_result = inspect_evidence_preflight(invalid, measurements_path=measurement_path)
+        self.assertTrue(invalid_result["plan_errors"])
+        self.assertEqual(invalid_result["metrics"][0]["status"], "plan_invalid")
 
     def test_eight_correct_cases_complete_locally_without_signature(self) -> None:
         cases = []
@@ -320,6 +424,7 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(config["adapter"]["type"], "http_json_target")
             self.assertEqual(len(config["dataset"]["cases"]), 4)
             self.assertTrue((target / "README.md").is_file())
+            self.assertTrue((target / "PRE-D_EVIDENCE_REQUIREMENTS.md").is_file())
             route = next(item for item in discovery["workflow_suggestions"] if item["route"] == "/evaluate")
             self.assertEqual(route["capability_area"], "general")
 
@@ -343,7 +448,7 @@ class LocalRunTests(unittest.TestCase):
             self.assertTrue(path.is_file())
             self.assertEqual(
                 config["evaluation"]["required_dimensions"],
-                ["classification", "confidence", "reproducibility", "robustness", "security", "tool_use", "trajectory"],
+                ["classification", "confidence"],
             )
             self.assertTrue(config["telemetry"]["enabled"])
             self.assertIn("trajectory", config["assurance"]["planned_dimensions"])
@@ -351,6 +456,10 @@ class LocalRunTests(unittest.TestCase):
             self.assertTrue((target / "assurance-scope.json").is_file())
             self.assertTrue((target / "risk-plan.json").is_file())
             self.assertTrue((target / "workflow-packs.json").is_file())
+            requirements = (target / "PRE-D_EVIDENCE_REQUIREMENTS.md").read_text(encoding="utf-8")
+            self.assertNotIn("## Agent trajectory", requirements)
+            self.assertIn("## Classification quality", requirements)
+            self.assertIn("**Your application emits:**", requirements)
             self.assertIn("automatically uses", (target / "README.md").read_text(encoding="utf-8"))
 
     def test_guided_setup_explains_response_mapping_and_plan_fields(self) -> None:
@@ -680,6 +789,10 @@ class LocalRunTests(unittest.TestCase):
             report = read_json(output_path.with_name("evaluation.local-report.json"))
             self.assertEqual(report["assurance_graph"]["summary"]["scope_status"], "confirmed")
             self.assertIn("trajectory", report["metrics"])
+            self.assertEqual(report["evaluation"]["required_dimensions"], ["classification", "confidence"])
+            html_report = output_path.with_name("evaluation.local-report.html").read_text(encoding="utf-8")
+            self.assertIn("Classification quality", html_report)
+            self.assertNotIn("Agent trajectory", html_report)
 
     def test_local_html_explains_evidence_needed_for_unmeasured_dimensions(self) -> None:
         report = {
@@ -693,8 +806,9 @@ class LocalRunTests(unittest.TestCase):
         }
         page = render_local_report(report)
         self.assertIn("MEASUREMENT READINESS", page)
-        self.assertIn("Answer claims linked to cited evidence IDs", page)
-        self.assertIn("Expected relevant document IDs", page)
+        self.assertIn("YOU DEFINE", page)
+        self.assertIn("Per-claim opaque evidence IDs", page)
+        self.assertIn("Approved relevant document IDs", page)
         self.assertIn("PRE-D telemetry evidence", page)
         self.assertIn("PRE-D local release readiness", page)
 
@@ -711,7 +825,28 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("BROWSER WORKFLOW RESULT", page)
         self.assertIn("Decision evaluation", page)
         self.assertIn("NOT RUN", page)
-        self.assertNotIn("Classification quality", page)
+        self.assertIn("Classification quality", page)
+        self.assertIn("This plan does not collect this evidence type", page)
+
+    def test_measurement_readiness_lists_the_exact_local_evidence_contract(self) -> None:
+        metrics = {
+            "classification": {"measurement_status": "measured", "accuracy": 0.9},
+            "rag": {"measurement_status": "not_measurable", "reason": "No labelled relevant-document set was supplied."},
+            "security": {"measurement_status": "not_measurable", "reason": "No labelled security cases were supplied."},
+        }
+        entries = build_measurement_readiness(metrics, ["classification", "rag"])
+        by_metric = {entry["metric"]: entry for entry in entries}
+        self.assertEqual(by_metric["classification"]["status"], "measured")
+        self.assertIn("two expected classes", by_metric["classification"]["minimum"])
+        self.assertEqual(by_metric["rag"]["status"], "not_measurable")
+        self.assertIn("Retrieved IDs", by_metric["rag"]["application_emits"])
+        self.assertNotIn("security", by_metric)
+        config = {"evaluation": {"required_dimensions": ["classification", "rag"]}, "adapter": {"type": "http_json_target"}}
+        requirements = render_evidence_requirements_markdown(config)
+        self.assertIn("# PRE-D Local Evidence Requirements", requirements)
+        self.assertIn("## Classification quality", requirements)
+        self.assertIn("## RAG quality", requirements)
+        self.assertNotIn("## Security behavior", requirements)
 
     def test_discovery_scope_plan_and_assurance_graph_are_reviewable(self) -> None:
         discovery = {
@@ -730,7 +865,7 @@ class LocalRunTests(unittest.TestCase):
         metrics = {"classification": {"measurement_status": "measured"}, "confidence": {"measurement_status": "measured"}, "rag": {"measurement_status": "not_measurable"}}
         graph = build_assurance_graph(package, metrics, discovery=discovery, scope=scope, plan=plan, telemetry={"span_count": 4})
         self.assertEqual(graph["summary"]["confirmed_component_count"], 3)
-        self.assertEqual(graph["summary"]["unmeasurable_metric_count"], 7)
+        self.assertEqual(graph["summary"]["unmeasurable_metric_count"], 1)
 
     def test_discovery_excludes_backlog_mentions_and_labels_real_evidence(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1048,6 +1183,9 @@ class LocalRunTests(unittest.TestCase):
             self.assertIn("Cost and latency:", output.getvalue())
             report = read_json(output_path.with_name("evaluation.local-report.json"))
             self.assertEqual(report["metrics"]["security"]["detection_rate"], 1.0)
+            readiness = {item["metric"]: item for item in report["measurement_readiness"]}
+            self.assertEqual(readiness["rag"]["status"], "measured")
+            self.assertIn("Retrieved IDs", readiness["rag"]["application_emits"])
 
 
 if __name__ == "__main__":

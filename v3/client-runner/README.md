@@ -49,11 +49,31 @@ Those are static evidence levels, not proof that a capability executes at
 runtime; the customer still confirms the evaluation scope.
 
 The generated folder contains `esx-eval.json`, `discovery.json`,
-`assurance-scope.json`, `risk-plan.json`, and a local `README.md`. A normal
-`run` automatically includes the confirmed scope and plan in the Assurance
-Graph. Planned advanced checks are clearly shown as `NOT MEASURABLE` until
-compatible redacted local evidence is available; the runner never invents a
-score.
+`assurance-scope.json`, `risk-plan.json`, `PRE-D_EVIDENCE_REQUIREMENTS.md`,
+and a local `README.md`. Read the generated evidence-requirements file before
+running: it lists, for every score in that specific plan, what the team must
+define, what the application must emit locally, and the minimum evidence needed
+for a real result. A normal `run` automatically includes the confirmed scope
+and plan in the Assurance Graph. Planned advanced checks are clearly shown as
+`NOT MEASURABLE` until compatible redacted local evidence is available; the
+runner never invents a score.
+
+Before the first run, validate the actual local evidence source. This command
+does not call the application or make a network request. It names the exact
+missing field, control type, or case ID for every requested metric and writes
+an optional local readiness report.
+
+```text
+esx-eval evidence-check --config ./esx-eval.json --out ./out/evidence-readiness.json
+```
+
+For a command-v2 adapter that reads advanced measurements from a local file,
+include `--measurements ./full_metric_measurements.json`. For telemetry-backed
+metrics, include `--telemetry ./out/telemetry.jsonl`. `READY TO COLLECT` means
+the dataset and connection are valid but a real decision run still must return
+observations. `EVIDENCE READY` means the supplied advanced local artifact meets
+the schema and formula prerequisites; it still remains local and is scored only
+after the decision run completes.
 
 For the normal zero-adapter decision path, enter a loopback decision API URL,
 import labelled cases, and select **Test local connection**. The setup page
@@ -72,6 +92,7 @@ Run the generated plan and open its self-contained local report:
 
 ```text
 cd ./my-application-evaluation
+esx-eval evidence-check --config ./esx-eval.json --out ./out/evidence-readiness.json
 esx-eval run --config ./esx-eval.json --out ./out/evaluation.json
 esx-eval view --report ./out/evaluation.local-report.html
 ```

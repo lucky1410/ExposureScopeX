@@ -16,6 +16,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .assurance import build_risk_plan, create_scope
 from .discovery import discover_repository
+from .evidence_requirements import render_evidence_requirements_markdown
 from .profiles import PROFILE_NAMES, build_cases, profile
 from .runner import CONFIG_SCHEMA_VERSION, _is_loopback_host
 from .workflows import build_workflow_pack_catalog
@@ -155,6 +156,10 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
         }
         scope = create_scope(discovery, [workflow_id])
     plan = build_risk_plan(scope, profile_name)
+    # Scope discovery can recommend broader assurance work, but a connection
+    # must not silently make unsupported evidence dimensions part of this run.
+    # The active scorecard starts with the evidence this connection can collect.
+    evaluation_dimensions = ["classification", "confidence"]
     if connection_type == "browser":
         # A declared UI journey proves reachability and its approved signal. It
         # does not expose a model label or confidence, so use its own baseline.
@@ -166,6 +171,7 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
             ),
         ]
         plan["notice"] += " Browser journeys use workflow coverage as their baseline; model classification and confidence require a connected API or adapter."
+        evaluation_dimensions = ["workflow_coverage"]
     workflow_catalog = build_workflow_pack_catalog(discovery, scope)
     if values.get("confirm_plan") is not True:
         raise ValueError("Confirm the reviewed scope and plan before creating the local evaluation")
@@ -246,10 +252,15 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
             value = values.get(field)
             if isinstance(value, str) and value.strip():
                 adapter[field] = value.strip()
-        plan["required_dimensions"] = [
-            "classification", "confidence",
-            *(dimension for dimension in plan["required_dimensions"] if dimension not in {"classification", "confidence", "workflow_coverage"}),
-        ]
+        has_decision_evidence = any(
+            "expected_evidence_ids" in case or "must_abstain" in case
+            for case in cases
+        )
+        has_decision_response_mapping = bool(
+            values.get("response_evidence_ids_path") or values.get("response_abstained_path")
+        )
+        if has_decision_evidence and has_decision_response_mapping:
+            evaluation_dimensions.append("decision_evidence")
         plan["notice"] += " This local decision plan sends case_id and input to the configured endpoint and measures labelled decision outcomes."
     else:
         cases = build_cases(profile_name, additions)
@@ -264,7 +275,7 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
             ),
             "agent_id": values["agent_id"], "subject_version": values["subject_version"],
             "subject_type": values.get("subject_type", "agent"), "project_key": values["project_key"],
-            "dataset_version": dataset_version, "required_dimensions": plan["required_dimensions"],
+            "dataset_version": dataset_version, "required_dimensions": evaluation_dimensions,
             "scorecard_type": "decision_evaluation" if connection_type == "decision" else "model_evaluation",
             "decision_task": decision_task,
         },
@@ -301,6 +312,9 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     (target / "assurance-scope.json").write_text(json.dumps(scope, indent=2) + "\n", encoding="utf-8")
     (target / "risk-plan.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
     (target / "workflow-packs.json").write_text(json.dumps(workflow_catalog, indent=2) + "\n", encoding="utf-8")
+    (target / "PRE-D_EVIDENCE_REQUIREMENTS.md").write_text(
+        render_evidence_requirements_markdown(config), encoding="utf-8"
+    )
     (target / "README.md").write_text(_plan_readme(config, plan), encoding="utf-8")
     return path, config
 
@@ -404,9 +418,10 @@ This folder was generated locally by `esx-eval setup` on {host_os}. It evaluates
 ## Run this plan
 
 1. Start the application locally, or use an approved staging URL.
-2. Open `esx-eval.json` and review every labelled test case. Replace, remove, or add cases to match the product's real requirements.
-3. The runner uses the approved {connection} at `{adapter.get('url', adapter.get('base_url'))}`.{" It reads the decision label from `" + adapter['response_label_path'] + "` and a numeric confidence from `" + adapter['response_confidence_path'] + "`." if adapter['type'] == 'http_json_target' else " It measures declared workflow coverage from the configured browser assertion; it does not infer model labels or confidence from a UI pass/fail result."}
-4. Run:
+2. Read `PRE-D_EVIDENCE_REQUIREMENTS.md`. It states, for every metric in this plan, what your team must define and what the application must emit locally before PRE-D can calculate a real score.
+3. Open `esx-eval.json` and review every labelled test case. Replace, remove, or add cases to match the product's real requirements.
+4. The runner uses the approved {connection} at `{adapter.get('url', adapter.get('base_url'))}`.{" It reads the decision label from `" + adapter['response_label_path'] + "` and a numeric confidence from `" + adapter['response_confidence_path'] + "`." if adapter['type'] == 'http_json_target' else " It measures declared workflow coverage from the configured browser assertion; it does not infer model labels or confidence from a UI pass/fail result."}
+5. Run:
 
 ```text
 esx-eval run --config ./esx-eval.json --out ./out/evaluation.json
@@ -420,10 +435,9 @@ The terminal and HTML report are private and local. A successful smoke plan prov
 
 This folder already contains `discovery.json`, `assurance-scope.json`, and
 `risk-plan.json`. The run command automatically uses them to make the local
-Assurance Graph. The plan expects these dimensions when the confirmed scope
-supports them: {", ".join((plan or {}).get("required_dimensions", ["classification", "confidence"]))}.
+Assurance Graph. Its recommended later dimensions are: {", ".join((plan or {}).get("required_dimensions", ["classification", "confidence"]))}. The active scorecard for this plan calculates only: {", ".join(config["evaluation"]["required_dimensions"])}. Recommended dimensions do not appear as missing scores unless you explicitly add their matching evidence connection.
 
-Grounding, RAG, trajectory, tool-use, security detection, robustness, repeatability, judge agreement, and provider cost metrics require redacted local evidence. The generated plan enables local telemetry automatically: when the application emits supported OpenTelemetry or connector metadata, PRE-D derives every complete metric input it can without an adapter. Metrics with incomplete evidence remain `NOT MEASURABLE`, never invented.
+Grounding, RAG, trajectory, tool-use, security detection, robustness, repeatability, judge agreement, and provider cost are separate local evidence packs. They are not part of this run unless you explicitly add their matching evidence connection. When selected later, the generated plan can derive complete records from supported redacted OpenTelemetry or connector metadata without a second adapter.
 
 For a model-quality scorecard, use the JSON API or local adapter connection and
 include at least two expected outcome classes plus observed model confidence
@@ -662,7 +676,7 @@ def serve_setup(default_directory: str | None = None) -> None:
                             if value and value not in {item["path"] for item in probe[candidate_key]}:
                                 raise ValueError(f"Choose {field.replace('_', ' ')} from the tested local API response")
                     path, config = create_guided_plan(values)
-                    self._json(201, {"config": str(path), "cases": len(config["dataset"]["cases"]), "profile": config["plan"]["profile"], "files": ["esx-eval.json", "discovery.json", "assurance-scope.json", "risk-plan.json", "workflow-packs.json", "README.md"], "planned_dimensions": config["assurance"]["planned_dimensions"], "connection_type": connection_type})
+                    self._json(201, {"config": str(path), "cases": len(config["dataset"]["cases"]), "profile": config["plan"]["profile"], "files": ["esx-eval.json", "discovery.json", "assurance-scope.json", "risk-plan.json", "workflow-packs.json", "PRE-D_EVIDENCE_REQUIREMENTS.md", "README.md"], "planned_dimensions": config["assurance"]["planned_dimensions"], "connection_type": connection_type})
                     return
                 self._json(404, {"error": "Unknown local setup endpoint"})
             except (ValueError, json.JSONDecodeError) as exc:

@@ -6,80 +6,7 @@ import html
 import json
 from typing import Any
 
-
-_METRIC_ORDER = (
-    "workflow_coverage", "classification", "confidence", "decision_evidence",
-    "groundedness", "security", "trajectory", "tool_use", "rag", "robustness",
-    "judge_agreement", "reproducibility", "cost_efficiency",
-)
-
-_MEASUREMENT_GUIDANCE = {
-    "workflow_coverage": {
-        "title": "Browser workflow evidence",
-        "required": "A declared browser journey with an approved observable signal and local step diagnostics.",
-        "source": "Local Playwright browser execution only.",
-    },
-    "classification": {
-        "title": "Classification quality",
-        "required": "One expected outcome and one observed outcome for every completed case. At least two expected classes are needed for a meaningful quality score.",
-        "source": "Labelled local test cases plus a decision endpoint or adapter result.",
-    },
-    "confidence": {
-        "title": "Confidence calibration",
-        "required": "An observed confidence from 0 to 1 for every completed labelled decision case.",
-        "source": "Local decision endpoint or adapter response metadata.",
-    },
-    "decision_evidence": {
-        "title": "Decision evidence",
-        "required": "Expected evidence IDs or abstention requirements, plus matching opaque fields from the local decision endpoint.",
-        "source": "Local decision API or local adapter response metadata.",
-    },
-    "groundedness": {
-        "title": "Groundedness",
-        "required": "Answer claims linked to cited evidence IDs, an integrity check, and a local support assessment for each claim.",
-        "source": "Redacted local adapter claims or telemetry evidence.",
-    },
-    "security": {
-        "title": "Security behavior",
-        "required": "Labelled positive and negative controls, observed outcomes, and evidence IDs.",
-        "source": "Approved security test pack and local adapter or telemetry evidence.",
-    },
-    "trajectory": {
-        "title": "Agent trajectory",
-        "required": "Expected milestones plus ordered local trace events, including policy and scope violations.",
-        "source": "Redacted local agent trace or framework telemetry.",
-    },
-    "tool_use": {
-        "title": "Tool-use quality",
-        "required": "Expected tool names, observed tool names, and authorization and result-validity outcomes for each case.",
-        "source": "Redacted local tool trace and expectation map.",
-    },
-    "rag": {
-        "title": "RAG quality",
-        "required": "Expected relevant document IDs, retrieved and cited document IDs, and answer-claim support evidence.",
-        "source": "Local retrieval trace, citation metadata, and redacted evidence.",
-    },
-    "robustness": {
-        "title": "Robustness",
-        "required": "Baseline and perturbed versions of the same labelled case with observed outcomes.",
-        "source": "Local perturbation pack and adapter results.",
-    },
-    "judge_agreement": {
-        "title": "Judge agreement",
-        "required": "Per-case decisions from at least two approved judges.",
-        "source": "Local or customer-approved private judge outputs.",
-    },
-    "reproducibility": {
-        "title": "Repeatability",
-        "required": "Per-case outputs from at least two independent runs of the same configuration.",
-        "source": "Repeated local-run result records.",
-    },
-    "cost_efficiency": {
-        "title": "Cost and latency",
-        "required": "Redacted per-case cost, token, request, retry, tool-call, timeout, and latency observations.",
-        "source": "Local provider usage metadata or instrumentation.",
-    },
-}
+from .evidence_requirements import METRIC_REQUIREMENTS, build_measurement_readiness, metric_names
 
 
 def _escape(value: object) -> str:
@@ -87,7 +14,7 @@ def _escape(value: object) -> str:
 
 
 def _title(name: str) -> str:
-    return _MEASUREMENT_GUIDANCE.get(name, {}).get("title", name.replace("_", " ").title())
+    return METRIC_REQUIREMENTS.get(name, {}).get("title", name.replace("_", " ").title())
 
 
 def _metric_status(metric: object) -> str:
@@ -95,7 +22,11 @@ def _metric_status(metric: object) -> str:
 
 
 def _status_label(status: str) -> str:
-    return {"measured": "MEASURED", "not_applicable": "NOT RUN"}.get(status, "EVIDENCE NEEDED")
+    return {
+        "measured": "MEASURED",
+        "not_applicable": "NOT RUN",
+        "not_requested": "NOT REQUESTED",
+    }.get(status, "EVIDENCE NEEDED")
 
 
 def _primary_signal(name: str, metric: dict[str, Any]) -> str:
@@ -123,15 +54,6 @@ def _primary_signal(name: str, metric: dict[str, Any]) -> str:
     if unit == "milliseconds":
         return f"{label}: {value} ms"
     return f"{label}: {value}"
-
-
-def _metric_names(metrics: dict[str, Any]) -> list[str]:
-    names = [
-        name for name in _METRIC_ORDER
-        if name in metrics and _metric_status(metrics.get(name)) != "not_applicable"
-    ]
-    names.extend(name for name in metrics if name not in names and _metric_status(metrics.get(name)) != "not_applicable")
-    return names
 
 
 def _metric_cards(metrics: dict[str, Any], names: list[str]) -> str:
@@ -257,22 +179,50 @@ def _browser_summary(report: dict[str, Any]) -> str:
     <div class='quick-grid'><div><strong>""" + _escape(session) + "</strong><span>Session</span></div><div><strong>" + _escape(f"{passed}/{requested}") + "</strong><span>Visible signals matched</span></div><div><strong>" + _escape(review) + "</strong><span>Signals to refine</span></div></div></section>"
 
 
-def _measurement_readiness(metrics: dict[str, Any]) -> str:
+def _measurement_readiness(readiness: object) -> str:
+    entries = readiness if isinstance(readiness, list) else []
     rows = []
-    for name in _metric_names(metrics):
-        metric = metrics.get(name, {})
-        metric = metric if isinstance(metric, dict) else {}
-        guidance = _MEASUREMENT_GUIDANCE.get(name, {"title": _title(name), "required": "Compatible local evidence.", "source": "Local adapter or telemetry."})
-        status = _metric_status(metric)
-        observation = _primary_signal(name, metric) if status == "measured" else str(metric.get("reason", "No compatible local evidence was supplied."))
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", "not_measurable"))
+        observation = str(item.get("reason", "") or item.get("next_step", "No compatible local evidence was supplied."))
         rows.append(
             "<details class='readiness-card'><summary>"
-            f"<span><strong>{_escape(guidance['title'])}</strong><small>{_escape(observation)}</small></span>"
-            f"<b>{_escape(_status_label(status))}</b></summary><div><p><b>TO MEASURE</b>{_escape(guidance['required'])}</p>"
-            f"<p><b>LOCAL SOURCE</b>{_escape(guidance['source'])}</p></div></details>"
+            f"<span><strong>{_escape(item.get('title', 'Local metric'))}</strong><small>{_escape(observation)}</small></span>"
+            f"<b>{_escape(_status_label(status))}</b></summary><div><p><b>YOU DEFINE</b>{_escape(item.get('user_supplies', 'A customer-approved local expectation.'))}</p>"
+            f"<p><b>APPLICATION EMITS</b>{_escape(item.get('application_emits', 'Compatible redacted local evidence.'))}</p>"
+            f"<p><b>MINIMUM EVIDENCE</b>{_escape(item.get('minimum', 'A complete validated local evidence set.'))}</p>"
+            f"<p><b>LOCAL SOURCE</b>{_escape(item.get('source', 'Local adapter or telemetry evidence.'))}</p>"
+            f"<p><b>NEXT ACTION</b>{_escape(item.get('next_step', 'Supply a complete validated local evidence set, then rerun.'))}</p></div></details>"
         )
     return """<section class='detail-section'><p class='eyebrow'>MEASUREMENT READINESS</p><h2>Evidence requirements</h2>
-    <p>Only local, redacted evidence creates a score. Evidence IDs alone measure reference alignment, not whether an answer's claims are grounded.</p>""" + "".join(rows) + "</section>"
+    <p>Each metric states what your team defines, what the application must emit locally, and the minimum evidence PRE-D requires. Evidence IDs alone measure reference alignment, not whether an answer's claims are grounded.</p>""" + "".join(rows) + "</section>"
+
+
+def _evidence_preflight(preflight: object) -> str:
+    """Show actionable evidence gaps directly in the completed local report."""
+    if not isinstance(preflight, dict) or not isinstance(preflight.get("metrics"), list):
+        return ""
+    rows = []
+    for item in preflight["metrics"]:
+        if not isinstance(item, dict):
+            continue
+        missing = item.get("missing", [])
+        missing_text = " ".join(str(value) for value in missing if isinstance(value, str)) or "No remaining preflight gap."
+        rows.append(
+            "<details class='readiness-card'><summary><span><b>" + _escape(str(item.get("status", "unknown")).replace("_", " ").upper())
+            + "</b><strong>" + _escape(item.get("title", item.get("metric", "Metric")))
+            + "</strong><small>" + _escape(item.get("case_coverage", "No case coverage information."))
+            + "</small></span><span>" + _escape(item.get("source", "local evidence")) + "</span></summary><div>"
+            + "<p><b>MISSING OR PENDING</b>" + _escape(missing_text) + "</p>"
+            + "<p><b>MINIMUM EVIDENCE</b>" + _escape(item.get("minimum", "A complete validated local evidence set."))
+            + "</p></div></details>"
+        )
+    if not rows:
+        return ""
+    return """<section class='detail-section'><p class='eyebrow'>EVIDENCE READINESS</p><h2>What created each result</h2>
+    <p>This is the local evidence check for this run. It separates a missing or incomplete evidence source from a measured outcome. A pending application result is not a product defect.</p>""" + "".join(rows) + "</section>"
 
 
 def _coverage_details(report: dict[str, Any]) -> str:
@@ -317,7 +267,12 @@ def render_local_report(report: dict[str, Any]) -> str:
     evaluation = evaluation if isinstance(evaluation, dict) else {}
     metrics = report.get("metrics", {})
     metrics = metrics if isinstance(metrics, dict) else {}
-    names = _metric_names(metrics)
+    required_dimensions = evaluation.get("required_dimensions", [])
+    names = metric_names(metrics, required_dimensions)
+    readiness = report.get("measurement_readiness")
+    if not isinstance(readiness, list):
+        readiness = build_measurement_readiness(metrics, required_dimensions)
+    preflight = report.get("evidence_preflight")
     payload = _escape(json.dumps(report, indent=2, ensure_ascii=True))
     method = str(evaluation.get("scorecard_type", "local_evaluation")).replace("_", " ")
     decision_task = evaluation.get("decision_task")
@@ -328,4 +283,4 @@ def render_local_report(report: dict[str, Any]) -> str:
     return """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>PRE-D Local Evaluation Report</title><style>
 :root{--ink:#0b1416;--panel:#142328;--line:#395055;--muted:#b9c5c3;--lime:#c9f36b;--coral:#ff8464;--gold:#f5cc67;--green:#6fdb9a;--white:#f8fbf7}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 100% 0,#243f3f 0,transparent 31rem),var(--ink);color:var(--white);font:16px Georgia,serif}main{max-width:1180px;margin:0 auto;padding:28px}.hero,.panel{border:1px solid var(--line);background:rgba(20,35,40,.95)}.hero{padding:38px;background:linear-gradient(135deg,rgba(28,51,54,.98),rgba(13,25,28,.98));box-shadow:10px 10px 0 rgba(0,0,0,.22)}.hero-top,.heading{display:flex;justify-content:space-between;gap:24px;align-items:flex-start}.eyebrow,.state{margin:0 0 12px;color:var(--coral);font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.16em}.hero h1{margin:0;font-size:clamp(40px,6vw,72px);font-weight:400;line-height:.92;letter-spacing:-.05em}.hero h1 em{color:var(--coral)}.hero p{max-width:670px;color:var(--muted);font-size:18px;line-height:1.5}.local-badge{padding:8px 10px;color:var(--lime);border:1px solid rgba(201,243,107,.45);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;white-space:nowrap}.hero-meta{display:flex;gap:14px;flex-wrap:wrap;margin-top:30px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.hero-meta span{color:var(--white)}.panel{margin-top:18px;padding:26px}.heading h2,.detail-section h2{margin:0;font-size:31px;font-weight:400;letter-spacing:-.035em}.heading>p{max-width:480px;margin:4px 0;color:var(--muted);line-height:1.5}.layer-grid,.metric-grid,.quick-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:22px}.layer-card,.metric-card,.quick-grid>div{min-height:154px;padding:18px;background:#101d20;border:1px solid var(--line)}.layer-card{border-top:4px solid var(--gold)}.layer-card.measured,.layer-card.connected,.layer-card.evidence-ready{border-top-color:var(--green)}.layer-card.not-run,.layer-card.not-connected,.layer-card.workflow-evidence-only{border-top-color:#718a92}.layer-card h3,.metric-card h3{margin:10px 0 0;font-size:21px;font-weight:400}.layer-card p,.metric-card p{margin:18px 0 0;color:var(--muted);font-size:14px;line-height:1.45}.layer-card.measured .state,.layer-card.connected .state,.layer-card.evidence-ready .state{color:var(--green)}.metric-card .state{display:block;color:var(--gold)}.quick-grid>div{min-height:104px;border-top:3px solid #597077}.quick-grid strong{display:block;color:var(--lime);font-size:28px;font-weight:400}.quick-grid span{display:block;margin-top:10px;color:var(--muted);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.09em;text-transform:uppercase}.browser-summary{border-left:4px solid #718a92}details{margin-top:18px;border:1px solid var(--line);background:#0b1416}details>summary{padding:16px;color:var(--lime);cursor:pointer;font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.detail-section{padding:24px;border-top:1px solid var(--line)}.detail-section:first-of-type{border-top:0}.detail-section>p:not(.eyebrow){max-width:760px;color:var(--muted);line-height:1.5}.readiness-card{margin-top:8px;border:1px solid var(--line);background:#101d20}.readiness-card summary{display:flex;justify-content:space-between;gap:12px;padding:14px;cursor:pointer}.readiness-card summary strong{display:block;font-weight:400}.readiness-card summary small{display:block;margin-top:5px;color:var(--muted);font-size:13px;line-height:1.35}.readiness-card summary b,.readiness-card div b{color:var(--gold);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.readiness-card div{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:0 14px 14px}.readiness-card div p{margin:0;color:var(--muted);font-size:13px;line-height:1.45}.readiness-card div p b{display:block;margin-bottom:5px;color:var(--white)}table{width:100%;border-collapse:collapse;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}th,td{padding:11px 8px;border-top:1px solid var(--line);text-align:left}th{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase}pre{overflow:auto;margin:0;padding:16px;color:#cce0dd;background:#050b0d;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45}@media(max-width:720px){main{padding:12px}.hero,.panel{padding:20px}.hero-top,.heading{display:block}.local-badge{display:inline-block;margin-top:16px}.readiness-card div{grid-template-columns:1fr}}@media print{body{background:#fff;color:#111}main{max-width:none;padding:0}.hero,.panel,.layer-card,.metric-card,.quick-grid>div,.readiness-card,details{background:#fff;color:#111;box-shadow:none;border-color:#888}.hero p,.heading>p,.layer-card p,.metric-card p,.detail-section>p:not(.eyebrow),.readiness-card summary small,.readiness-card div p{color:#333}}</style></head><body><main>
-<section class='hero'><div class='hero-top'><div><p class='eyebrow'>PRE-D / LOCAL EVALUATION REPORT</p><h1>Evidence before <em>assurance.</em></h1></div><span class='local-badge'>LOCAL ONLY / NOT UPLOADED</span></div><p>One report, three distinct local evidence layers: application workflow, AI decisions, and operational telemetry. Missing evidence stays visible; it is never converted into a product verdict.</p><div class='hero-meta'><div>SUBJECT <span>""" + _escape(subject.get("agent_id", "unknown")) + "</span></div><div>VERSION <span>" + _escape(subject.get("subject_version", "unknown")) + "</span></div><div>DATASET <span>" + _escape(subject.get("dataset_version", "unknown")) + "</span></div><div>METHOD <span>" + _escape(method) + "</span></div>" + task_meta + "<div>RUNNER <span>" + _escape(report.get("runner_version", "unknown")) + "</span></div></div></section>" + _evaluation_layers(report) + _browser_summary(report) + """<details><summary>VIEW DETAILED LOCAL METRICS</summary><section class='detail-section'><p class='eyebrow'>SCORECARD</p><h2>Measured dimensions</h2><div class='metric-grid'>""" + _metric_cards(metrics, names) + "</div></section>" + _measurement_readiness(metrics) + "</details><details><summary>VIEW SCOPE, COVERAGE, AND DIAGNOSTICS</summary>" + _coverage_details(report) + _diagnostics(report) + "</details><details><summary>VIEW REDACTED RESULT DATA</summary><pre>" + payload + "</pre></details></main></body></html>"
+<section class='hero'><div class='hero-top'><div><p class='eyebrow'>PRE-D / LOCAL EVALUATION REPORT</p><h1>Evidence before <em>assurance.</em></h1></div><span class='local-badge'>LOCAL ONLY / NOT UPLOADED</span></div><p>One report, three distinct local evidence layers: application workflow, AI decisions, and operational telemetry. Missing evidence stays visible; it is never converted into a product verdict.</p><div class='hero-meta'><div>SUBJECT <span>""" + _escape(subject.get("agent_id", "unknown")) + "</span></div><div>VERSION <span>" + _escape(subject.get("subject_version", "unknown")) + "</span></div><div>DATASET <span>" + _escape(subject.get("dataset_version", "unknown")) + "</span></div><div>METHOD <span>" + _escape(method) + "</span></div>" + task_meta + "<div>RUNNER <span>" + _escape(report.get("runner_version", "unknown")) + "</span></div></div></section>" + _evaluation_layers(report) + _browser_summary(report) + """<details><summary>VIEW DETAILED LOCAL METRICS</summary><section class='detail-section'><p class='eyebrow'>SCORECARD</p><h2>Measured dimensions</h2><div class='metric-grid'>""" + _metric_cards(metrics, names) + "</div></section>" + _evidence_preflight(preflight) + _measurement_readiness(readiness) + "</details><details><summary>VIEW SCOPE, COVERAGE, AND DIAGNOSTICS</summary>" + _coverage_details(report) + _diagnostics(report) + "</details><details><summary>VIEW REDACTED RESULT DATA</summary><pre>" + payload + "</pre></details></main></body></html>"
