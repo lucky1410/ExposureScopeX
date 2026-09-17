@@ -19,10 +19,15 @@ from .evidence_requirements import (
     build_measurement_readiness, inspect_evidence_preflight, metric_names,
     render_evidence_requirements_markdown,
 )
+from .ground_truth import ground_truth_summary, read_ground_truth, validate_ground_truth_case_ids
 from .local_metrics import calculate_local_metrics, summarize_metric_trust
 from .discovery import discover_repository
 from .report_html import render_local_report
 from .runner import RunnerError, attach_local_measurements, build_package, generate_keypair, read_json, sha256, sign_package
+from .semantic_grounding import (
+    _validate_judge, evaluate_semantic_grounding, grounding_material_summary,
+    read_grounding_material,
+)
 from .setup import serve_setup
 from .telemetry import derive_telemetry_measurements, serve_collector, telemetry_summary
 from .workflows import add_candidate_to_config, apply_reusable_pack, export_reusable_pack
@@ -124,8 +129,8 @@ if __name__ == "__main__":
 _FULL_METRIC_MEASUREMENTS_TEMPLATE = '''{
   "claims": [
     {
-      "claim_id": "REPLACE_WITH_CLAIM_ID",
-      "evidence_ids": ["REPLACE_WITH_EVIDENCE_ID"],
+      "claim_id": "REPLACE_WITH_SUPPORTED_CLAIM_ID",
+      "evidence_ids": ["REPLACE_WITH_ALLOWED_EVIDENCE_ID"],
       "entailment_score": "REPLACE_WITH_CLAIM_SUPPORT_SCORE_0_TO_1",
       "citations_valid": "REPLACE_WITH_CITATION_VALID_BOOLEAN",
       "evidence_integrity_valid": "REPLACE_WITH_EVIDENCE_INTEGRITY_BOOLEAN"
@@ -274,6 +279,49 @@ def _full_metric_measurements_template(cases: list[dict[str, object]]) -> str:
     return json.dumps(template, indent=2) + "\n"
 
 
+def _ground_truth_template(cases: list[dict[str, object]]) -> str:
+    """Create positive, negative, and abstention controls without raw content."""
+    first = str(cases[0]["case_id"])
+    second = str(cases[1]["case_id"] if len(cases) > 1 else cases[0]["case_id"])
+    return json.dumps({
+        "schema_version": "pre-d-local-ground-truth-1.0",
+        "claims": [
+            {
+                "claim_id": "REPLACE_WITH_SUPPORTED_CLAIM_ID",
+                "case_id": first,
+                "expected_supported": True,
+                "allowed_evidence_ids": ["REPLACE_WITH_ALLOWED_EVIDENCE_ID"],
+                "must_abstain": False,
+            },
+            {
+                "claim_id": "REPLACE_WITH_UNSUPPORTED_CLAIM_ID",
+                "case_id": second,
+                "expected_supported": False,
+                "allowed_evidence_ids": [],
+                "must_abstain": False,
+            },
+        ],
+    }, indent=2) + "\n"
+
+
+def _grounding_material_template(cases: list[dict[str, object]]) -> str:
+    """Create the local semantic content contract for each evaluation case."""
+    return json.dumps({
+        "schema_version": "pre-d-grounding-material-1.0",
+        "cases": [
+            {
+                "case_id": case["case_id"],
+                "response": f"REPLACE_WITH_GENERATED_RESPONSE_FOR_{case['case_id']}",
+                "evidence": [{
+                    "evidence_id": f"REPLACE_WITH_EVIDENCE_ID_FOR_{case['case_id']}",
+                    "text": f"REPLACE_WITH_RETRIEVED_SOURCE_TEXT_FOR_{case['case_id']}",
+                }],
+            }
+            for case in cases
+        ],
+    }, indent=2) + "\n"
+
+
 def _starter_readme(args: argparse.Namespace, dataset_version: str, mode: str) -> str:
     """Create a practical local-only guide beside each generated starter."""
     full_metric_section = ""
@@ -281,11 +329,22 @@ def _starter_readme(args: argparse.Namespace, dataset_version: str, mode: str) -
         full_metric_section = '''
 ## 6. Fill the advanced measurements template
 
-This folder also contains `full_metric_measurements.json`. It has named
+This folder also contains `full_metric_measurements.json`,
+`grounding-material.json`, and `ground-truth.json`. The measurements file has named
 placeholders for all advanced areas. Replace each `REPLACE_WITH_*` value with
 redacted facts recorded by your local system, using the required JSON type
 (for example a boolean must become `true` or `false`, not text). Do not add
 raw prompt text, answers, documents, credentials, or tool arguments.
+
+In `grounding-material.json`, provide each generated response and the source
+chunks retrieved for it, or have adapter v2 return the same object
+automatically. Configure `assurance.grounding_judge` as documented in the main
+runner README. PRE-D performs claim extraction, evidence comparison, and
+scoring locally; raw content is omitted from the result package and report.
+
+`ground-truth.json` contains opaque negative controls for evidence alignment,
+unsupported output, and abstention. It does not independently prove semantic
+groundedness.
 
 Examples of the information to fill:
 
@@ -308,7 +367,7 @@ insufficient control coverage, and cost records that do not match the labelled
 case IDs before it calls the application:
 
 ```powershell
-esx-eval evidence-check --config .\\esx-eval.json --measurements .\\full_metric_measurements.json --out .\\out\\evidence-readiness.json
+esx-eval evidence-check --config .\\esx-eval.json --measurements .\\full_metric_measurements.json --ground-truth .\\ground-truth.json --grounding-material .\\grounding-material.json --out .\\out\\evidence-readiness.json
 ```
 
 The generated adapter reads this file automatically during a full-metric run.
@@ -452,7 +511,7 @@ def init_command(args: argparse.Namespace) -> int:
     required_dimensions = ["classification", "confidence"]
     if args.full_metrics:
         required_dimensions += [
-            "groundedness", "security", "trajectory", "tool_use", "rag", "robustness",
+            "groundedness", "hallucination", "security", "trajectory", "tool_use", "rag", "robustness",
             "judge_agreement", "reproducibility", "cost_efficiency",
         ]
     target.mkdir(parents=True, exist_ok=True)
@@ -475,6 +534,11 @@ def init_command(args: argparse.Namespace) -> int:
         },
         "source": {"origin": "local"},
     }
+    if args.full_metrics:
+        config["assurance"] = {
+            "ground_truth_file": "ground-truth.json",
+            "grounding_material_file": "grounding-material.json",
+        }
     _write_json(target / "esx-eval.json", config)
     (target / "local_adapter.py").write_text(_LOCAL_ADAPTER_TEMPLATE, encoding="utf-8")
     (target / "PRE-D_EVIDENCE_REQUIREMENTS.md").write_text(
@@ -484,7 +548,13 @@ def init_command(args: argparse.Namespace) -> int:
         (target / "full_metric_measurements.json").write_text(
             _full_metric_measurements_template(config["dataset"]["cases"]), encoding="utf-8"
         )
-    mode = "all eleven metric areas" if args.full_metrics else "classification and confidence"
+        (target / "ground-truth.json").write_text(
+            _ground_truth_template(config["dataset"]["cases"]), encoding="utf-8"
+        )
+        (target / "grounding-material.json").write_text(
+            _grounding_material_template(config["dataset"]["cases"]), encoding="utf-8"
+        )
+    mode = "all twelve metric areas" if args.full_metrics else "classification and confidence"
     (target / "README.md").write_text(
         _starter_readme(args, dataset_version, mode), encoding="utf-8"
     )
@@ -522,7 +592,8 @@ def _metric_line(title: str, metrics: dict[str, object], fields: list[tuple[str,
 def _print_advanced_metrics(metrics: dict[str, dict[str, object]], dimensions: list[str]) -> None:
     print("\nADVANCED LOCAL RESULTS")
     labels = {
-        "groundedness": ("Grounding", [("supported_claim_rate", "supported claims"), ("citation_validity_rate", "valid citations"), ("evidence_integrity_rate", "verified evidence")]),
+        "groundedness": ("Grounding", [("grounded_claim_rate", "grounded extracted claims"), ("contradiction_rate", "contradicted"), ("insufficient_evidence_rate", "insufficient evidence"), ("response_processing_rate", "responses processed"), ("extraction_review_status", "extraction review")]),
+        "hallucination": ("Hallucination", [("hallucinated_claim_rate", "unsupported claims"), ("hallucination_free_response_rate", "responses without unsupported claims"), ("correct_abstention_rate", "correct abstention"), ("false_answer_rate", "failed required abstentions"), ("response_assessment_coverage", "response coverage")]),
         "security": ("Security", [("attack_outcome_accuracy", "attack outcome accuracy"), ("detection_rate", "detection rate"), ("false_detection_rate", "false detection rate"), ("evidence_coverage", "evidence coverage")]),
         "trajectory": ("Trajectory and tool policy", [("score", "trajectory score"), ("milestone_coverage", "milestone coverage"), ("action_efficiency", "action efficiency"), ("policy_compliant", "policy compliant")]),
         "tool_use": ("Tool-use quality", [("selection_f1", "selection F1"), ("authorization_rate", "authorized"), ("result_validity_rate", "valid results"), ("exact_tool_set_rate", "exact tool set")]),
@@ -538,7 +609,11 @@ def _print_advanced_metrics(metrics: dict[str, dict[str, object]], dimensions: l
             _metric_line(title, metrics[dimension], fields)
 
 
-def _print_local_results(config: dict[str, object], package: dict[str, object], *, summary_only: bool) -> dict[str, dict[str, object]]:
+def _print_local_results(
+    config: dict[str, object], package: dict[str, object], *, summary_only: bool,
+    ground_truth: dict[str, object] | None = None,
+    semantic_grounding: dict[str, object] | None = None,
+) -> dict[str, dict[str, object]]:
     """Present local results in a human-readable terminal report, never a release verdict."""
     evaluation = package["evaluation"]
     execution = package["execution"]
@@ -547,7 +622,9 @@ def _print_local_results(config: dict[str, object], package: dict[str, object], 
     predicted = evaluation["predicted_labels"]
     confidences = evaluation["confidences"]
     assert isinstance(expected, list) and isinstance(predicted, list) and isinstance(confidences, list)
-    metrics = calculate_local_metrics(package)
+    metrics = calculate_local_metrics(
+        package, ground_truth=ground_truth, semantic_grounding=semantic_grounding,
+    )
     classification = metrics["classification"]
     confidence = metrics["confidence"]
     correct_count = sum(actual == observed for actual, observed in zip(expected, predicted, strict=True))
@@ -709,6 +786,18 @@ def github_oidc_token(audience: str) -> str:
 
 def run_command(args: argparse.Namespace) -> int:
     config = read_json(args.config)
+    ground_truth_path = _workflow_file(
+        config, args.config, getattr(args, "ground_truth", None), "ground_truth_file",
+    )
+    ground_truth = read_ground_truth(ground_truth_path) if ground_truth_path else None
+    if ground_truth:
+        validate_ground_truth_case_ids(
+            ground_truth,
+            {
+                item["case_id"] for item in config.get("dataset", {}).get("cases", [])
+                if isinstance(item, dict) and isinstance(item.get("case_id"), str)
+            } if isinstance(config.get("dataset"), dict) else set(),
+        )
     oidc_token = _read_secret_file(args.github_oidc_token_file)
     audit_path = _audit_path(args.out, config)
     adapter = config.get("adapter", {})
@@ -719,8 +808,11 @@ def run_command(args: argparse.Namespace) -> int:
         "adapter_type": adapter_type,
         "target_environment": target_environment,
     })
+    local_artifacts: dict[str, object] = {}
     try:
-        package = build_package(config, github_oidc_token=oidc_token)
+        package = build_package(
+            config, github_oidc_token=oidc_token, local_artifacts=local_artifacts,
+        )
     except RunnerError:
         append_audit_event(audit_path, "evaluation_failed", {"config_sha256": sha256(config), "failure_category": "runner_error"})
         raise
@@ -737,12 +829,28 @@ def run_command(args: argparse.Namespace) -> int:
             policy=evidence_policy if isinstance(evidence_policy, dict) else None,
         )
         package = attach_local_measurements(package, measurements, provenance)
+    try:
+        semantic_grounding = _semantic_grounding_result(
+            config, args.config, package, local_artifacts,
+            explicit_path=getattr(args, "grounding_material", None),
+        )
+    except RunnerError:
+        append_audit_event(audit_path, "evaluation_failed", {
+            "config_sha256": sha256(config), "failure_category": "groundedness_error",
+        })
+        raise
     signing = config.get("signing")
     if args.sign and oidc_token is None:
         if not isinstance(signing, dict) or not isinstance(signing.get("identity_id"), str) or not isinstance(signing.get("private_key_path"), str):
             raise RunnerError("--sign requires signing.identity_id and signing.private_key_path in the config")
         package = sign_package(package, identity_id=signing["identity_id"], private_key_path=signing["private_key_path"])
     _write_json(args.out, package)
+    _write_json(_semantic_result_path(args.out), {
+        "schema_version": "pre-d-local-semantic-results-1.0",
+        "package_sha256": sha256(package),
+        "result_sha256": sha256(semantic_grounding),
+        "result": semantic_grounding,
+    })
     audit_entry = append_audit_event(audit_path, "evaluation_completed", {
         "package_id": package["package_id"],
         "package_sha256": sha256(package),
@@ -752,7 +860,9 @@ def run_command(args: argparse.Namespace) -> int:
     discovery = _optional_json(_workflow_file(config, args.config, getattr(args, "discovery", None), "discovery_file"))
     scope = _optional_json(_workflow_file(config, args.config, getattr(args, "scope", None), "scope_file"))
     plan = _optional_json(_workflow_file(config, args.config, getattr(args, "plan", None), "plan_file"))
-    local_metrics = _planned_metrics(calculate_local_metrics(package), plan)
+    local_metrics = _planned_metrics(calculate_local_metrics(
+        package, ground_truth=ground_truth, semantic_grounding=semantic_grounding,
+    ), plan)
     measurement_readiness = build_measurement_readiness(
         local_metrics, package["evaluation"].get("required_dimensions", [])
     )
@@ -784,6 +894,7 @@ def run_command(args: argparse.Namespace) -> int:
         "coverage": coverage,
         "execution": package["execution"],
         "assurance_graph": assurance_graph,
+        "local_ground_truth": ground_truth_summary(ground_truth) if ground_truth else None,
         "notice": "This report was calculated locally. It is not a shared ExposureScopeX release decision.",
     }
     _write_json(report_path, report)
@@ -793,7 +904,10 @@ def run_command(args: argparse.Namespace) -> int:
     if args.output_format == "json":
         print(json.dumps({"package": str(args.out), "report": str(report_path), "html_report": str(html_report_path), "audit_log": str(audit_path), "audit_tail_sha256": audit_entry["entry_sha256"], "package_id": package["package_id"], "signed": "signature" in package, "uploaded": False}))
     else:
-        _print_local_results(config, package, summary_only=args.summary_only)
+        _print_local_results(
+            config, package, summary_only=args.summary_only, ground_truth=ground_truth,
+            semantic_grounding=semantic_grounding,
+        )
         _print_coverage_model(coverage, package)
         print(f"\nLocal result package: {args.out}")
         print(f"Detailed local metric report: {report_path}")
@@ -814,6 +928,13 @@ def evidence_check_command(args: argparse.Namespace) -> int:
     measurements_path = supplied_measurements or (str(default_measurements) if default_measurements.is_file() else None)
     result = inspect_evidence_preflight(
         config, telemetry_path=telemetry_path, measurements_path=measurements_path,
+        ground_truth_path=_workflow_file(
+            config, args.config, getattr(args, "ground_truth", None), "ground_truth_file",
+        ),
+        grounding_material_path=_workflow_file(
+            config, args.config, getattr(args, "grounding_material", None),
+            "grounding_material_file",
+        ),
     )
     if args.out:
         _write_json(args.out, result)
@@ -876,14 +997,55 @@ def telemetry_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _semantic_result_path(package_path: str | Path) -> Path:
+    path = Path(package_path)
+    return path.with_name(path.stem + ".semantic-results.json")
+
+
+def _read_saved_semantic_result(package_path: str | Path, package: dict[str, object]) -> dict[str, object] | None:
+    path = _semantic_result_path(package_path)
+    if not path.exists():
+        return None
+    envelope = read_json(path)
+    if not isinstance(envelope, dict) or envelope.get("schema_version") != "pre-d-local-semantic-results-1.0":
+        raise RunnerError("Saved semantic results have an invalid schema; rerun the evaluation")
+    if envelope.get("package_sha256") != sha256(package):
+        raise RunnerError("Saved semantic results do not match this result package; rerun the evaluation")
+    result = envelope.get("result")
+    if (result is not None and not isinstance(result, dict)) or envelope.get("result_sha256") != sha256(result):
+        raise RunnerError("Saved semantic results failed their integrity check; rerun the evaluation")
+    return result
+
+
 def report_command(args: argparse.Namespace) -> int:
     package = read_json(args.package)
+    saved_semantic = (
+        _read_saved_semantic_result(args.package, package)
+        if not getattr(args, "grounding_material", None) else None
+    )
     config_path = getattr(args, "config", None)
     config = read_json(config_path) if config_path else {}
     discovery_path = _workflow_file(config, config_path, args.discovery, "discovery_file") if config_path else args.discovery
     scope_path = _workflow_file(config, config_path, args.scope, "scope_file") if config_path else args.scope
     plan_path = _workflow_file(config, config_path, args.plan, "plan_file") if config_path else args.plan
     telemetry_path = _workflow_file(config, config_path, args.telemetry, "telemetry_file", optional=True) if config_path else args.telemetry
+    ground_truth_path = (
+        _workflow_file(config, config_path, getattr(args, "ground_truth", None), "ground_truth_file")
+        if config_path else getattr(args, "ground_truth", None)
+    )
+    ground_truth = read_ground_truth(ground_truth_path) if ground_truth_path else None
+    if ground_truth:
+        configured_cases = config.get("dataset", {}).get("cases", []) if isinstance(config.get("dataset"), dict) else []
+        case_ids = {
+            item["case_id"] for item in configured_cases
+            if isinstance(item, dict) and isinstance(item.get("case_id"), str)
+        }
+        if not case_ids:
+            case_ids = {
+                item for item in package.get("evaluation", {}).get("case_ids", [])
+                if isinstance(item, str)
+            } if isinstance(package.get("evaluation"), dict) else set()
+        validate_ground_truth_case_ids(ground_truth, case_ids)
     if telemetry_path:
         raw_cases = config.get("dataset", {}).get("cases", []) if isinstance(config.get("dataset"), dict) else []
         case_ids = [item["case_id"] for item in raw_cases if isinstance(item, dict) and isinstance(item.get("case_id"), str)]
@@ -895,8 +1057,14 @@ def report_command(args: argparse.Namespace) -> int:
         )
         package = attach_local_measurements(package, measurements, provenance)
     plan = _optional_json(plan_path)
+    semantic_grounding = saved_semantic if saved_semantic is not None else _semantic_grounding_result(
+        config, config_path, package, {},
+        explicit_path=getattr(args, "grounding_material", None),
+    )
     try:
-        metrics = _planned_metrics(calculate_local_metrics(package), plan)
+        metrics = _planned_metrics(calculate_local_metrics(
+            package, ground_truth=ground_truth, semantic_grounding=semantic_grounding,
+        ), plan)
     except (KeyError, TypeError, ValueError) as exc:
         raise RunnerError(f"Local package metric inputs are invalid: {exc}") from exc
     discovery = _optional_json(discovery_path)
@@ -925,6 +1093,7 @@ def report_command(args: argparse.Namespace) -> int:
             metrics, package["evaluation"].get("required_dimensions", []),
         ),
         "coverage": coverage, "execution": package.get("execution", {}), "assurance_graph": graph,
+        "local_ground_truth": ground_truth_summary(ground_truth) if ground_truth else None,
         "notice": "This Assurance Graph was assembled locally from the specified scope and evidence. It is not a shared release decision.",
     }
     _write_json(args.out, report)
@@ -936,6 +1105,65 @@ def report_command(args: argparse.Namespace) -> int:
 
 def _optional_json(path: str | None) -> dict[str, object] | None:
     return read_json(path) if path else None
+
+
+def _semantic_grounding_result(
+    config: dict[str, object], config_path: str | None, package: dict[str, object],
+    local_artifacts: dict[str, object], *, explicit_path: str | None,
+) -> dict[str, object] | None:
+    evaluation = package.get("evaluation", {})
+    if not isinstance(evaluation, dict) or not {"groundedness", "hallucination"}.intersection(evaluation.get("required_dimensions", [])):
+        return None
+    case_ids = {
+        item for item in evaluation.get("case_ids", []) if isinstance(item, str)
+    }
+    configured_path = (
+        _workflow_file(config, config_path, explicit_path, "grounding_material_file", optional=True)
+        if config_path else explicit_path
+    )
+    material = local_artifacts.get("grounding_material")
+    adapter = config.get("adapter", {})
+    adapter = adapter if isinstance(adapter, dict) else {}
+    capture_source = (
+        "mapped_http_target_response"
+        if material is not None and adapter.get("type") == "http_json_target"
+        else "adapter_v2_response"
+    )
+    if configured_path:
+        supplied = read_grounding_material(configured_path, case_ids=case_ids)
+        if material is not None and sha256(material) != sha256(supplied):
+            raise RunnerError(
+                "Adapter grounding material and --grounding-material do not match; use one authoritative local source"
+            )
+        material = supplied
+        capture_source = "local_grounding_material_file"
+    if material is None:
+        return None
+    assurance = config.get("assurance", {})
+    assurance = assurance if isinstance(assurance, dict) else {}
+    judge = assurance.get("grounding_judge")
+    if judge is None:
+        return {
+            "measurement_status": "not_measurable",
+            "reason": "Grounding material was captured, but no independent local semantic judge is configured.",
+            "material_provenance": grounding_material_summary(material),
+        }
+    target_command = adapter.get("command")
+    subject_id = str(evaluation.get("agent_id", "")) or None
+    _validate_judge(judge, target_command=target_command, subject_id=subject_id)
+    try:
+        return evaluate_semantic_grounding(
+            material, judge, target_command=target_command, subject_id=subject_id,
+            capture_source=capture_source,
+        )
+    except RunnerError as exc:
+        return {
+            "measurement_status": "not_measurable",
+            "reason": f"Semantic grounding failed closed: {exc}",
+            "material_provenance": {
+                **grounding_material_summary(material), "capture_source": capture_source,
+            },
+        }
 
 
 def _workflow_file(
@@ -1125,6 +1353,11 @@ def verify_audit_command(args: argparse.Namespace) -> int:
 
 def upload_command(args: argparse.Namespace) -> int:
     package = read_json(args.package)
+    required = package.get("evaluation", {}).get("required_dimensions", []) if isinstance(package.get("evaluation"), dict) else []
+    if "hallucination" in required:
+        raise RunnerError(
+            "Hallucination gold labels are local-only and are not uploaded. Create the governed platform evaluation separately when Pro evidence governance is configured."
+        )
     if args.timeout_seconds < 1 or args.timeout_seconds > 300:
         raise RunnerError("upload timeout must be between 1 and 300 seconds")
     token = _read_secret_file(args.github_oidc_token_file)
@@ -1203,10 +1436,14 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--scope", help="Optional confirmed local scope JSON to include in the Assurance Graph")
     run.add_argument("--plan", help="Optional reviewed local risk plan JSON to include in the Assurance Graph")
     run.add_argument("--telemetry", help="Optional redacted local telemetry JSONL to include in the Assurance Graph")
+    run.add_argument("--ground-truth", help="Optional local claim/evidence gold JSON for evidence-alignment and abstention controls")
+    run.add_argument("--grounding-material", help="Optional local responses and retrieved source chunks for semantic groundedness")
     evidence_check = commands.add_parser("evidence-check", help="Check exactly which local inputs can produce each metric before a run")
     evidence_check.add_argument("--config", required=True, help="Local esx-eval.json plan to inspect")
     evidence_check.add_argument("--telemetry", help="Optional redacted local telemetry JSONL to validate")
     evidence_check.add_argument("--measurements", help="Optional local command-v2 measurements JSON to validate")
+    evidence_check.add_argument("--ground-truth", help="Optional local claim/evidence gold JSON to validate")
+    evidence_check.add_argument("--grounding-material", help="Optional local responses and source chunks to validate")
     evidence_check.add_argument("--out", help="Optional local evidence-readiness.json output path")
     browser_auth = commands.add_parser("browser-auth", help="Complete an approved interactive login and save local browser session state")
     browser_auth.add_argument("--config", required=True, help="Setup-generated browser esx-eval.json with session_bootstrap")
@@ -1262,6 +1499,8 @@ def parser() -> argparse.ArgumentParser:
     report.add_argument("--scope", help="Optional confirmed local scope JSON")
     report.add_argument("--plan", help="Optional reviewed local risk plan JSON")
     report.add_argument("--telemetry", help="Optional redacted local telemetry JSONL")
+    report.add_argument("--ground-truth", help="Optional local claim/evidence gold JSON")
+    report.add_argument("--grounding-material", help="Optional local responses and retrieved source chunks for semantic groundedness")
     view = commands.add_parser("view", help="Open a locally generated HTML evaluation report")
     view.add_argument("--report", required=True, help="Path to evaluation.local-report.html")
     verify_audit = commands.add_parser("verify-audit", help="Verify the local audit log hash chain")

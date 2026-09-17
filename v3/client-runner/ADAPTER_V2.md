@@ -193,7 +193,33 @@ adapter/telemetry evidence.
 }
 ```
 
-`claims` enables grounding/hallucination measurement. `security` needs at least
+`claims` supplies target-declared metadata only. It can support evidence-ID
+alignment and negative controls, but cannot independently establish semantic
+groundedness. For verified local groundedness, adapter v2 may additionally
+return this top-level local-only material:
+
+```json
+{
+  "grounding_material": {
+    "schema_version": "pre-d-grounding-material-1.0",
+    "cases": [
+      {
+        "case_id": "case-001",
+        "response": "Generated response text",
+        "evidence": [
+          {"evidence_id": "doc-001", "text": "Retrieved source chunk"}
+        ]
+      }
+    ]
+  }
+}
+```
+
+The material must cover every evaluated case. PRE-D passes it only to the
+independent local semantic judge, then discards it. It is never added to the
+result package or report. The judge performs claim extraction and evidence
+comparison before PRE-D calculates supported, contradicted, and
+insufficient-evidence rates. `security` needs at least
 one expected-detection case and one negative control. `trajectory` measures
 milestone coverage, efficiency, scope, policy, and tool misuse. `tool_use`
 measures selected versus approved tools, authorization, and result validity per
@@ -214,6 +240,91 @@ names, account IDs, invoices, prompts, responses, or credentials. When this
 dimension is required, the release policy gates cost per case, P95 latency,
 timeout rate, and fallback rate alongside all selected quality and security
 requirements.
+
+## Local grounding judge protocol
+
+The configured `assurance.grounding_judge` command is invoked with
+`shell=false`, a bounded timeout, and JSON on standard input. It must be a
+different command and identity from the evaluated target.
+
+The timeout applies separately to each case's extraction/review and to each
+claim comparison. Each invocation receives one item. Stdout is capped while
+reading at `max_response_bytes` (default 5 MB); stderr is discarded with a 64 KB
+limit. Oversized output terminates the invocation. Keep the model's request
+timeout below the command timeout to allow startup and JSON processing.
+
+For `operation: extract_claims`, return exactly one result per case:
+
+```json
+{
+  "schema_version": "pre-d-grounding-judge-response-1.0",
+  "operation": "extract_claims",
+  "results": [
+    {"case_id": "case-001", "claims": ["One atomic factual claim."], "abstained": false}
+  ]
+}
+```
+
+The judge observes `abstained` from the actual response. Set it to true only for
+an explicit refusal to answer due to insufficient evidence, not a disclaimer
+attached to a substantive answer. Older judges may omit it, but then abstention
+scoring remains unavailable. A response with no factual claims uses `claims: []`;
+that alone is not an abstention or a successful answer.
+
+An explicit `evidence: []` in grounding material records that no source was
+retrieved. Such claims cannot receive supported or contradicted verdicts because
+those verdicts require a source reference. Do not insert fabricated chunks.
+
+After extraction, the judge must support `operation: review_claims`. PRE-D sends
+one case with `case_id`, the original `response`, and extracted `claims`. Use a
+separate model pass to check for omissions, altered meanings, and invented
+assertions. Return:
+
+```json
+{
+  "schema_version": "pre-d-grounding-judge-response-1.0",
+  "operation": "review_claims",
+  "results": [
+    {"case_id": "case-001", "complete": true, "missing_claims": []}
+  ]
+}
+```
+
+If a factual assertion is missing or altered, return `complete: false` and list
+omitted claims in `missing_claims`. PRE-D marks the case incomplete; it does not
+silently accept the original extraction. This operation is mandatory even for
+empty claim lists. Custom judges must implement it before using the hardened
+semantic evaluator. The bundled Ollama bridge already supports it.
+
+The report calls this `model_reviewed`, not proven full claim coverage. A second
+model pass can still miss an omission. `compared_extracted_claim_rate` describes
+comparison of the extracted claims only; `response_processing_rate` describes
+completed cases. The ambiguous `semantic_coverage_rate` field has been removed.
+
+PRE-D assigns stable run-local claim IDs and then invokes
+`operation: compare_evidence`. Return exactly one result per claim:
+
+```json
+{
+  "schema_version": "pre-d-grounding-judge-response-1.0",
+  "operation": "compare_evidence",
+  "results": [
+    {
+      "claim_id": "claim-a5d3e73f6bb44d59a7f6d91c1a6bd32f",
+      "verdict": "supported",
+      "confidence": 0.93,
+      "evidence_ids": ["doc-001"]
+    }
+  ]
+}
+```
+
+Allowed verdicts are `supported`, `contradicted`, and `insufficient`.
+Supported and contradicted verdicts require at least one known evidence ID.
+Missing cases, claims, verdicts, or unknown evidence IDs fail closed and no
+full-run semantic score is produced. Successfully processed cases and claims
+are retained when another case fails, with explicit failure diagnostics. Failed
+cases are never silently excluded to produce a passing full-run score.
 
 For a multi-agent subject, include `trace_envelope`. A redacted envelope can
 contain event metadata only, not prompts, arguments, outputs, or tool results:

@@ -73,7 +73,8 @@ the opaque `case_id`.
 | --- | --- | --- |
 | Classification | `predicted_label` | Accuracy, precision, recall, F1, and confusion matrix. |
 | Confidence | Genuine confidence from 0 to 1, not a browser pass/fail value. | Brier score, calibration error, and confidence bins. |
-| Groundedness | Claim ID, cited evidence ID, support score, citation and integrity flags. | Evidence-supported claim rate. |
+| Groundedness | Generated response text, retrieved source chunks, and an independent local semantic judge. | Atomic claim support, contradiction, insufficient-evidence, coverage, and judge-confidence rates. |
+| Hallucination | Local unsupported-claim and abstention controls, plus observed claims and abstention outcomes. | Unsupported-output and correct-abstention rates. |
 | RAG | Retrieved and cited document IDs. | Retrieval precision/recall, citation coverage, and faithfulness inputs. |
 | Security | Observed attack success, detection, block/control outcome, evidence ID. | Attack/control rates and evidence coverage. |
 | Tool use | Observed tool names, authorization, valid-result flag, evidence ID. | Tool precision/recall, exact-set rate, unauthorized/invalid outcomes. |
@@ -96,8 +97,10 @@ an ExposureScopeX account or platform connection.
 
 Optional opaque `evidence_ids` and an `abstained` boolean support
 evidence-reference alignment and abstention checks. They are useful but do not
-prove that an answer is grounded. Groundedness requires local claim-support,
-citation-validity, and evidence-integrity observations.
+prove that an answer is grounded. Groundedness requires the generated response,
+the retrieved source text, and an independent local semantic judge. Adapter v2
+can return this material automatically; an HTTP connector can map it; or the
+user can provide a local grounding-material file.
 
 See [`DECISION_EVALUATION.md`](DECISION_EVALUATION.md) for the dataset and
 endpoint contract.
@@ -156,8 +159,9 @@ Use this checklist before reading a local report as a release decision:
   labels, and varied genuine confidence values.
 - RAG: each evaluated case has retrieved IDs and an approved relevant set or
   reference answer.
-- Groundedness: each evaluated response claim has an evidence ID and support
-  outcome.
+- Groundedness: every evaluated case has its generated response and retrieved
+  source list (explicitly empty if retrieval returned nothing); claim extraction and evidence comparison cover every
+  extracted claim.
 - Tool use: every case has an expected tool set and observed authorization and
   result status.
 - Trajectory: every workflow has approved milestones and a correlated trace.
@@ -168,6 +172,70 @@ Use this checklist before reading a local report as a release decision:
   local rate-card data, plus timing.
 
 ## Read the report correctly
+
+### Semantic hallucination scoring
+
+Add `hallucination` to `evaluation.required_dimensions`. It reuses the same
+`assurance.grounding_judge` and grounding material as `groundedness`. Running both
+uses one claim extraction and evidence comparison pipeline. No separate gold
+claim file is needed for this semantic path.
+
+The pipeline now reviews extraction in a separate model pass before comparing
+claims to evidence. Omitted or altered claims detected by that review block the
+case's score. `model_reviewed` describes this check; it does not certify that a
+model captured every factual claim. Custom command judges must implement the
+`review_claims` operation described in `ADAPTER_V2.md`.
+
+Supply the actual generated response and source chunks through adapter v2,
+mapped HTTP response fields, or the configured grounding-material file. The
+judge compares each extracted factual claim with those sources. PRE-D reports:
+
+- `unsupported_claim_rate`: contradicted plus insufficient-evidence claims,
+  divided by all judged claims. Lower is better. The report also retains each
+  count separately. Unsupported does not necessarily mean factually false.
+- `hallucination_free_response_rate`: responses with no unsupported claims,
+  divided by assessed responses. Confirmed abstentions are included. Responses
+  with no claims and no confirmed abstention are excluded, and coverage shows
+  that gap. This rate alone does not establish that useful answers were given.
+- `correct_abstention_rate`: successful abstentions divided by cases whose
+  dataset entry has `must_abstain: true`. An abstention containing unsupported
+  claims does not qualify. Every required case needs a judge-observed boolean.
+- `false_answer_rate`: the fraction of required-abstention cases that did not
+  meet that abstention check. Without complete abstention evidence, both rates
+  remain null.
+- `unsupported_confident_answer_rate`: answers with unsupported claims divided
+  by answers whose returned case confidence is at least 0.8. It uses application
+  confidence, not judge confidence. Without qualifying cases, the rate is null.
+
+Place `must_abstain` in the labelled dataset case, alongside `expected_label`;
+the local runner preserves that expectation. The semantic judge identifies
+abstention from the response independently of the application's own flag.
+All-abstention runs can score abstention but have no claim-rate denominator.
+
+The HTML and JSON retain provenance and coverage. `Verified` here means PRE-D
+ran an independent model-assisted comparison, not that its judge is infallible.
+Review low-confidence verdicts and validate the chosen judge against human-reviewed
+examples before interpreting these results as release evidence. Raw answers and
+source text are omitted from the reports.
+
+### Preserve and regenerate results
+
+Every run saves `<name>.semantic-results.json` alongside `<name>.json`. Keep
+these files together. The semantic results file retains only verdict metadata,
+hashes, provenance, and failure diagnostics. It is bound to the original package
+by a hash, with a separate result digest to detect accidental changes; these
+digests are not signatures or independent proof of authenticity.
+
+`esx-eval report --package ./out/evaluation.json --out ./out/rebuilt.json`
+automatically reuses the saved semantic results, without restarting the judge or
+requiring raw material. To deliberately judge the material again, provide
+`--config` and an explicit `--grounding-material` file. A changed or mismatched
+saved result is rejected rather than silently reused.
+
+Each case and each claim has an independent command timeout. If a case fails,
+completed evidence remains visible in the report with failure diagnostics, but
+full-run groundedness and hallucination scores remain unavailable until the
+failed cases are rerun successfully.
 
 | Report state | Meaning | What to do |
 | --- | --- | --- |
@@ -181,8 +249,9 @@ Use this checklist before reading a local report as a release decision:
 ## Privacy and safety rules
 
 - Use a dedicated test tenant, synthetic data, and least-privilege test roles.
-- Do not send production credentials, customer records, prompts, answers, or
-  document contents to PRE-D telemetry.
+- Do not send production credentials or customer records to PRE-D telemetry.
+  Semantic grounding content uses the separate local judge path and is omitted
+  from the package and report.
 - Use opaque IDs for documents, tools, claims, users, and evidence.
 - Keep the collector bound to loopback and review the report before any optional
   signed platform upload.

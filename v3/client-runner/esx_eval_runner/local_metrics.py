@@ -32,18 +32,28 @@ def _not_applicable(reason: str) -> dict[str, Any]:
     return {"measurement_status": "not_applicable", "reason": reason}
 
 
-def claims_metrics(claims: list[dict[str, Any]] | None) -> dict[str, Any]:
+def _claim_is_supported(claim: dict[str, Any]) -> bool:
+    return bool(
+        claim["evidence_ids"]
+        and claim["citations_valid"]
+        and claim["evidence_integrity_valid"] is True
+        and claim["entailment_score"] >= 0.8
+    )
+
+
+def claims_metrics(
+    claims: list[dict[str, Any]] | None,
+    ground_truth: dict[str, Any] | None = None,
+    decision_observations: object = None,
+) -> dict[str, Any]:
     if not claims:
-        return _unavailable("No claims with evidence references were supplied; groundedness cannot be inferred.")
+        return _unavailable("No observed claims with evidence references were supplied; groundedness cannot be measured.")
     unsupported = [
         claim["claim_id"]
         for claim in claims
-        if not claim["evidence_ids"]
-        or not claim["citations_valid"]
-        or claim["evidence_integrity_valid"] is not True
-        or claim["entailment_score"] < 0.8
+        if not _claim_is_supported(claim)
     ]
-    return {
+    declared = {
         "measurement_status": "measured",
         "claim_count": len(claims),
         "supported_claim_rate": _rounded(1 - _ratio(len(unsupported), len(claims))),
@@ -51,7 +61,226 @@ def claims_metrics(claims: list[dict[str, Any]] | None) -> dict[str, Any]:
         "citation_validity_rate": _rounded(_ratio(sum(bool(c["evidence_ids"]) and c["citations_valid"] for c in claims), len(claims))),
         "evidence_integrity_rate": _rounded(_ratio(sum(c["evidence_integrity_valid"] is True for c in claims), len(claims))),
         "unsupported_claim_ids": unsupported,
-        "definition": "Evidence-grounded proxy based on cited, integrity-verified artifacts.",
+        "definition": "Target-declared evidence-support proxy based on cited, integrity-verified artifacts.",
+    }
+    if ground_truth is not None:
+        declared["limitations"] = [
+            "The local gold file can validate opaque evidence alignment and abstention controls, but it cannot establish semantic groundedness without response and source text.",
+        ]
+    return declared
+
+
+def _score_claim_expectations(
+    claims: list[dict[str, Any]], ground_truth: dict[str, Any], decision_observations: object,
+) -> dict[str, Any]:
+    expected = {item["claim_id"]: item for item in ground_truth.get("claims", [])}
+    observed = {item["claim_id"]: item for item in claims}
+    observations = {
+        item["case_id"]: item for item in decision_observations or []
+        if isinstance(item, dict) and isinstance(item.get("case_id"), str)
+    }
+    missing: list[str] = []
+    results: list[dict[str, Any]] = []
+    for claim_id, gold in expected.items():
+        claim = observed.get(claim_id)
+        abstained = (
+            observations.get(gold.get("case_id"), {}).get("abstained")
+            if gold.get("case_id") else None
+        )
+        if claim is None:
+            if gold.get("must_abstain") and isinstance(abstained, bool):
+                results.append({
+                    "claim_id": claim_id, "case_id": gold.get("case_id"),
+                    "expected_supported": False, "observed_supported": False,
+                    "evidence_aligned": abstained, "independently_supported": False,
+                    "must_abstain": True, "abstained": abstained,
+                    "outcome": "correct_abstention" if abstained else "hallucinated",
+                })
+                continue
+            if not gold["expected_supported"] and not gold.get("must_abstain"):
+                results.append({
+                    "claim_id": claim_id, "case_id": gold.get("case_id"),
+                    "expected_supported": False, "observed_supported": False,
+                    "evidence_aligned": True, "independently_supported": False,
+                    "must_abstain": False, "abstained": abstained,
+                    "outcome": "suppressed_unsupported_claim",
+                })
+                continue
+            missing.append(claim_id)
+            continue
+        observed_supported = _claim_is_supported(claim)
+        allowed = set(gold["allowed_evidence_ids"])
+        evidence = set(claim["evidence_ids"])
+        evidence_aligned = bool(evidence) and evidence <= allowed if gold["expected_supported"] else not evidence
+        independently_supported = bool(gold["expected_supported"] and observed_supported and evidence_aligned)
+        results.append({
+            "claim_id": claim_id, "case_id": gold.get("case_id"),
+            "expected_supported": gold["expected_supported"],
+            "observed_supported": observed_supported,
+            "evidence_aligned": evidence_aligned,
+            "independently_supported": independently_supported,
+            "must_abstain": gold.get("must_abstain", False),
+            "abstained": abstained,
+            "outcome": (
+                "supported" if independently_supported else
+                "hallucinated" if not gold["expected_supported"] or gold.get("must_abstain") else
+                "grounding_failure"
+            ),
+        })
+    unexpected = sorted(set(observed) - set(expected))
+    if missing:
+        return _unavailable(
+            "The local gold set was not fully covered by observed claims or required abstentions.",
+            missing_claim_ids=sorted(missing), unexpected_claim_ids=unexpected,
+            labelled_claim_count=len(expected), observed_claim_count=len(observed),
+        )
+    verdict_correct = sum(
+        item["observed_supported"] == item["expected_supported"]
+        for item in results if item["outcome"] != "correct_abstention"
+    )
+    verdict_total = sum(item["outcome"] != "correct_abstention" for item in results)
+    return {
+        "measurement_status": "measured", "case_results": results,
+        "unexpected_claim_ids": unexpected,
+        "support_verdict_accuracy": _rounded(_ratio(verdict_correct, verdict_total)) if verdict_total else None,
+    }
+
+
+def semantic_hallucination_metrics(grounding: dict[str, Any], evaluation: dict[str, Any]) -> dict[str, Any]:
+    """Reuse the independently judged claims; keep absent denominators explicit."""
+    if grounding.get("verification_basis") != "independent_local_semantic_judge":
+        return _unavailable("Independent semantic claim comparison did not complete.")
+    if grounding.get("completion_status") == "partial":
+        return {
+            **_unavailable("Semantic evaluation is incomplete; review the failed cases and rerun."),
+            "failed_cases": grounding.get("failed_cases", []),
+            "completed_case_count": grounding.get("completed_case_count", 0),
+            "requested_case_count": grounding.get("requested_case_count", 0),
+        }
+    claims = grounding.get("case_results", [])
+    responses = grounding.get("response_results", [])
+    if not responses:
+        return _unavailable("Semantic response coverage is missing; rerun the local judge.")
+    observations = {
+        item["case_id"]: item for item in evaluation.get("decision_observations", [])
+    }
+    confidences = dict(zip(evaluation.get("case_ids", []), evaluation.get("confidences", [])))
+    rows = []
+    for response in responses:
+        case_id = response["case_id"]
+        case_claims = [item for item in claims if item["case_id"] == case_id]
+        unsupported = sum(item["verdict"] != "supported" for item in case_claims)
+        observed_abstention = response.get("abstained")
+        # An empty extraction is not proof of an abstention or a successful answer.
+        assessed = bool(case_claims) or observed_abstention is True
+        row = {
+            "case_id": case_id, "claim_count": len(case_claims),
+            "unsupported_claim_count": unsupported,
+            "abstained": observed_abstention, "assessed": assessed,
+            "unsupported_claim_ids": [item["claim_id"] for item in case_claims if item["verdict"] != "supported"],
+        }
+        expected = observations.get(case_id, {}).get("must_abstain")
+        if isinstance(expected, bool):
+            row["must_abstain"] = expected
+        rows.append(row)
+    unsupported_count = sum(item["verdict"] != "supported" for item in claims)
+    required = [row for row in rows if row.get("must_abstain") is True]
+    abstention_complete = bool(required) and all(isinstance(row["abstained"], bool) for row in required)
+    correct_abstentions = sum(row["abstained"] is True and not row["unsupported_claim_count"] for row in required)
+    assessed = [row for row in rows if row["assessed"]]
+    confident = [row for row in rows if row["claim_count"] and isinstance(confidences.get(row["case_id"]), (int, float)) and confidences[row["case_id"]] >= 0.8]
+    ratio = lambda numerator, denominator: round(numerator / denominator, 6) if denominator else None
+    rate = ratio(unsupported_count, len(claims))
+    return {
+        "measurement_status": "measured" if assessed else "not_measurable",
+        "reason": "" if assessed else "No factual claims or independently identified abstentions were observed.",
+        "verification_basis": "independent_local_semantic_judge",
+        "calculation_version": "pred-semantic-hallucination-1.0",
+        "unsupported_claim_rate": rate, "hallucinated_claim_rate": rate,
+        "contradicted_claim_count": sum(item["verdict"] == "contradicted" for item in claims),
+        "insufficient_evidence_claim_count": sum(item["verdict"] == "insufficient" for item in claims),
+        "claim_count": len(claims), "unsupported_claim_count": unsupported_count,
+        "response_count": len(rows), "assessed_response_count": len(assessed),
+        "response_assessment_coverage": ratio(len(assessed), len(rows)),
+        "hallucination_free_response_rate": ratio(sum(not row["unsupported_claim_count"] for row in assessed), len(assessed)),
+        "required_abstention_count": len(required),
+        "correct_abstention_rate": ratio(correct_abstentions, len(required)) if abstention_complete else None,
+        "false_answer_rate": ratio(len(required) - correct_abstentions, len(required)) if abstention_complete else None,
+        "confident_answer_count": len(confident), "confidence_threshold": 0.8,
+        "unsupported_confident_answer_rate": ratio(sum(bool(row["unsupported_claim_count"]) for row in confident), len(confident)),
+        "case_results": rows,
+        "judge_provenance": grounding.get("judge_provenance", {}),
+        "rubric_version": grounding.get("rubric_version"),
+        "extraction_review_status": grounding.get("extraction_review_status", "not_reviewed"),
+        "low_confidence_claim_ids": grounding.get("low_confidence_claim_ids", []),
+        "material_provenance": grounding.get("material_provenance", {}),
+        "definition": "Response claims judged unsupported or contradicted by the supplied evidence; lower unsupported rates are better.",
+        "limitations": [
+            "Insufficient evidence does not establish real-world falsehood. This score is relative to the supplied sources and the configured semantic judge.",
+            "Correct abstention and false-answer rates require dataset must_abstain expectations and judge-observed abstention for every required case.",
+            "Responses without claims or a confirmed abstention are excluded from the response rate and counted in coverage gaps.",
+            "Confident-answer scoring uses the returned case confidence at a threshold of 0.8; it is not the judge confidence and may describe a decision rather than every claim.",
+            *grounding.get("limitations", [])[:1],
+        ],
+    }
+
+
+def hallucination_metrics(
+    claims: list[dict[str, Any]] | None,
+    ground_truth: dict[str, Any] | None,
+    decision_observations: object = None,
+) -> dict[str, Any]:
+    """Measure unsupported output and abstention against local negative controls."""
+    if ground_truth is None:
+        return _unavailable(
+            "No local claim ground-truth file was supplied; target-declared support cannot verify hallucination."
+        )
+    claims = claims or []
+    negative_controls = [
+        item for item in ground_truth.get("claims", [])
+        if not item["expected_supported"] or item.get("must_abstain")
+    ]
+    if not negative_controls:
+        return _unavailable(
+            "Hallucination requires at least one locally labelled unsupported-claim or required-abstention control."
+        )
+    scored = _score_claim_expectations(claims, ground_truth, decision_observations)
+    if scored["measurement_status"] != "measured":
+        return scored
+    expected = {item["claim_id"]: item for item in ground_truth["claims"]}
+    observed_ids = {item["claim_id"] for item in claims}
+    hallucinated = {
+        item["claim_id"] for item in scored["case_results"]
+        if item["outcome"] == "hallucinated"
+    }
+    hallucinated.update(scored["unexpected_claim_ids"])
+    abstention_results = [item for item in scored["case_results"] if item["must_abstain"]]
+    output_count = len(observed_ids) + sum(
+        item["must_abstain"] and item.get("abstained") is not True and item["claim_id"] not in observed_ids
+        for item in scored["case_results"]
+    )
+    return {
+        "measurement_status": "measured",
+        "verification_basis": "local_gold_expectations",
+        "labelled_claim_count": len(expected),
+        "negative_control_count": len(negative_controls),
+        "observed_output_count": output_count,
+        "hallucinated_claim_count": len(hallucinated),
+        "hallucinated_claim_rate": _rounded(_ratio(len(hallucinated), output_count)),
+        "grounded_output_rate": _rounded(1 - _ratio(len(hallucinated), output_count)),
+        "correct_abstention_rate": (
+            _rounded(_ratio(sum(item.get("abstained") is True for item in abstention_results), len(abstention_results)))
+            if abstention_results else None
+        ),
+        "hallucinated_claim_ids": sorted(hallucinated),
+        "unexpected_claim_ids": scored["unexpected_claim_ids"],
+        "case_results": scored["case_results"],
+        "definition": "Unsupported-output rate against local negative claim controls, allowed evidence IDs, and required abstentions.",
+        "calculation_version": "pred-local-hallucination-1.0",
+        "limitations": [
+            "PRE-D compares opaque claim and evidence IDs; it does not retain or independently interpret raw answer or document text.",
+            "The adapter or telemetry connector must provide a complete list of claims emitted during the evaluated cases.",
+        ],
     }
 
 
@@ -544,6 +773,10 @@ def _annotate_metric_trust(
 
         telemetry_derived = name in telemetry_dimensions
         cost_is_metered = name == "cost_efficiency" and metric.get("cost_source") == "metered"
+        semantic_grounding_verified = (
+            name in {"groundedness", "hallucination"}
+            and metric.get("verification_basis") == "independent_local_semantic_judge"
+        )
         if name in baseline_verified:
             trust_status = "verified"
             evidence_source = {
@@ -552,6 +785,14 @@ def _annotate_metric_trust(
                 "confidence": "Calculated locally from decision correctness and returned confidence values.",
                 "decision_evidence": "Calculated locally from expected and returned evidence IDs and abstention outcomes.",
             }[name]
+        elif semantic_grounding_verified:
+            trust_status = "verified"
+            material_provenance = metric.get("material_provenance", {})
+            source = (
+                material_provenance.get("capture_source", "local material")
+                if isinstance(material_provenance, dict) else "local material"
+            )
+            evidence_source = f"Calculated locally by extracting atomic claims and independently comparing them with source chunks captured through {source}."
         elif telemetry_derived and (name in trace_verified or cost_is_metered):
             trust_status = "verified"
             evidence_source = "Calculated from redacted events observed by the local PRE-D telemetry collector."
@@ -598,7 +839,10 @@ def summarize_metric_trust(
     return counts
 
 
-def calculate_local_metrics(package: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def calculate_local_metrics(
+    package: dict[str, Any], *, ground_truth: dict[str, Any] | None = None,
+    semantic_grounding: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Calculate every supported local metric from an already validated package."""
     evaluation = package["evaluation"]
     expected = evaluation["expected_labels"]
@@ -623,7 +867,12 @@ def calculate_local_metrics(package: dict[str, Any]) -> dict[str, dict[str, Any]
             if is_browser_journey else confidence_metrics(expected, predicted, confidences, case_ids)
         ),
         "decision_evidence": decision_evidence_metrics(measurements.get("decision_observations")),
-        "groundedness": claims_metrics(measurements.get("claims")),
+        "groundedness": semantic_grounding or claims_metrics(
+            measurements.get("claims"), ground_truth, measurements.get("decision_observations"),
+        ),
+        "hallucination": semantic_hallucination_metrics(semantic_grounding, evaluation) if semantic_grounding is not None else hallucination_metrics(
+            measurements.get("claims"), ground_truth, measurements.get("decision_observations"),
+        ),
         "security": security_metrics(measurements.get("security")),
         "trajectory": trajectory_metrics(measurements.get("trajectory")),
         "tool_use": tool_use_metrics(measurements.get("tool_use")),

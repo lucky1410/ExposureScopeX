@@ -80,8 +80,8 @@ def build_risk_plan(scope: dict[str, Any], profile: str) -> dict[str, Any]:
         dimensions.update({"trajectory", "tool_use", "security", "robustness", "reproducibility"})
         test_areas.append({"id": "agent-tool-behavior", "title": "Agent and tool behavior", "why": "Trace milestones, tool authorization, repeated runs, and permitted action boundaries."})
     if {"rag_framework", "retrieval_store"} & kinds:
-        dimensions.update({"groundedness", "rag"})
-        test_areas.append({"id": "retrieval-grounding", "title": "Retrieval and grounding", "why": "Measure retrieval coverage, citation validity, and evidence-backed claims."})
+        dimensions.update({"groundedness", "hallucination", "rag"})
+        test_areas.append({"id": "retrieval-grounding", "title": "Retrieval, grounding, and hallucination", "why": "Measure retrieval coverage, citation validity, evidence-backed claims, unsupported output, and required abstention."})
     if "model_provider" in kinds:
         dimensions.update({"cost_efficiency", "judge_agreement"})
         test_areas.append({"id": "quality-cost", "title": "Quality, agreement, cost", "why": "Measure provider usage, latency, repeatability, and approved judge agreement."})

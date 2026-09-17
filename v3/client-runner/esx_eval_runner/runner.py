@@ -36,6 +36,7 @@ BASE_DIMENSIONS = {"classification", "confidence"}
 WORKFLOW_DIMENSIONS = {"workflow_coverage"}
 SUPPORTED_DIMENSIONS = BASE_DIMENSIONS | WORKFLOW_DIMENSIONS | {
     "groundedness",
+    "hallucination",
     "security",
     "trajectory",
     "tool_use",
@@ -206,6 +207,12 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
     telemetry = config.get("telemetry")
     telemetry_enabled = isinstance(telemetry, dict) and telemetry.get("enabled") is True
     advanced_dimensions = dimensions - BASE_DIMENSIONS - WORKFLOW_DIMENSIONS
+    if (
+        adapter_type == "http_json_target"
+        and adapter.get("response_text_path")
+        and adapter.get("response_grounding_evidence_path")
+    ):
+        advanced_dimensions.difference_update({"groundedness", "hallucination"})
     if adapter["type"] in {"command_json_v1", "http_json_target", "browser_journey"} and advanced_dimensions and not telemetry_enabled:
         raise RunnerError("This connector needs redacted local telemetry for advanced measurements; use command_json_v2 or enable telemetry")
     return evaluation, cases, adapter
@@ -235,13 +242,23 @@ def _validate_http_target(adapter: dict[str, Any]) -> None:
         value = adapter.get(name)
         if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", value):
             raise RunnerError(f"http_json_target.{name} must be a dotted JSON object path")
-    for name in ("response_evidence_ids_path", "response_abstained_path"):
+    for name in (
+        "response_evidence_ids_path", "response_abstained_path",
+        "response_text_path", "response_grounding_evidence_path",
+    ):
         value = adapter.get(name)
         if value is not None and (
             not isinstance(value, str)
             or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", value)
         ):
             raise RunnerError(f"http_json_target.{name} must be a dotted JSON object path when supplied")
+    grounding_paths = (
+        adapter.get("response_text_path"), adapter.get("response_grounding_evidence_path"),
+    )
+    if any(grounding_paths) and not all(grounding_paths):
+        raise RunnerError(
+            "http_json_target.response_text_path and response_grounding_evidence_path must be supplied together"
+        )
     headers = adapter.get("headers_from_env", {})
     if not isinstance(headers, dict) or not all(
         isinstance(header, str) and header and isinstance(env_name, str) and re.fullmatch(r"[A-Z_][A-Z0-9_]*", env_name)
@@ -501,6 +518,7 @@ def _invoke_http_json_target(
             raise RunnerError(f"The HTTP target requires environment variable {env_name}")
         headers[header] = secret
     results = []
+    grounding_cases = []
     response_hash = hashlib.sha256()
     request_summary = []
     started = time.monotonic()
@@ -553,9 +571,19 @@ def _invoke_http_json_target(
                 _read_json_path(payload, abstained_path), "HTTP target response abstained"
             )
         results.append(result)
+        if adapter.get("response_text_path"):
+            grounding_cases.append({
+                "case_id": case["case_id"],
+                "response": _read_json_path(payload, adapter["response_text_path"]),
+                "evidence": _read_json_path(payload, adapter["response_grounding_evidence_path"]),
+            })
         if index < len(cases) - 1 and adapter.get("minimum_delay_ms", 100):
             time.sleep(adapter.get("minimum_delay_ms", 100) / 1000)
     response = {"schema_version": ADAPTER_RESPONSE_SCHEMA_VERSION_V2, "results": results, "measurements": {}}
+    if grounding_cases:
+        response["grounding_material"] = {
+            "schema_version": "pre-d-grounding-material-1.0", "cases": grounding_cases,
+        }
     duration_ms = round((time.monotonic() - started) * 1000)
     if attestation_sha256:
         request_summary.insert(0, {"target_attestation_sha256": attestation_sha256})
@@ -1026,6 +1054,7 @@ def _normalise_measurements(
         raise RunnerError("command_json_v2 responses must include a measurements object")
     normalisers = {
         "groundedness": lambda value: _normalise_claims(value, "measurements.claims"),
+        "hallucination": lambda value: _normalise_claims(value, "measurements.claims"),
         "security": _normalise_security,
         "trajectory": _normalise_trajectory,
         "tool_use": _normalise_tool_use,
@@ -1042,21 +1071,27 @@ def _normalise_measurements(
         raise RunnerError("measurements has unsupported fields: " + ", ".join(unknown))
     field_by_dimension = {
         "groundedness": "claims",
+        "hallucination": "claims",
         **{
             dimension: dimension
             for dimension in normalisers
-            if dimension not in {"trace_envelope", "groundedness"}
+            if dimension not in {"trace_envelope", "groundedness", "hallucination"}
         },
     }
     output: dict[str, Any] = {}
     for dimension in set(required_dimensions) - BASE_DIMENSIONS - WORKFLOW_DIMENSIONS:
         field = field_by_dimension[dimension]
         if field not in raw:
+            if dimension in {"groundedness", "hallucination"} and "grounding_material" in response:
+                continue
             if allow_partial:
                 continue
             raise RunnerError(f"command_json_v2 response is missing measurements.{field} for required {dimension}")
         output[field] = normalisers[dimension](raw[field])
     for dimension, field in field_by_dimension.items():
+        semantic_claim_requested = bool({"groundedness", "hallucination"} & set(required_dimensions))
+        if field == "claims" and semantic_claim_requested:
+            continue
         if field in raw and dimension not in required_dimensions and dimension != "trace_envelope":
             raise RunnerError(f"measurements.{field} requires {dimension} in evaluation.required_dimensions")
     if "trace_envelope" in raw:
@@ -1152,7 +1187,10 @@ def _dataset_health(cases: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_package(config: dict[str, Any], *, github_oidc_token: str | None = None) -> dict[str, Any]:
+def build_package(
+    config: dict[str, Any], *, github_oidc_token: str | None = None,
+    local_artifacts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     evaluation, cases, adapter = _validate_config(config)
     evaluation = dict(evaluation)
     if adapter["type"] == "browser_journey":
@@ -1176,6 +1214,14 @@ def build_package(config: dict[str, Any], *, github_oidc_token: str | None = Non
         response, duration_ms, request_sha, response_sha = _invoke_command_adapter(adapter, cases, evaluation)
     if adapter["type"] != "browser_journey":
         scored_response = response
+    if "grounding_material" in response:
+        from .semantic_grounding import validate_grounding_material
+
+        material = validate_grounding_material(
+            response["grounding_material"], case_ids={item["case_id"] for item in scored_cases},
+        )
+        if local_artifacts is not None:
+            local_artifacts["grounding_material"] = material
     predicted_labels, confidences = _normalise_results(
         scored_cases, scored_response, require_confidence=adapter["type"] != "browser_journey",
     )

@@ -28,9 +28,10 @@ from esx_eval_runner.evidence_requirements import (
     build_measurement_readiness, inspect_evidence_preflight,
     render_evidence_requirements_markdown,
 )
+from esx_eval_runner.ground_truth import validate_ground_truth
 from esx_eval_runner.local_metrics import (
-    calculate_local_metrics, classification_metrics, confidence_metrics,
-    decision_evidence_metrics, summarize_metric_trust,
+    calculate_local_metrics, claims_metrics, classification_metrics, confidence_metrics,
+    decision_evidence_metrics, hallucination_metrics, summarize_metric_trust,
 )
 from esx_eval_runner.preflight import lint_browser_plan
 from esx_eval_runner.profiles import build_cases
@@ -204,6 +205,141 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("Confusion matrix", page)
         self.assertIn("Confidence calibration bins", page)
 
+    def test_opaque_gold_supports_controls_but_not_semantic_groundedness(self) -> None:
+        fixture = read_json(METRIC_FIXTURES / "groundedness-good.json")
+        gold = validate_ground_truth(fixture["ground_truth"])
+        groundedness = claims_metrics(
+            fixture["claims"], gold, fixture["decision_observations"],
+        )
+        hallucination = hallucination_metrics(
+            fixture["claims"], gold, fixture["decision_observations"],
+        )
+        self.assertEqual(groundedness["supported_claim_rate"], 1.0)
+        self.assertNotIn("verification_basis", groundedness)
+        self.assertIn("cannot establish semantic groundedness", groundedness["limitations"][0])
+        self.assertEqual(hallucination["hallucinated_claim_rate"], 0.0)
+        self.assertEqual(hallucination["correct_abstention_rate"], 1.0)
+
+    def test_ground_truth_contract_rejects_duplicates_placeholders_and_invalid_controls(self) -> None:
+        valid = {
+            "schema_version": "pre-d-local-ground-truth-1.0",
+            "claims": [{
+                "claim_id": "claim-1", "case_id": "case-1",
+                "expected_supported": True, "allowed_evidence_ids": ["doc-1"],
+                "must_abstain": False,
+            }],
+        }
+        with self.assertRaisesRegex(RunnerError, "unique"):
+            validate_ground_truth({**valid, "claims": [valid["claims"][0], valid["claims"][0]]})
+        with self.assertRaisesRegex(RunnerError, "Replace every"):
+            validate_ground_truth({**valid, "claims": [{**valid["claims"][0], "claim_id": "REPLACE_WITH_CLAIM"}]})
+        with self.assertRaisesRegex(RunnerError, "must be empty"):
+            validate_ground_truth({**valid, "claims": [{
+                **valid["claims"][0], "expected_supported": False,
+            }]})
+
+    def test_hardcoded_target_support_is_caught_as_hallucination(self) -> None:
+        fixture = read_json(METRIC_FIXTURES / "groundedness-hardcoded.json")
+        gold = validate_ground_truth(fixture["ground_truth"])
+        groundedness = claims_metrics(
+            fixture["claims"], gold, fixture["decision_observations"],
+        )
+        hallucination = hallucination_metrics(
+            fixture["claims"], gold, fixture["decision_observations"],
+        )
+        self.assertEqual(groundedness["supported_claim_rate"], 1.0)
+        self.assertNotIn("verification_basis", groundedness)
+        self.assertEqual(hallucination["measurement_status"], "measured")
+        self.assertEqual(hallucination["hallucinated_claim_rate"], 0.5)
+        self.assertEqual(hallucination["correct_abstention_rate"], 0.0)
+        self.assertEqual(hallucination["hallucinated_claim_ids"], ["unsupported-1"])
+
+    def test_incomplete_gold_coverage_never_produces_a_score(self) -> None:
+        fixture = read_json(METRIC_FIXTURES / "groundedness-incomplete.json")
+        gold = validate_ground_truth(fixture["ground_truth"])
+        groundedness = claims_metrics(
+            fixture["claims"], gold, fixture["decision_observations"],
+        )
+        hallucination = hallucination_metrics(
+            fixture["claims"], gold, fixture["decision_observations"],
+        )
+        self.assertEqual(groundedness["measurement_status"], "measured")
+        self.assertEqual(hallucination["measurement_status"], "not_measurable")
+        self.assertIn("cannot establish semantic groundedness", groundedness["limitations"][0])
+
+    def test_gold_verified_metrics_change_trust_without_entering_target_package(self) -> None:
+        fixture = read_json(METRIC_FIXTURES / "groundedness-hardcoded.json")
+        package = {
+            "execution": {"adapter_type": "command_json_v2"},
+            "evaluation": {
+                "required_dimensions": ["classification", "confidence", "groundedness", "hallucination"],
+                "expected_labels": ["safe", "unsafe"], "predicted_labels": ["safe", "unsafe"],
+                "confidences": [0.8, 0.7], "case_ids": ["case-1", "case-2"],
+                "claims": fixture["claims"],
+                "decision_observations": fixture["decision_observations"],
+            },
+        }
+        metrics = calculate_local_metrics(
+            package, ground_truth=validate_ground_truth(fixture["ground_truth"]),
+        )
+        self.assertEqual(metrics["groundedness"]["trust_status"], "declared")
+        self.assertEqual(metrics["hallucination"]["trust_status"], "declared")
+        self.assertNotIn("ground_truth", package)
+        self.assertNotIn("ground_truth", package["evaluation"])
+
+    def test_run_keeps_gold_out_of_adapter_request_and_result_package(self) -> None:
+        adapter_code = (
+            "import json,sys; r=json.load(sys.stdin); "
+            "assert 'ground_truth' not in json.dumps(r); "
+            "json.dump({'schema_version':'esx-client-adapter-response-2.0',"
+            "'results':[{'case_id':c['case_id'],'predicted_label':('safe' if c['case_id']=='case-1' else 'unsafe'),'confidence':0.8} for c in r['cases']],"
+            "'measurements':{'claims':[{'claim_id':'supported-1','evidence_ids':['doc-1'],'entailment_score':0.95,'citations_valid':True,'evidence_integrity_valid':True}]}},sys.stdout)"
+        )
+        config = {
+            "schema_version": "esx-client-runner-config-1.0",
+            "evaluation": {
+                "name": "claim assurance", "agent_id": "demo-agent", "subject_version": "1.0",
+                "subject_type": "agent", "project_key": "demo", "dataset_version": "claims-1",
+                "required_dimensions": ["classification", "confidence", "groundedness", "hallucination"],
+            },
+            "dataset": {"version": "claims-1", "cases": [
+                {"case_id": "case-1", "input": {}, "expected_label": "safe"},
+                {"case_id": "case-2", "input": {}, "expected_label": "unsafe"},
+            ]},
+            "adapter": {"type": "command_json_v2", "command": [sys.executable, "-c", adapter_code]},
+            "assurance": {"ground_truth_file": "ground-truth.json"},
+        }
+        gold = {
+            "schema_version": "pre-d-local-ground-truth-1.0",
+            "claims": [
+                {"claim_id": "supported-1", "case_id": "case-1", "expected_supported": True, "allowed_evidence_ids": ["doc-1"], "must_abstain": False},
+                {"claim_id": "unsupported-1", "case_id": "case-2", "expected_supported": False, "allowed_evidence_ids": [], "must_abstain": False},
+            ],
+        }
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "esx-eval.json"
+            output_path = Path(directory) / "out" / "evaluation.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            (Path(directory) / "ground-truth.json").write_text(json.dumps(gold), encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                status = run_command(argparse.Namespace(
+                    config=str(config_path), out=str(output_path), ground_truth=None,
+                    github_oidc_token_file=None, sign=False, summary_only=True,
+                    output_format="text", discovery=None, scope=None, plan=None, telemetry=None,
+                ))
+            package = read_json(output_path)
+            report = read_json(output_path.with_name("evaluation.local-report.json"))
+            page = output_path.with_name("evaluation.local-report.html").read_text(encoding="utf-8")
+        self.assertEqual(status, 0)
+        self.assertNotIn("ground_truth", json.dumps(package))
+        self.assertEqual(report["metrics"]["groundedness"]["trust_status"], "declared")
+        self.assertEqual(report["metrics"]["hallucination"]["trust_status"], "declared")
+        self.assertEqual(report["metrics"]["hallucination"]["hallucinated_claim_rate"], 0.0)
+        self.assertEqual(report["local_ground_truth"]["claim_expectation_count"], 2)
+        self.assertNotIn("supported-1", json.dumps(report["local_ground_truth"]))
+        self.assertIn("Hallucination", page)
+        self.assertIn("TARGET-DECLARED VALUE ONLY: Unsupported output: 0.0%", page)
+
     def test_vini_style_decision_report_keeps_trust_and_coverage_consistent(self) -> None:
         required = ["classification", "confidence", "groundedness", "trajectory", "cost_efficiency"]
         case_results = [
@@ -263,10 +399,15 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(coverage["metric_trust"]["verified_count"], 2)
         self.assertEqual(coverage["metric_trust"]["declared_count"], 3)
         self.assertIn(
+            "2 verified metrics, 3 declared metrics.",
+            page,
+        )
+        self.assertIn(
             "3 advanced metrics were accepted as target-declared evidence and were not independently validated.",
             page,
         )
-        self.assertIn("TARGET-DECLARED EVIDENCE", page)
+        self.assertIn("Accepted from target-declared local evidence, not independently verified.", page)
+        self.assertLess(page.index("CALIBRATION WARNING"), page.index("METRIC TRUST"))
         self.assertIn("Decision evaluation coverage", page)
         self.assertNotIn("ARCHIVED PRE-RUN EXPECTATION", page)
 
@@ -390,11 +531,15 @@ class LocalRunTests(unittest.TestCase):
             ))
             self.assertEqual(status, 0)
             template = (target / "full_metric_measurements.json").read_text(encoding="utf-8")
+            ground_truth_template = (target / "ground-truth.json").read_text(encoding="utf-8")
             guide = (target / "README.md").read_text(encoding="utf-8")
             requirements = (target / "PRE-D_EVIDENCE_REQUIREMENTS.md").read_text(encoding="utf-8")
             self.assertIn("REPLACE_WITH_POSITIVE_SECURITY_CASE_ID", template)
             self.assertIn("cost_efficiency", template)
+            self.assertIn("REPLACE_WITH_UNSUPPORTED_CLAIM_ID", ground_truth_template)
+            self.assertIn("ground_truth_file", (target / "esx-eval.json").read_text(encoding="utf-8"))
             self.assertIn("## Groundedness", requirements)
+            self.assertIn("## Hallucination", requirements)
             self.assertIn("**You define:**", requirements)
             self.assertIn("**Minimum for a real result:**", requirements)
             self.assertIn("Expected terminal results", guide)
@@ -441,16 +586,27 @@ class LocalRunTests(unittest.TestCase):
             output_path = Path(directory) / "evidence-readiness.json"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             measurement_path.write_text(json.dumps(measurements), encoding="utf-8")
+            ground_truth_path = Path(directory) / "ground-truth.json"
+            ground_truth_path.write_text(json.dumps({
+                "schema_version": "pre-d-local-ground-truth-1.0",
+                "claims": [{
+                    "claim_id": "claim-001", "case_id": "safe-001",
+                    "expected_supported": True,
+                    "allowed_evidence_ids": ["evidence-001"], "must_abstain": False,
+                }],
+            }), encoding="utf-8")
             terminal = io.StringIO()
             with redirect_stdout(terminal):
                 status = evidence_check_command(argparse.Namespace(
                     config=str(config_path), telemetry=None,
-                    measurements=str(measurement_path), out=str(output_path),
+                    measurements=str(measurement_path), ground_truth=str(ground_truth_path),
+                    out=str(output_path),
                 ))
             result = read_json(output_path)
         entries = {entry["metric"]: entry for entry in result["metrics"]}
         self.assertEqual(entries["classification"]["status"], "ready_to_collect")
-        self.assertEqual(entries["groundedness"]["status"], "evidence_ready")
+        self.assertEqual(entries["groundedness"]["status"], "evidence_incomplete")
+        self.assertIn("grounding_judge", entries["groundedness"]["missing"][0])
         self.assertEqual(entries["security"]["status"], "evidence_incomplete")
         self.assertIn("positive and negative", entries["security"]["missing"][0])
         self.assertEqual(entries["cost_efficiency"]["status"], "evidence_incomplete")
@@ -1045,7 +1201,7 @@ class LocalRunTests(unittest.TestCase):
         page = render_local_report(report)
         self.assertIn("MEASUREMENT READINESS", page)
         self.assertIn("YOU DEFINE", page)
-        self.assertIn("Per-claim opaque evidence IDs", page)
+        self.assertIn("generated response and retrieved source chunks", page)
         self.assertIn("Approved relevant document IDs", page)
         self.assertIn("PRE-D telemetry evidence", page)
         self.assertIn("PRE-D local release readiness", page)

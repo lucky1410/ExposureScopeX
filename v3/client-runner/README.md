@@ -131,6 +131,81 @@ score, why it received that state, its evidence source, and the next action.
 All-zero cost, token, and latency evidence is retained but marked
 `NON-REPRESENTATIVE`.
 
+Groundedness and hallucination share a local semantic pipeline: extract claims,
+review extraction completeness in a separate model pass, then compare claims
+with the supplied sources. The report distinguishes model-reviewed extraction
+from proven coverage. Custom judges must support `review_claims`; see
+[the judge protocol](ADAPTER_V2.md#local-grounding-judge-protocol).
+
+Keep the generated `.semantic-results.json` file alongside the result package
+when regenerating reports. It preserves content-free semantic results without
+rerunning the judge. Failed cases retain completed evidence but prevent a
+complete-run semantic score. See [the evidence guide](PRE-D_EVIDENCE_GUIDE.md).
+
+Groundedness uses a local semantic contract rather than trusting support values
+declared by the target. Add `groundedness` to `evaluation.required_dimensions`.
+The application can return `grounding_material` automatically from adapter v2,
+an HTTP endpoint can map response and retrieval fields, or the user can pass
+`--grounding-material ./grounding-material.json`. PRE-D sends that local content
+only to the configured independent local judge and retains only hashes,
+verdicts, confidence, and evidence IDs in the package and report.
+
+```json
+{
+  "schema_version": "pre-d-grounding-material-1.0",
+  "cases": [
+    {
+      "case_id": "case-001",
+      "response": "The generated answer text remains local.",
+      "evidence": [
+        {"evidence_id": "doc-001", "text": "The retrieved source chunk remains local."}
+      ]
+    }
+  ]
+}
+```
+
+Configure the local judge under `assurance.grounding_judge` with a command,
+identity, version, and `independent_from_target: true`. PRE-D invokes it twice:
+first for atomic claim extraction, then for evidence comparison. Every claim
+must receive exactly one `supported`, `contradicted`, or `insufficient` verdict.
+Incomplete extraction or comparison produces no score. Opaque claim metadata
+and `ground-truth.json` controls remain useful for evidence alignment and
+abstention, but cannot establish semantic groundedness.
+
+```json
+{
+  "assurance": {
+    "grounding_material_file": "grounding-material.json",
+    "grounding_judge": {
+      "type": "command_json_v1",
+      "command": ["python", "local-grounding-judge.py"],
+      "identity": "approved-local-grounding-judge",
+      "version": "1.0.0",
+      "independent_from_target": true
+    }
+  }
+}
+```
+
+The judge command must differ from the target adapter command. It receives JSON
+on standard input and returns JSON on standard output. See `ADAPTER_V2.md` for
+the extraction and comparison protocol. Run `esx-eval evidence-check` before
+the evaluation to validate the material and judge configuration without
+invoking either the target or judge.
+
+PRE-D includes an optional loopback-only Ollama bridge. After installing an
+appropriate local model, the judge command can be:
+
+```json
+["python", "-m", "esx_eval_runner.ollama_grounding_judge", "--model", "YOUR_INSTALLED_MODEL"]
+```
+
+The bridge refuses non-loopback URLs, uses deterministic generation settings,
+and asks the model for strict structured output. The report records its
+configured identity and version; teams should validate their selected model
+against reviewed grounding fixtures before using it as a release signal.
+
 The trust summary is strictly additive: every required metric belongs to
 exactly one of `Verified`, `Declared`, or `Missing`. `NON-REPRESENTATIVE` is a
 warning flag on that metric, never a fourth bucket. The Assurance Graph and

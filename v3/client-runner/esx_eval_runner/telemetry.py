@@ -170,7 +170,7 @@ def derive_telemetry_measurements(
     options = policy if isinstance(policy, dict) else {}
     measurements: dict[str, object] = {}
     claims = _claims_from_records(records)
-    if "groundedness" in required and claims:
+    if {"groundedness", "hallucination"} & required and claims:
         measurements["claims"] = claims
     if "rag" in required:
         rag = _rag_from_records(records, claims, options)
@@ -207,14 +207,19 @@ def derive_telemetry_measurements(
     trace = _trace_from_records(records)
     if trace is not None:
         measurements["trace_envelope"] = trace
+    derived_dimensions: list[str] = []
+    for key in measurements:
+        if key == "trace_envelope":
+            continue
+        if key == "claims":
+            derived_dimensions.extend(sorted({"groundedness", "hallucination"} & required))
+        else:
+            derived_dimensions.append(key)
     provenance = {
         "schema_version": "esx-telemetry-derived-evidence-1.0",
         "record_count": len(records),
         "case_count": len(allowed_cases),
-        "derived_dimensions": sorted(
-            "groundedness" if key == "claims" else key
-            for key in measurements if key != "trace_envelope"
-        ),
+        "derived_dimensions": sorted(derived_dimensions),
         "trace_captured": trace is not None,
     }
     return measurements, provenance

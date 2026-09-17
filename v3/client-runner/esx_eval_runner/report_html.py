@@ -51,7 +51,8 @@ def _primary_signal(name: str, metric: dict[str, Any]) -> str:
         "classification": ("accuracy", "Accuracy", "percent"),
         "confidence": ("expected_calibration_error", "Expected calibration error", "number"),
         "decision_evidence": ("correct_abstention_rate", "Correct abstention", "percent"),
-        "groundedness": ("supported_claim_rate", "Supported claims", "percent"),
+        "groundedness": ("grounded_claim_rate", "Grounded claims", "percent"),
+        "hallucination": ("hallucinated_claim_rate", "Unsupported output", "percent"),
         "security": ("attack_outcome_accuracy", "Attack outcome accuracy", "percent"),
         "trajectory": ("score", "Trajectory score", "percent"),
         "tool_use": ("selection_f1", "Tool selection F1", "percent"),
@@ -88,6 +89,22 @@ def _metric_score(name: str, metric: dict[str, Any], trust: str) -> str:
             f"Brier {float(metric.get('correctness_brier_score', 0)):.3f} | "
             f"{int(metric.get('unique_confidence_count', 0))} confidence levels"
         )
+    if name == "groundedness" and trust == "verified":
+        return (
+            f"Grounded claims {float(metric.get('grounded_claim_rate', 0)) * 100:.1f}% | "
+            f"Contradicted {float(metric.get('contradiction_rate', 0)) * 100:.1f}% | "
+            f"Insufficient evidence {float(metric.get('insufficient_evidence_rate', 0)) * 100:.1f}%"
+        )
+    if name == "hallucination" and trust == "verified":
+        abstention = metric.get("correct_abstention_rate")
+        abstention_text = "N/A" if abstention is None else f"{float(abstention) * 100:.1f}%"
+        unsupported = metric.get("hallucinated_claim_rate")
+        unsupported_text = "N/A (no factual claims)" if unsupported is None else f"{float(unsupported) * 100:.1f}%"
+        return (
+            f"Unsupported claims {unsupported_text} | "
+            f"Correct abstention {abstention_text} | "
+            f"Responses assessed {metric.get('assessed_response_count', 0)}/{metric.get('response_count', 0)}"
+        )
     score = _primary_signal(name, metric)
     return f"TARGET-DECLARED VALUE ONLY: {score}" if trust == "declared" else score
 
@@ -99,6 +116,10 @@ def _metric_why(name: str, metric: dict[str, Any], trust: str) -> str:
         return f"PRE-D compared {metric.get('sample_size', 0)} labelled dataset outcomes with decisions returned by the local target."
     if name == "confidence":
         return "PRE-D compared returned confidence values with correctness across the labelled decision pack."
+    if name == "groundedness" and trust == "verified":
+        return "PRE-D compared extracted claims with source chunks after a separate model review of extraction completeness. Both passes may still miss claims; completeness is not a proven percentage."
+    if name == "hallucination" and trust == "verified":
+        return "PRE-D reused the semantic judge's reviewed extraction, claim verdicts and observed abstentions. Model review can still miss claims. Unsupported means unsupported by the supplied evidence; it does not prove real-world falsehood."
     if trust == "declared":
         return "The target supplied structurally valid evidence, but PRE-D did not independently validate its semantic meaning."
     return "PRE-D calculated this result from independently observed local execution evidence."
@@ -122,6 +143,13 @@ def _metric_action(name: str, metric: dict[str, Any], trust: str) -> str:
         if metric.get("confidence_diversity_warning"):
             actions.append("return at least 5 meaningful confidence levels")
         return ("; ".join(actions).capitalize() + ", then rerun.") if actions else "Retain the calibration baseline and rerun after decision-model changes."
+    if name == "groundedness" and trust == "verified":
+        contradicted = int(metric.get("contradicted_claim_count", 0))
+        insufficient = int(metric.get("insufficient_evidence_claim_count", 0))
+        low_confidence = len(metric.get("low_confidence_claim_ids", []))
+        if contradicted or insufficient or low_confidence:
+            return f"Review {contradicted} contradicted, {insufficient} insufficient-evidence, and {low_confidence} low-confidence claim verdict(s), then rerun."
+        return "Retain this grounding pack and rerun it after response, retrieval, or model changes."
     if metric.get("representativeness") == "non_representative":
         return "Capture representative non-zero local usage observations, then rerun."
     if trust == "declared":
@@ -144,7 +172,7 @@ def _metric_cards(metrics: dict[str, Any], names: list[str]) -> str:
         representative = metric.get("representativeness") == "non_representative"
         representative_badge = "<span class='representativeness'>NON-REPRESENTATIVE</span>" if representative else ""
         declared_warning = (
-            "<p class='trust-warning'>TARGET-DECLARED EVIDENCE. PRE-D DID NOT INDEPENDENTLY VALIDATE THIS VALUE.</p>"
+            "<p class='trust-warning'>Accepted from target-declared local evidence, not independently verified.</p>"
             if trust == "declared" else ""
         )
         cards.append(
@@ -195,7 +223,7 @@ def _decision_summary(report: dict[str, Any]) -> str:
         if isinstance(item, dict) and item.get("correct") is True
     )
     return """<section class='panel decision-summary'><div class='heading'><div><p class='eyebrow'>VERIFIED DECISION BASELINE</p><h2>Classification and confidence</h2></div><p>These headline results come from labelled expectations compared with decisions and confidence returned by the local target.</p></div>
-    <div class='quick-grid'><div class='verified'><strong>""" + _escape(f"{correct}/{sample_size}") + """</strong><span>Correct decisions</span></div><div class='verified'><strong>""" + _escape(f"{float(classification.get('macro_f1', 0)) * 100:.1f}%") + """</strong><span>Macro F1</span></div><div class='verified'><strong>""" + _escape(f"{float(confidence.get('expected_calibration_error', 0)):.3f}") + """</strong><span>Verified ECE / review warning</span></div></div></section>"""
+    <div class='quick-grid'><div class='verified'><strong>""" + _escape(f"{correct}/{sample_size}") + """</strong><span>Correct decisions</span></div><div class='verified'><strong>""" + _escape(f"{float(classification.get('macro_f1', 0)) * 100:.1f}%") + """</strong><span>Macro F1</span></div><div class='verified' style='border-top-color:var(--gold);background:#211f18'><strong style='color:var(--gold)'>""" + _escape(f"{float(confidence.get('expected_calibration_error', 0)):.3f}") + """</strong><span>Verified ECE / review warning</span></div></div></section>"""
 
 
 def _confidence_warning(metrics: dict[str, Any]) -> str:
@@ -454,6 +482,38 @@ def _measurement_readiness(readiness: object) -> str:
     <p>Each metric states what your team defines, what the application must emit locally, and the minimum evidence PRE-D requires. Evidence IDs alone measure reference alignment, not whether an answer's claims are grounded.</p>""" + "".join(rows) + "</section>"
 
 
+def _grounding_details(metrics: dict[str, Any]) -> str:
+    metric = metrics.get("groundedness", {})
+    if not isinstance(metric, dict) or metric.get("verification_basis") != "independent_local_semantic_judge":
+        return ""
+    failures = "".join(
+        "<li>" + _escape(item.get("case_id", "unknown")) + ": " + _escape(item.get("reason", "Semantic evaluation failed")) + "</li>"
+        for item in metric.get("failed_cases", []) if isinstance(item, dict)
+    )
+    progress = (
+        "<p><b>Responses completed:</b> " + _escape(metric.get("completed_case_count", "unknown"))
+        + "/" + _escape(metric.get("requested_case_count", "unknown"))
+        + ". <b>Extraction review:</b> " + _escape(metric.get("extraction_review_status", "not recorded"))
+        + ". Model review does not prove that every factual claim was captured.</p>"
+        + ("<p>No full-run score: some cases failed. Completed claim evidence is retained below.</p><ul>" + failures + "</ul>" if failures else "")
+    )
+    rows = "".join(
+        "<tr><td>" + _escape(item.get("case_id", "unknown"))
+        + "</td><td>" + _escape(item.get("claim_id", "unknown"))
+        + "</td><td>" + _escape(str(item.get("claim_sha256", ""))[:16])
+        + "</td><td>" + _escape(item.get("verdict", "unknown"))
+        + "</td><td>" + _escape(f"{float(item.get('confidence', 0)) * 100:.1f}%")
+        + "</td><td>" + _escape(", ".join(item.get("evidence_ids", [])) or "None") + "</td></tr>"
+        for item in [*metric.get("case_results", []), *metric.get("partial_claim_results", [])] if isinstance(item, dict)
+    )
+    provenance = metric.get("judge_provenance", {})
+    provenance = provenance if isinstance(provenance, dict) else {}
+    return """<section class='detail-section'><p class='eyebrow'>SEMANTIC GROUNDING</p><h2>Claim-level evidence comparison</h2>
+    <p>Raw response and source text remain local and are omitted. Hashes make evaluated claims traceable without copying their content into this report.</p>
+    <p><b>Local judge:</b> """ + _escape(provenance.get("identity", "unknown")) + " / " + _escape(provenance.get("version", "unknown")) + "</p>" + progress + """
+    <table><thead><tr><th>Case</th><th>Claim</th><th>Claim hash</th><th>Verdict</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>""" + rows + "</tbody></table></section>"
+
+
 def _evidence_preflight(preflight: object) -> str:
     """Render archived pre-run expectations from older report schemas."""
     if not isinstance(preflight, dict) or not isinstance(preflight.get("metrics"), list):
@@ -548,18 +608,26 @@ def render_local_report(report: dict[str, Any]) -> str:
         "<div>TASK <span>" + _escape(decision_task) + "</span></div>"
         if isinstance(decision_task, str) and decision_task else ""
     )
+    summary = report.get("metric_trust_summary")
+    if not isinstance(summary, dict):
+        summary = summarize_metric_trust(metrics, names)
+    verified_count = int(summary.get("verified", 0))
+    declared_count = int(summary.get("declared", summary.get("self_attested", 0)))
     advanced_declared = sum(
         1 for name in names
         if name not in {"workflow_coverage", "classification", "confidence", "decision_evidence"}
         and _trust_status(metrics.get(name)) == "declared"
     )
-    declared_label = "metric was" if advanced_declared == 1 else "metrics were"
-    validation_verb = "was" if advanced_declared == 1 else "were"
-    declared_notice = (
-        f"<p class='declared-notice'>{advanced_declared} advanced {declared_label} accepted as target-declared evidence and {validation_verb} not independently validated.</p>"
+    verified_label = "metric" if verified_count == 1 else "metrics"
+    declared_label = "metric" if declared_count == 1 else "metrics"
+    trust_count_notice = f"{verified_count} verified {verified_label}, {declared_count} declared {declared_label}."
+    advanced_notice = (
+        f" {advanced_declared} advanced {'metric was' if advanced_declared == 1 else 'metrics were'} accepted as target-declared evidence and "
+        f"{'was' if advanced_declared == 1 else 'were'} not independently validated."
         if advanced_declared else ""
     )
+    declared_notice = f"<p class='declared-notice'>{trust_count_notice}{advanced_notice}</p>"
     return """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>PRE-D Local Evaluation Report</title><style>
 :root{--ink:#0b1416;--panel:#142328;--line:#395055;--muted:#b9c5c3;--lime:#c9f36b;--coral:#ff8464;--gold:#f5cc67;--green:#6fdb9a;--white:#f8fbf7}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 100% 0,#243f3f 0,transparent 31rem),var(--ink);color:var(--white);font:16px Georgia,serif}main{max-width:1180px;margin:0 auto;padding:28px}.hero,.panel{border:1px solid var(--line);background:rgba(20,35,40,.95)}.hero{padding:38px;background:linear-gradient(135deg,rgba(28,51,54,.98),rgba(13,25,28,.98));box-shadow:10px 10px 0 rgba(0,0,0,.22)}.hero-top,.heading{display:flex;justify-content:space-between;gap:24px;align-items:flex-start}.eyebrow,.state{margin:0 0 12px;color:var(--coral);font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.16em}.hero h1{margin:0;font-size:clamp(40px,6vw,72px);font-weight:400;line-height:.92;letter-spacing:-.05em}.hero h1 em{color:var(--coral)}.hero p{max-width:670px;color:var(--muted);font-size:18px;line-height:1.5}.hero .declared-notice{max-width:none;padding:12px 14px;border:1px solid var(--coral);background:rgba(255,132,100,.1);color:#ffd4c8;font:700 12px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em}.local-badge{padding:8px 10px;color:var(--lime);border:1px solid rgba(201,243,107,.45);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;white-space:nowrap}.hero-meta{display:flex;gap:14px;flex-wrap:wrap;margin-top:30px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.hero-meta span{color:var(--white)}.panel{margin-top:18px;padding:26px}.heading h2,.detail-section h2,.confidence-warning h2{margin:0;font-size:31px;font-weight:400;letter-spacing:-.035em}.heading>p{max-width:480px;margin:4px 0;color:var(--muted);line-height:1.5}.layer-grid,.metric-grid,.quick-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:22px}.layer-card,.metric-card,.quick-grid>div{min-height:154px;padding:18px;background:#101d20;border:1px solid var(--line)}.layer-card,.metric-card{border-top:4px solid var(--gold)}.layer-card.measured,.layer-card.connected,.layer-card.evidence-ready,.layer-card.verified-locally,.metric-card.verified{border-top-color:var(--green)}.layer-card.not-run,.layer-card.not-connected,.layer-card.workflow-evidence-only,.metric-card.missing,.metric-card.not-measured{border-top-color:#718a92}.metric-card.declared{border:2px dashed var(--coral);background:repeating-linear-gradient(135deg,#161f20,#161f20 12px,#192527 12px,#192527 24px)}.layer-card h3,.metric-card h3{margin:10px 0 0;font-size:21px;font-weight:400}.layer-card p,.confidence-warning p{margin:18px 0 0;color:var(--muted);font-size:14px;line-height:1.45}.layer-card.measured .state,.layer-card.connected .state,.layer-card.evidence-ready .state,.layer-card.verified-locally .state,.metric-card.verified .state{color:var(--green)}.metric-card .state{display:inline-block;color:var(--gold)}.metric-card.declared .state{color:var(--coral)}.metric-card .trust-warning{margin:14px 0 0;padding:8px;border-left:3px solid var(--coral);color:#ffd4c8;font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em;line-height:1.45}.metric-card dl{display:grid;grid-template-columns:112px 1fr;gap:9px 12px;margin:18px 0 0}.metric-card dt{color:var(--muted);font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase}.metric-card dd{margin:0;color:var(--white);font-size:13px;line-height:1.4}.metric-card.declared dd{color:#d6c5bd}.representativeness{display:inline-block;margin-left:8px;padding:3px 6px;border:1px solid var(--coral);color:var(--coral);font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.quick-grid>div{min-height:104px;border-top:3px solid #597077}.quick-grid>div.verified{border-top-color:var(--green)}.quick-grid>div.declared,.quick-grid>div.self-attested{border-top-color:var(--coral);background:#211b1a}.quick-grid>div.missing{border-top-color:#718a92}.quick-grid strong{display:block;color:var(--lime);font-size:28px;font-weight:400}.quick-grid>div.declared strong{color:var(--coral)}.quick-grid span{display:block;margin-top:10px;color:var(--muted);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.09em;text-transform:uppercase}.decision-summary{border-left:4px solid var(--green)}.browser-summary{border-left:4px solid #718a92}.confidence-warning{border-left:4px solid var(--gold)}.confidence-warning .state{display:block;color:var(--gold)}details{margin-top:18px;border:1px solid var(--line);background:#0b1416}details>summary{padding:16px;color:var(--lime);cursor:pointer;font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.detail-section{padding:24px;border-top:1px solid var(--line)}.detail-section:first-of-type{border-top:0}.detail-section>p:not(.eyebrow){max-width:760px;color:var(--muted);line-height:1.5}.detail-section h3{margin:28px 0 10px;font-weight:400}.warning-list{margin-top:18px;padding:14px;border-left:4px solid var(--gold);background:#101d20}.warning-list strong{color:var(--gold)}.warning-list li{margin-top:8px;color:var(--muted);line-height:1.4}.health-ok{color:var(--green)!important}.readiness-card{margin-top:8px;border:1px solid var(--line);background:#101d20}.readiness-card summary{display:flex;justify-content:space-between;gap:12px;padding:14px;cursor:pointer}.readiness-card summary strong{display:block;font-weight:400}.readiness-card summary small{display:block;margin-top:5px;color:var(--muted);font-size:13px;line-height:1.35}.readiness-card summary b,.readiness-card div b{color:var(--gold);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.readiness-card div{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:0 14px 14px}.readiness-card div p{margin:0;color:var(--muted);font-size:13px;line-height:1.45}.readiness-card div p b{display:block;margin-bottom:5px;color:var(--white)}table{width:100%;border-collapse:collapse;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}th,td{padding:11px 8px;border-top:1px solid var(--line);text-align:left}th{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase}pre{overflow:auto;margin:0;padding:16px;color:#cce0dd;background:#050b0d;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45}@media(max-width:720px){main{padding:12px}.hero,.panel{padding:20px}.hero-top,.heading{display:block}.local-badge{display:inline-block;margin-top:16px}.readiness-card div{grid-template-columns:1fr}.metric-card dl{grid-template-columns:1fr}.detail-section{overflow-x:auto}}@media print{body{background:#fff;color:#111}main{max-width:none;padding:0}.hero,.panel,.layer-card,.metric-card,.quick-grid>div,.readiness-card,details{background:#fff;color:#111;box-shadow:none;border-color:#888}.hero p,.heading>p,.layer-card p,.detail-section>p:not(.eyebrow),.readiness-card summary small,.readiness-card div p{color:#333}.metric-card dd{color:#111}}</style></head><body><main>
-<section class='hero'><div class='hero-top'><div><p class='eyebrow'>PRE-D / LOCAL EVALUATION REPORT</p><h1>Evidence before <em>assurance.</em></h1></div><span class='local-badge'>LOCAL ONLY / NOT UPLOADED</span></div><p>One report, three distinct local evidence layers: application workflow, AI decisions, and operational telemetry. Missing evidence stays visible; it is never converted into a product verdict.</p>""" + declared_notice + """<div class='hero-meta'><div>SUBJECT <span>""" + _escape(subject.get("agent_id", "unknown")) + "</span></div><div>VERSION <span>" + _escape(subject.get("subject_version", "unknown")) + "</span></div><div>DATASET <span>" + _escape(subject.get("dataset_version", "unknown")) + "</span></div><div>METHOD <span>" + _escape(method) + "</span></div>" + task_meta + "<div>RUNNER <span>" + _escape(report.get("runner_version", "unknown")) + "</span></div></div></section>" + _decision_summary(report) + _trust_summary(report, metrics, names) + _confidence_warning(metrics) + _evaluation_layers(report) + _browser_summary(report) + """<details><summary>VIEW DETAILED LOCAL METRICS</summary><section class='detail-section'><p class='eyebrow'>SCORECARD</p><h2>Metric trust and results</h2><div class='metric-grid'>""" + _metric_cards(metrics, names) + "</div></section>" + _dataset_health(report) + _decision_metric_details(metrics) + _evidence_preflight(preflight) + _measurement_readiness(readiness) + "</details><details><summary>VIEW SCOPE, COVERAGE, AND DIAGNOSTICS</summary>" + _coverage_details(report) + _diagnostics(report) + "</details><details><summary>VIEW REDACTED RESULT DATA</summary><pre>" + payload + "</pre></details></main></body></html>"
+<section class='hero'><div class='hero-top'><div><p class='eyebrow'>PRE-D / LOCAL EVALUATION REPORT</p><h1>Evidence before <em>assurance.</em></h1></div><span class='local-badge'>LOCAL ONLY / NOT UPLOADED</span></div><p>One report, three distinct local evidence layers: application workflow, AI decisions, and operational telemetry. Missing evidence stays visible; it is never converted into a product verdict.</p>""" + declared_notice + """<div class='hero-meta'><div>SUBJECT <span>""" + _escape(subject.get("agent_id", "unknown")) + "</span></div><div>VERSION <span>" + _escape(subject.get("subject_version", "unknown")) + "</span></div><div>DATASET <span>" + _escape(subject.get("dataset_version", "unknown")) + "</span></div><div>METHOD <span>" + _escape(method) + "</span></div>" + task_meta + "<div>RUNNER <span>" + _escape(report.get("runner_version", "unknown")) + "</span></div></div></section>" + _decision_summary(report) + _confidence_warning(metrics) + _trust_summary(report, metrics, names) + _evaluation_layers(report) + _browser_summary(report) + """<details><summary>VIEW DETAILED LOCAL METRICS</summary><section class='detail-section'><p class='eyebrow'>SCORECARD</p><h2>Metric trust and results</h2><div class='metric-grid'>""" + _metric_cards(metrics, names) + "</div></section>" + _dataset_health(report) + _decision_metric_details(metrics) + _grounding_details(metrics) + _evidence_preflight(preflight) + _measurement_readiness(readiness) + "</details><details><summary>VIEW SCOPE, COVERAGE, AND DIAGNOSTICS</summary>" + _coverage_details(report) + _diagnostics(report) + "</details><details><summary>VIEW REDACTED RESULT DATA</summary><pre>" + payload + "</pre></details></main></body></html>"

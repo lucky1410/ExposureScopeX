@@ -1,0 +1,19 @@
+{
+  "schema_version": "pre-d-grounding-material-1.0",
+  "cases": [
+    {
+      "case_id": "case-1",
+      "response": "The incident began at 09:15 UTC. The affected account was disabled. The incident originated on the Moon.",
+      "evidence": [
+        {
+          "evidence_id": "timeline-1",
+          "text": "The first confirmed alert was recorded at 09:15 UTC."
+        },
+        {
+          "evidence_id": "identity-1",
+          "text": "The affected account remains active while the investigation continues."
+        }
+      ]
+    }
+  ]
+}

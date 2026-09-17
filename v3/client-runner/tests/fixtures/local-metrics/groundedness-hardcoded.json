@@ -1,0 +1,16 @@
+{
+  "ground_truth": {
+    "schema_version": "pre-d-local-ground-truth-1.0",
+    "claims": [
+      {"claim_id": "supported-1", "case_id": "case-1", "expected_supported": true, "allowed_evidence_ids": ["doc-1"], "must_abstain": false},
+      {"claim_id": "unsupported-1", "case_id": "case-2", "expected_supported": false, "allowed_evidence_ids": [], "must_abstain": true}
+    ]
+  },
+  "claims": [
+    {"claim_id": "supported-1", "evidence_ids": ["doc-1"], "entailment_score": 1.0, "citations_valid": true, "evidence_integrity_valid": true},
+    {"claim_id": "unsupported-1", "evidence_ids": ["made-up-1"], "entailment_score": 1.0, "citations_valid": true, "evidence_integrity_valid": true}
+  ],
+  "decision_observations": [
+    {"case_id": "case-2", "must_abstain": true, "abstained": false}
+  ]
+}
