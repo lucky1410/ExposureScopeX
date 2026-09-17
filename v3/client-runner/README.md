@@ -352,7 +352,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.11.0"
+   $version = "0.11.1"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -364,7 +364,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
    On macOS or Linux, the equivalent install command is:
 
    ```bash
-   python3 -m pip install ./exposurescopex_eval_runner-0.11.0-py3-none-any.whl
+   python3 -m pip install ./exposurescopex_eval_runner-0.11.1-py3-none-any.whl
    ```
 
 4. Start a local test copy of the AI application. It needs one endpoint that
