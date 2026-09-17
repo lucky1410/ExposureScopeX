@@ -126,12 +126,21 @@ def build_assurance_graph(
     # The graph reflects scores collected by this run. A risk plan may suggest
     # future dimensions, but it must not be shown as an evidence gap today.
     required_dimensions = list(evaluation["required_dimensions"])
+    trust_counts = {"verified": 0, "declared": 0, "missing": 0}
     for dimension in required_dimensions:
         metric = metrics.get(dimension, {"measurement_status": "not_measurable"})
-        status = str(metric.get("measurement_status", "not_measurable"))
+        status = (
+            str(metric.get("trust_status", "declared"))
+            if metric.get("measurement_status") == "measured" else "missing"
+        )
+        status = status if status in trust_counts else "missing"
+        trust_counts[status] += 1
         node_id = "metric:" + dimension
         nodes.append({"id": node_id, "kind": "metric", "label": dimension.replace("_", " "), "status": status})
-        edges.append({"from": subject_id, "to": node_id, "kind": "measured_by"})
+        edges.append({
+            "from": subject_id, "to": node_id,
+            "kind": {"verified": "verified_by", "declared": "declared_by", "missing": "missing_evidence_for"}[status],
+        })
     if telemetry:
         node_id = "evidence:telemetry"
         status = "captured" if telemetry.get("span_count", 0) else "not_measurable"
@@ -149,7 +158,6 @@ def build_assurance_graph(
         label = f"{item.get('capability_area', 'general')} / {item.get('persona', 'default')}"
         nodes.append({"id": node_id, "kind": "workflow_case", "label": label, "status": status})
         edges.append({"from": subject_id, "to": node_id, "kind": "executed_by"})
-    measured = sum(1 for dimension in required_dimensions if metrics.get(dimension, {}).get("measurement_status") == "measured")
     required = len(required_dimensions)
     blocked_cases = sum(1 for item in diagnostics if isinstance(item, dict) and item.get("outcome") == "blocked")
     failed_cases = sum(1 for item in diagnostics if isinstance(item, dict) and item.get("outcome") == "failed")
@@ -166,14 +174,15 @@ def build_assurance_graph(
     else:
         release_reason = "Local results are evidence, not a governed release decision. Review executed cases and unmeasurable dimensions."
     return {
-        "schema_version": "esx-assurance-graph-1.0",
+        "schema_version": "esx-assurance-graph-1.1",
         "summary": {
             "scope_status": (scope or {}).get("status", "not_confirmed"),
             "discovered_component_count": len((discovery or {}).get("components", [])),
             "confirmed_component_count": len((scope or {}).get("components", [])),
             "required_metric_count": required,
-            "measured_metric_count": measured,
-            "unmeasurable_metric_count": required - measured,
+            "verified_metric_count": trust_counts["verified"],
+            "declared_metric_count": trust_counts["declared"],
+            "missing_metric_count": trust_counts["missing"],
             "release_reason": release_reason,
         },
         "nodes": nodes,
@@ -194,11 +203,17 @@ def build_coverage_model(
     discovered = (discovery or {}).get("components", [])
     approved = (scope or {}).get("components", [])
     required_dimensions = evaluation.get("required_dimensions", []) if isinstance(evaluation, dict) else []
-    measured_dimensions = [
-        dimension for dimension in required_dimensions
-        if isinstance(dimension, str) and metrics.get(dimension, {}).get("measurement_status") == "measured"
-    ]
-    is_browser_run = bool(browser_cases)
+    trust_dimensions: dict[str, list[str]] = {"verified": [], "declared": [], "missing": []}
+    for dimension in required_dimensions:
+        if not isinstance(dimension, str):
+            continue
+        metric = metrics.get(dimension, {})
+        trust = (
+            str(metric.get("trust_status", "declared"))
+            if metric.get("measurement_status") == "measured" else "missing"
+        )
+        trust_dimensions[trust if trust in trust_dimensions else "missing"].append(dimension)
+    is_browser_run = execution.get("adapter_type") == "browser_journey" or bool(browser_cases)
     completed_cases = [
         case for case in browser_cases
         if isinstance(case, dict) and case.get("outcome") in {"passed", "failed"}
@@ -208,9 +223,42 @@ def build_coverage_model(
         if isinstance(case, dict) and case.get("outcome") == "blocked"
     ]
     requested = int(execution.get("case_count", 0)) if isinstance(execution, dict) else 0
-    executed = len(completed_cases) if is_browser_run else requested
+    executed = len(completed_cases) if is_browser_run else int(execution.get("scored_case_count", requested))
     capability_areas = _capability_coverage(discovery, scope, browser_cases)
+    execution_summary: dict[str, Any] = {
+        "kind": "browser_workflow" if is_browser_run else "decision_evaluation",
+        "requested_case_count": requested,
+        "case_count": executed,
+        "blocked_case_count": len(blocked_cases) if is_browser_run else int(execution.get("blocked_case_count", 0)),
+    }
+    if is_browser_run:
+        execution_summary.update({
+            "pre_auth_case_count": sum(1 for case in completed_cases if case.get("coverage_scope") == "pre_auth"),
+            "authenticated_case_count": sum(1 for case in completed_cases if case.get("coverage_scope") == "authenticated"),
+            "passed_case_count": sum(1 for case in completed_cases if case.get("outcome") == "passed"),
+            "failed_case_count": sum(1 for case in completed_cases if case.get("outcome") == "failed"),
+            "meaning": "Browser cases are passed, assertion-review, or blocked workflow observations.",
+        })
+    else:
+        classification = metrics.get("classification", {})
+        case_results = classification.get("case_results", []) if isinstance(classification, dict) else []
+        if classification.get("measurement_status") != "measured":
+            correct = 0
+        elif isinstance(case_results, list) and case_results:
+            correct = sum(
+                1 for item in case_results
+                if isinstance(item, dict) and item.get("correct") is True
+            )
+        else:
+            sample_size = int(classification.get("sample_size", executed))
+            correct = round(float(classification.get("accuracy", 0)) * sample_size)
+        execution_summary.update({
+            "correct_case_count": correct,
+            "incorrect_case_count": max(0, executed - correct),
+            "meaning": "Decision cases are executed and compared with their labelled expected outcomes.",
+        })
     return {
+        "schema_version": "esx-coverage-model-1.1",
         "discovered": {
             "component_count": len(discovered) if isinstance(discovered, list) else 0,
             "meaning": "Repository evidence and candidate entry points. Discovery is not execution.",
@@ -219,21 +267,16 @@ def build_coverage_model(
             "component_count": len(approved) if isinstance(approved, list) else 0,
             "meaning": "Customer-confirmed scope only. Unapproved discoveries are excluded from evaluation.",
         },
-        "executed": {
-            "requested_case_count": requested,
-            "case_count": executed,
-            "pre_auth_case_count": sum(1 for case in completed_cases if case.get("coverage_scope") == "pre_auth"),
-            "authenticated_case_count": sum(1 for case in completed_cases if case.get("coverage_scope") == "authenticated"),
-            "passed_case_count": sum(1 for case in completed_cases if case.get("outcome") == "passed"),
-            "failed_case_count": sum(1 for case in completed_cases if case.get("outcome") == "failed"),
-            "blocked_case_count": len(blocked_cases),
-            "meaning": "Only completed test cases count as executed coverage.",
-        },
-        "measured": {
-            "dimension_count": len(measured_dimensions),
+        "executed": execution_summary,
+        "metric_trust": {
             "required_dimension_count": len(required_dimensions) if isinstance(required_dimensions, list) else 0,
-            "dimensions": measured_dimensions,
-            "meaning": "A metric is measured only when required local evidence was supplied and validated.",
+            "verified_count": len(trust_dimensions["verified"]),
+            "declared_count": len(trust_dimensions["declared"]),
+            "missing_count": len(trust_dimensions["missing"]),
+            "verified_dimensions": trust_dimensions["verified"],
+            "declared_dimensions": trust_dimensions["declared"],
+            "missing_dimensions": trust_dimensions["missing"],
+            "meaning": "Every required metric belongs to exactly one provenance state; declared is not verified.",
         },
         "capability_areas": capability_areas,
     }

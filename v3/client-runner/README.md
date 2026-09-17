@@ -131,6 +131,12 @@ score, why it received that state, its evidence source, and the next action.
 All-zero cost, token, and latency evidence is retained but marked
 `NON-REPRESENTATIVE`.
 
+The trust summary is strictly additive: every required metric belongs to
+exactly one of `Verified`, `Declared`, or `Missing`. `NON-REPRESENTATIVE` is a
+warning flag on that metric, never a fourth bucket. The Assurance Graph and
+coverage JSON preserve these same three states instead of flattening them into
+generic `measured` results.
+
 For decision evaluations, the report also shows dataset health, class
 distribution, case-level outcomes, confusion matrix, per-class precision,
 recall and F1, Brier score, calibration bins, and overconfident failures. An
@@ -138,6 +144,12 @@ ECE above `0.15` raises a calibration warning; fewer than five unique confidence
 values raises a confidence-range warning. These warnings do not alter the
 formula result, but prevent a structurally valid score from looking stronger
 than its evidence.
+
+Decision-evaluation coverage is reported as `executed`, `correct`,
+`incorrect`, and `blocked`. Browser coverage uses `passed`, `assertion review`,
+and `blocked`; the two schemas are intentionally separate. Completed reports
+contain final observed metric states only. Run `esx-eval evidence-check`
+separately when you want a pre-run evidence-readiness artifact.
 
 ### Browser journeys
 

@@ -28,7 +28,10 @@ from esx_eval_runner.evidence_requirements import (
     build_measurement_readiness, inspect_evidence_preflight,
     render_evidence_requirements_markdown,
 )
-from esx_eval_runner.local_metrics import calculate_local_metrics, classification_metrics, confidence_metrics, decision_evidence_metrics
+from esx_eval_runner.local_metrics import (
+    calculate_local_metrics, classification_metrics, confidence_metrics,
+    decision_evidence_metrics, summarize_metric_trust,
+)
 from esx_eval_runner.preflight import lint_browser_plan
 from esx_eval_runner.profiles import build_cases
 from esx_eval_runner.report_html import render_local_report
@@ -169,6 +172,10 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(metrics["groundedness"]["trust_status"], "declared")
         self.assertEqual(metrics["trajectory"]["trust_status"], "declared")
         self.assertEqual(metrics["cost_efficiency"]["representativeness"], "non_representative")
+        self.assertEqual(
+            summarize_metric_trust(metrics, package["evaluation"]["required_dimensions"]),
+            {"verified": 2, "declared": 3, "missing": 0},
+        )
 
         page = render_local_report({
             "subject": {}, "execution": package["execution"],
@@ -196,6 +203,72 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("DECISION DETAILS", page)
         self.assertIn("Confusion matrix", page)
         self.assertIn("Confidence calibration bins", page)
+
+    def test_vini_style_decision_report_keeps_trust_and_coverage_consistent(self) -> None:
+        required = ["classification", "confidence", "groundedness", "trajectory", "cost_efficiency"]
+        case_results = [
+            {
+                "case_id": f"decision-{index:02d}", "expected_label": "escalate",
+                "predicted_label": "escalate", "correct": True,
+            }
+            for index in range(20)
+        ]
+        metrics = {
+            "classification": {
+                "measurement_status": "measured", "trust_status": "verified",
+                "sample_size": 20, "accuracy": 1.0, "macro_f1": 1.0,
+                "case_results": case_results,
+            },
+            "confidence": {
+                "measurement_status": "measured", "trust_status": "verified",
+                "expected_calibration_error": 0.502,
+            },
+            "groundedness": {"measurement_status": "measured", "trust_status": "declared"},
+            "trajectory": {"measurement_status": "measured", "trust_status": "declared"},
+            "cost_efficiency": {
+                "measurement_status": "measured", "trust_status": "declared",
+                "representativeness": "non_representative",
+            },
+        }
+        package = {
+            "execution": {
+                "adapter_type": "command_json_v2", "case_count": 20,
+                "scored_case_count": 20, "blocked_case_count": 0,
+            },
+            "evaluation": {"agent_id": "vini", "required_dimensions": required},
+        }
+        graph = build_assurance_graph(package, metrics)
+        coverage = build_coverage_model(package, metrics)
+        report = {
+            "subject": {"agent_id": "vini"}, "evaluation": package["evaluation"],
+            "execution": package["execution"], "metrics": metrics,
+            "metric_trust_summary": summarize_metric_trust(metrics, required),
+            "assurance_graph": graph, "coverage": coverage,
+        }
+        page = render_local_report(report)
+
+        self.assertEqual(graph["summary"]["verified_metric_count"], 2)
+        self.assertEqual(graph["summary"]["declared_metric_count"], 3)
+        self.assertEqual(graph["summary"]["missing_metric_count"], 0)
+        self.assertNotIn("measured_metric_count", graph["summary"])
+        metric_states = {
+            node["status"] for node in graph["nodes"] if node.get("kind") == "metric"
+        }
+        self.assertEqual(metric_states, {"verified", "declared"})
+        self.assertEqual(coverage["executed"]["kind"], "decision_evaluation")
+        self.assertEqual(coverage["schema_version"], "esx-coverage-model-1.1")
+        self.assertEqual(coverage["executed"]["correct_case_count"], 20)
+        self.assertEqual(coverage["executed"]["incorrect_case_count"], 0)
+        self.assertNotIn("passed_case_count", coverage["executed"])
+        self.assertEqual(coverage["metric_trust"]["verified_count"], 2)
+        self.assertEqual(coverage["metric_trust"]["declared_count"], 3)
+        self.assertIn(
+            "3 advanced metrics were accepted as target-declared evidence and were not independently validated.",
+            page,
+        )
+        self.assertIn("TARGET-DECLARED EVIDENCE", page)
+        self.assertIn("Decision evaluation coverage", page)
+        self.assertNotIn("ARCHIVED PRE-RUN EXPECTATION", page)
 
     def test_local_decision_metrics_match_a_hand_calculated_three_class_fixture(self) -> None:
         """Protect the scorecard math with values derived outside the runner."""
@@ -388,7 +461,8 @@ class LocalRunTests(unittest.TestCase):
             "subject": {}, "evaluation": {"required_dimensions": []}, "metrics": {},
             "evidence_preflight": result,
         })
-        self.assertIn("What created each result", html)
+        self.assertIn("ARCHIVED PRE-RUN EXPECTATION", html)
+        self.assertIn("Final metric states and measurement readiness below supersede it", html)
         self.assertIn("Missing cost observations for unsafe-001.", html)
         invalid = {**config, "schema_version": "invalid"}
         invalid_result = inspect_evidence_preflight(invalid, measurements_path=measurement_path)
@@ -881,14 +955,19 @@ class LocalRunTests(unittest.TestCase):
         }
         coverage = build_coverage_model(
             package,
-            {"classification": {"measurement_status": "measured"}, "confidence": {"measurement_status": "measured"}, "rag": {"measurement_status": "not_measurable"}},
+            {
+                "classification": {"measurement_status": "measured", "trust_status": "verified"},
+                "confidence": {"measurement_status": "measured", "trust_status": "verified"},
+                "rag": {"measurement_status": "not_measurable", "trust_status": "missing"},
+            },
             discovery={"components": [{"id": "one"}, {"id": "two"}, {"id": "three"}]},
             scope={"components": [{"id": "one"}]},
         )
         self.assertEqual(coverage["discovered"]["component_count"], 3)
         self.assertEqual(coverage["approved"]["component_count"], 1)
         self.assertEqual(coverage["executed"]["authenticated_case_count"], 1)
-        self.assertEqual(coverage["measured"]["dimension_count"], 2)
+        self.assertEqual(coverage["metric_trust"]["verified_count"], 2)
+        self.assertEqual(coverage["metric_trust"]["missing_count"], 1)
 
     def test_guided_setup_uses_a_safe_sibling_folder_and_macos_commands(self) -> None:
         with TemporaryDirectory() as directory:
@@ -946,6 +1025,7 @@ class LocalRunTests(unittest.TestCase):
                 self.assertEqual(run_command(argparse.Namespace(config=str(config_path), out=str(output_path), github_oidc_token_file=None, sign=False, summary_only=True, output_format="text")), 0)
             report = read_json(output_path.with_name("evaluation.local-report.json"))
             self.assertEqual(report["assurance_graph"]["summary"]["scope_status"], "confirmed")
+            self.assertNotIn("evidence_preflight", report)
             self.assertIn("trajectory", report["metrics"])
             self.assertEqual(report["evaluation"]["required_dimensions"], ["classification", "confidence"])
             html_report = output_path.with_name("evaluation.local-report.html").read_text(encoding="utf-8")
@@ -1020,10 +1100,16 @@ class LocalRunTests(unittest.TestCase):
         self.assertFalse(plan["planner"]["external_ai_called"])
         self.assertIn("rag", plan["required_dimensions"])
         package = {"evaluation": {"agent_id": "demo", "required_dimensions": ["classification", "confidence", "rag"]}}
-        metrics = {"classification": {"measurement_status": "measured"}, "confidence": {"measurement_status": "measured"}, "rag": {"measurement_status": "not_measurable"}}
+        metrics = {
+            "classification": {"measurement_status": "measured", "trust_status": "verified"},
+            "confidence": {"measurement_status": "measured", "trust_status": "verified"},
+            "rag": {"measurement_status": "not_measurable", "trust_status": "missing"},
+        }
         graph = build_assurance_graph(package, metrics, discovery=discovery, scope=scope, plan=plan, telemetry={"span_count": 4})
         self.assertEqual(graph["summary"]["confirmed_component_count"], 3)
-        self.assertEqual(graph["summary"]["unmeasurable_metric_count"], 1)
+        self.assertEqual(graph["summary"]["verified_metric_count"], 2)
+        self.assertEqual(graph["summary"]["declared_metric_count"], 0)
+        self.assertEqual(graph["summary"]["missing_metric_count"], 1)
 
     def test_discovery_excludes_backlog_mentions_and_labels_real_evidence(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1343,7 +1429,7 @@ class LocalRunTests(unittest.TestCase):
             self.assertIn("ADVANCED LOCAL RESULTS", output.getvalue())
             self.assertIn("Cost and latency:", output.getvalue())
             report = read_json(output_path.with_name("evaluation.local-report.json"))
-            self.assertEqual(report["schema_version"], "esx-local-evaluation-report-1.1")
+            self.assertEqual(report["schema_version"], "esx-local-evaluation-report-1.2")
             self.assertEqual(report["metrics"]["security"]["detection_rate"], 1.0)
             self.assertEqual(report["metric_trust_summary"]["verified"], 2)
             self.assertEqual(report["metric_trust_summary"]["declared"], 9)

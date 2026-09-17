@@ -89,7 +89,7 @@ def _metric_score(name: str, metric: dict[str, Any], trust: str) -> str:
             f"{int(metric.get('unique_confidence_count', 0))} confidence levels"
         )
     score = _primary_signal(name, metric)
-    return f"{score} (target-declared)" if trust == "declared" else score
+    return f"TARGET-DECLARED VALUE ONLY: {score}" if trust == "declared" else score
 
 
 def _metric_why(name: str, metric: dict[str, Any], trust: str) -> str:
@@ -143,10 +143,14 @@ def _metric_cards(metrics: dict[str, Any], names: list[str]) -> str:
             }.get(name, title)
         representative = metric.get("representativeness") == "non_representative"
         representative_badge = "<span class='representativeness'>NON-REPRESENTATIVE</span>" if representative else ""
+        declared_warning = (
+            "<p class='trust-warning'>TARGET-DECLARED EVIDENCE. PRE-D DID NOT INDEPENDENTLY VALIDATE THIS VALUE.</p>"
+            if trust == "declared" else ""
+        )
         cards.append(
             f"<article class='metric-card {_escape(trust)}'>"
             f"<span class='state'>{_escape(_trust_label(trust))}</span>{representative_badge}"
-            f"<h3>{_escape(title)}</h3><dl>"
+            f"<h3>{_escape(title)}</h3>{declared_warning}<dl>"
             f"<dt>Status</dt><dd>{_escape(_trust_label(trust).title())}</dd>"
             f"<dt>Score</dt><dd>{_escape(_metric_score(name, metric, trust))}</dd>"
             f"<dt>Why</dt><dd>{_escape(_metric_why(name, metric, trust))}</dd>"
@@ -164,13 +168,34 @@ def _trust_summary(report: dict[str, Any], metrics: dict[str, Any], names: list[
     verified = int(summary.get("verified", 0))
     declared = int(summary.get("declared", summary.get("self_attested", 0)))
     missing = int(summary.get("missing", summary.get("not_measured", 0)))
-    non_representative = int(summary.get("non_representative", 0))
+    flagged = [
+        _title(name) for name in names
+        if isinstance(metrics.get(name), dict) and metrics[name].get("representativeness") == "non_representative"
+    ]
     flag = (
-        f" {non_representative} measured result(s) are also marked non-representative."
-        if non_representative else ""
+        " Non-representative is a warning attached to: " + ", ".join(flagged) + "."
+        if flagged else ""
     )
     return """<section class='panel trust-summary'><div class='heading'><div><p class='eyebrow'>METRIC TRUST</p><h2>What PRE-D verified</h2></div><p>PRE-D Local measured some metrics directly and accepted some metrics as target-declared evidence. These are not equally trustworthy.""" + _escape(flag) + """</p></div>
-    <div class='quick-grid'><div class='verified'><strong>""" + _escape(verified) + """</strong><span>Verified</span></div><div class='declared'><strong>""" + _escape(declared) + """</strong><span>Declared</span></div><div><strong>""" + _escape(missing) + """</strong><span>Missing</span></div></div></section>"""
+    <div class='quick-grid'><div class='verified'><strong>""" + _escape(verified) + """</strong><span>Verified</span></div><div class='declared'><strong>""" + _escape(declared) + """</strong><span>Declared</span></div><div class='missing'><strong>""" + _escape(missing) + """</strong><span>Missing</span></div></div></section>"""
+
+
+def _decision_summary(report: dict[str, Any]) -> str:
+    execution = report.get("execution", {})
+    metrics = report.get("metrics", {})
+    if not isinstance(execution, dict) or execution.get("adapter_type") == "browser_journey" or not isinstance(metrics, dict):
+        return ""
+    classification = metrics.get("classification", {})
+    confidence = metrics.get("confidence", {})
+    if _trust_status(classification) != "verified" or _trust_status(confidence) != "verified":
+        return ""
+    sample_size = int(classification.get("sample_size", 0))
+    correct = sum(
+        1 for item in classification.get("case_results", [])
+        if isinstance(item, dict) and item.get("correct") is True
+    )
+    return """<section class='panel decision-summary'><div class='heading'><div><p class='eyebrow'>VERIFIED DECISION BASELINE</p><h2>Classification and confidence</h2></div><p>These headline results come from labelled expectations compared with decisions and confidence returned by the local target.</p></div>
+    <div class='quick-grid'><div class='verified'><strong>""" + _escape(f"{correct}/{sample_size}") + """</strong><span>Correct decisions</span></div><div class='verified'><strong>""" + _escape(f"{float(classification.get('macro_f1', 0)) * 100:.1f}%") + """</strong><span>Macro F1</span></div><div class='verified'><strong>""" + _escape(f"{float(confidence.get('expected_calibration_error', 0)):.3f}") + """</strong><span>Verified ECE / review warning</span></div></div></section>"""
 
 
 def _confidence_warning(metrics: dict[str, Any]) -> str:
@@ -430,7 +455,7 @@ def _measurement_readiness(readiness: object) -> str:
 
 
 def _evidence_preflight(preflight: object) -> str:
-    """Show actionable evidence gaps directly in the completed local report."""
+    """Render archived pre-run expectations from older report schemas."""
     if not isinstance(preflight, dict) or not isinstance(preflight.get("metrics"), list):
         return ""
     rows = []
@@ -450,8 +475,8 @@ def _evidence_preflight(preflight: object) -> str:
         )
     if not rows:
         return ""
-    return """<section class='detail-section'><p class='eyebrow'>EVIDENCE READINESS</p><h2>What created each result</h2>
-    <p>This is the local evidence check for this run. It separates a missing or incomplete evidence source from a measured outcome. A pending application result is not a product defect.</p>""" + "".join(rows) + "</section>"
+    return """<section class='detail-section'><p class='eyebrow'>ARCHIVED PRE-RUN EXPECTATION</p><h2>What the plan expected before execution</h2>
+    <p>This historical preflight did not observe the completed run. Final metric states and measurement readiness below supersede it.</p>""" + "".join(rows) + "</section>"
 
 
 def _coverage_details(report: dict[str, Any]) -> str:
@@ -460,16 +485,30 @@ def _coverage_details(report: dict[str, Any]) -> str:
     discovered = coverage.get("discovered", {}) if isinstance(coverage.get("discovered"), dict) else {}
     approved = coverage.get("approved", {}) if isinstance(coverage.get("approved"), dict) else {}
     executed = coverage.get("executed", {}) if isinstance(coverage.get("executed"), dict) else {}
-    measured = coverage.get("measured", {}) if isinstance(coverage.get("measured"), dict) else {}
-    values = (
-        ("Discovered", discovered.get("component_count", 0)),
-        ("Approved", approved.get("component_count", 0)),
-        ("Executed", executed.get("case_count", 0)),
-        ("Measured", f"{measured.get('dimension_count', 0)}/{measured.get('required_dimension_count', 0)}"),
-    )
+    trust = coverage.get("metric_trust", {}) if isinstance(coverage.get("metric_trust"), dict) else {}
+    if executed.get("kind") == "decision_evaluation":
+        title = "Decision evaluation coverage"
+        values = (
+            ("Executed", executed.get("case_count", 0)),
+            ("Correct", executed.get("correct_case_count", 0)),
+            ("Incorrect", executed.get("incorrect_case_count", 0)),
+            ("Blocked", executed.get("blocked_case_count", 0)),
+        )
+    else:
+        title = "Browser workflow coverage"
+        values = (
+            ("Executed", executed.get("case_count", 0)),
+            ("Passed", executed.get("passed_case_count", 0)),
+            ("Assertion review", executed.get("failed_case_count", 0)),
+            ("Blocked", executed.get("blocked_case_count", 0)),
+        )
     cards = "".join(f"<div><strong>{_escape(value)}</strong><span>{_escape(label)}</span></div>" for label, value in values)
-    return """<section class='detail-section'><p class='eyebrow'>SCOPE AND COVERAGE</p><h2>Discovery is not execution</h2>
-    <p>Discovery identifies local candidates. Only approved and completed cases count as coverage; only validated evidence creates a metric.</p><div class='quick-grid'>""" + cards + "</div></section>"
+    trust_cards = "".join(
+        f"<div class='{state}'><strong>{_escape(trust.get(state + '_count', 0))}</strong><span>{state.title()} metrics</span></div>"
+        for state in ("verified", "declared", "missing")
+    )
+    return """<section class='detail-section'><p class='eyebrow'>SCOPE AND COVERAGE</p><h2>""" + _escape(title) + """</h2>
+    <p>Discovery identifies local candidates. Execution counts cases; metric trust separately states what PRE-D verified, accepted as declared, or could not measure.</p><div class='quick-grid'>""" + cards + "</div><div class='quick-grid metric-trust-grid'>" + trust_cards + "</div></section>"
 
 
 def _diagnostics(report: dict[str, Any]) -> str:
@@ -509,7 +548,18 @@ def render_local_report(report: dict[str, Any]) -> str:
         "<div>TASK <span>" + _escape(decision_task) + "</span></div>"
         if isinstance(decision_task, str) and decision_task else ""
     )
+    advanced_declared = sum(
+        1 for name in names
+        if name not in {"workflow_coverage", "classification", "confidence", "decision_evidence"}
+        and _trust_status(metrics.get(name)) == "declared"
+    )
+    declared_label = "metric was" if advanced_declared == 1 else "metrics were"
+    validation_verb = "was" if advanced_declared == 1 else "were"
+    declared_notice = (
+        f"<p class='declared-notice'>{advanced_declared} advanced {declared_label} accepted as target-declared evidence and {validation_verb} not independently validated.</p>"
+        if advanced_declared else ""
+    )
     return """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>PRE-D Local Evaluation Report</title><style>
-:root{--ink:#0b1416;--panel:#142328;--line:#395055;--muted:#b9c5c3;--lime:#c9f36b;--coral:#ff8464;--gold:#f5cc67;--green:#6fdb9a;--white:#f8fbf7}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 100% 0,#243f3f 0,transparent 31rem),var(--ink);color:var(--white);font:16px Georgia,serif}main{max-width:1180px;margin:0 auto;padding:28px}.hero,.panel{border:1px solid var(--line);background:rgba(20,35,40,.95)}.hero{padding:38px;background:linear-gradient(135deg,rgba(28,51,54,.98),rgba(13,25,28,.98));box-shadow:10px 10px 0 rgba(0,0,0,.22)}.hero-top,.heading{display:flex;justify-content:space-between;gap:24px;align-items:flex-start}.eyebrow,.state{margin:0 0 12px;color:var(--coral);font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.16em}.hero h1{margin:0;font-size:clamp(40px,6vw,72px);font-weight:400;line-height:.92;letter-spacing:-.05em}.hero h1 em{color:var(--coral)}.hero p{max-width:670px;color:var(--muted);font-size:18px;line-height:1.5}.local-badge{padding:8px 10px;color:var(--lime);border:1px solid rgba(201,243,107,.45);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;white-space:nowrap}.hero-meta{display:flex;gap:14px;flex-wrap:wrap;margin-top:30px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.hero-meta span{color:var(--white)}.panel{margin-top:18px;padding:26px}.heading h2,.detail-section h2,.confidence-warning h2{margin:0;font-size:31px;font-weight:400;letter-spacing:-.035em}.heading>p{max-width:480px;margin:4px 0;color:var(--muted);line-height:1.5}.layer-grid,.metric-grid,.quick-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:22px}.layer-card,.metric-card,.quick-grid>div{min-height:154px;padding:18px;background:#101d20;border:1px solid var(--line)}.layer-card,.metric-card{border-top:4px solid var(--gold)}.layer-card.measured,.layer-card.connected,.layer-card.evidence-ready,.layer-card.verified-locally,.metric-card.verified{border-top-color:var(--green)}.layer-card.not-run,.layer-card.not-connected,.layer-card.workflow-evidence-only,.metric-card.missing,.metric-card.not-measured{border-top-color:#718a92}.layer-card h3,.metric-card h3{margin:10px 0 0;font-size:21px;font-weight:400}.layer-card p,.confidence-warning p{margin:18px 0 0;color:var(--muted);font-size:14px;line-height:1.45}.layer-card.measured .state,.layer-card.connected .state,.layer-card.evidence-ready .state,.layer-card.verified-locally .state,.metric-card.verified .state{color:var(--green)}.metric-card .state{display:inline-block;color:var(--gold)}.metric-card dl{display:grid;grid-template-columns:112px 1fr;gap:9px 12px;margin:18px 0 0}.metric-card dt{color:var(--muted);font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase}.metric-card dd{margin:0;color:var(--white);font-size:13px;line-height:1.4}.representativeness{display:inline-block;margin-left:8px;padding:3px 6px;border:1px solid var(--coral);color:var(--coral);font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.quick-grid>div{min-height:104px;border-top:3px solid #597077}.quick-grid>div.verified{border-top-color:var(--green)}.quick-grid>div.declared,.quick-grid>div.self-attested{border-top-color:var(--gold)}.quick-grid strong{display:block;color:var(--lime);font-size:28px;font-weight:400}.quick-grid span{display:block;margin-top:10px;color:var(--muted);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.09em;text-transform:uppercase}.browser-summary{border-left:4px solid #718a92}.confidence-warning{border-left:4px solid var(--gold)}.confidence-warning .state{display:block;color:var(--gold)}details{margin-top:18px;border:1px solid var(--line);background:#0b1416}details>summary{padding:16px;color:var(--lime);cursor:pointer;font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.detail-section{padding:24px;border-top:1px solid var(--line)}.detail-section:first-of-type{border-top:0}.detail-section>p:not(.eyebrow){max-width:760px;color:var(--muted);line-height:1.5}.detail-section h3{margin:28px 0 10px;font-weight:400}.warning-list{margin-top:18px;padding:14px;border-left:4px solid var(--gold);background:#101d20}.warning-list strong{color:var(--gold)}.warning-list li{margin-top:8px;color:var(--muted);line-height:1.4}.health-ok{color:var(--green)!important}.readiness-card{margin-top:8px;border:1px solid var(--line);background:#101d20}.readiness-card summary{display:flex;justify-content:space-between;gap:12px;padding:14px;cursor:pointer}.readiness-card summary strong{display:block;font-weight:400}.readiness-card summary small{display:block;margin-top:5px;color:var(--muted);font-size:13px;line-height:1.35}.readiness-card summary b,.readiness-card div b{color:var(--gold);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.readiness-card div{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:0 14px 14px}.readiness-card div p{margin:0;color:var(--muted);font-size:13px;line-height:1.45}.readiness-card div p b{display:block;margin-bottom:5px;color:var(--white)}table{width:100%;border-collapse:collapse;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}th,td{padding:11px 8px;border-top:1px solid var(--line);text-align:left}th{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase}pre{overflow:auto;margin:0;padding:16px;color:#cce0dd;background:#050b0d;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45}@media(max-width:720px){main{padding:12px}.hero,.panel{padding:20px}.hero-top,.heading{display:block}.local-badge{display:inline-block;margin-top:16px}.readiness-card div{grid-template-columns:1fr}.metric-card dl{grid-template-columns:1fr}.detail-section{overflow-x:auto}}@media print{body{background:#fff;color:#111}main{max-width:none;padding:0}.hero,.panel,.layer-card,.metric-card,.quick-grid>div,.readiness-card,details{background:#fff;color:#111;box-shadow:none;border-color:#888}.hero p,.heading>p,.layer-card p,.detail-section>p:not(.eyebrow),.readiness-card summary small,.readiness-card div p{color:#333}.metric-card dd{color:#111}}</style></head><body><main>
-<section class='hero'><div class='hero-top'><div><p class='eyebrow'>PRE-D / LOCAL EVALUATION REPORT</p><h1>Evidence before <em>assurance.</em></h1></div><span class='local-badge'>LOCAL ONLY / NOT UPLOADED</span></div><p>One report, three distinct local evidence layers: application workflow, AI decisions, and operational telemetry. Missing evidence stays visible; it is never converted into a product verdict.</p><div class='hero-meta'><div>SUBJECT <span>""" + _escape(subject.get("agent_id", "unknown")) + "</span></div><div>VERSION <span>" + _escape(subject.get("subject_version", "unknown")) + "</span></div><div>DATASET <span>" + _escape(subject.get("dataset_version", "unknown")) + "</span></div><div>METHOD <span>" + _escape(method) + "</span></div>" + task_meta + "<div>RUNNER <span>" + _escape(report.get("runner_version", "unknown")) + "</span></div></div></section>" + _trust_summary(report, metrics, names) + _confidence_warning(metrics) + _evaluation_layers(report) + _browser_summary(report) + """<details><summary>VIEW DETAILED LOCAL METRICS</summary><section class='detail-section'><p class='eyebrow'>SCORECARD</p><h2>Metric trust and results</h2><div class='metric-grid'>""" + _metric_cards(metrics, names) + "</div></section>" + _dataset_health(report) + _decision_metric_details(metrics) + _evidence_preflight(preflight) + _measurement_readiness(readiness) + "</details><details><summary>VIEW SCOPE, COVERAGE, AND DIAGNOSTICS</summary>" + _coverage_details(report) + _diagnostics(report) + "</details><details><summary>VIEW REDACTED RESULT DATA</summary><pre>" + payload + "</pre></details></main></body></html>"
+:root{--ink:#0b1416;--panel:#142328;--line:#395055;--muted:#b9c5c3;--lime:#c9f36b;--coral:#ff8464;--gold:#f5cc67;--green:#6fdb9a;--white:#f8fbf7}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 100% 0,#243f3f 0,transparent 31rem),var(--ink);color:var(--white);font:16px Georgia,serif}main{max-width:1180px;margin:0 auto;padding:28px}.hero,.panel{border:1px solid var(--line);background:rgba(20,35,40,.95)}.hero{padding:38px;background:linear-gradient(135deg,rgba(28,51,54,.98),rgba(13,25,28,.98));box-shadow:10px 10px 0 rgba(0,0,0,.22)}.hero-top,.heading{display:flex;justify-content:space-between;gap:24px;align-items:flex-start}.eyebrow,.state{margin:0 0 12px;color:var(--coral);font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.16em}.hero h1{margin:0;font-size:clamp(40px,6vw,72px);font-weight:400;line-height:.92;letter-spacing:-.05em}.hero h1 em{color:var(--coral)}.hero p{max-width:670px;color:var(--muted);font-size:18px;line-height:1.5}.hero .declared-notice{max-width:none;padding:12px 14px;border:1px solid var(--coral);background:rgba(255,132,100,.1);color:#ffd4c8;font:700 12px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em}.local-badge{padding:8px 10px;color:var(--lime);border:1px solid rgba(201,243,107,.45);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;white-space:nowrap}.hero-meta{display:flex;gap:14px;flex-wrap:wrap;margin-top:30px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.hero-meta span{color:var(--white)}.panel{margin-top:18px;padding:26px}.heading h2,.detail-section h2,.confidence-warning h2{margin:0;font-size:31px;font-weight:400;letter-spacing:-.035em}.heading>p{max-width:480px;margin:4px 0;color:var(--muted);line-height:1.5}.layer-grid,.metric-grid,.quick-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:22px}.layer-card,.metric-card,.quick-grid>div{min-height:154px;padding:18px;background:#101d20;border:1px solid var(--line)}.layer-card,.metric-card{border-top:4px solid var(--gold)}.layer-card.measured,.layer-card.connected,.layer-card.evidence-ready,.layer-card.verified-locally,.metric-card.verified{border-top-color:var(--green)}.layer-card.not-run,.layer-card.not-connected,.layer-card.workflow-evidence-only,.metric-card.missing,.metric-card.not-measured{border-top-color:#718a92}.metric-card.declared{border:2px dashed var(--coral);background:repeating-linear-gradient(135deg,#161f20,#161f20 12px,#192527 12px,#192527 24px)}.layer-card h3,.metric-card h3{margin:10px 0 0;font-size:21px;font-weight:400}.layer-card p,.confidence-warning p{margin:18px 0 0;color:var(--muted);font-size:14px;line-height:1.45}.layer-card.measured .state,.layer-card.connected .state,.layer-card.evidence-ready .state,.layer-card.verified-locally .state,.metric-card.verified .state{color:var(--green)}.metric-card .state{display:inline-block;color:var(--gold)}.metric-card.declared .state{color:var(--coral)}.metric-card .trust-warning{margin:14px 0 0;padding:8px;border-left:3px solid var(--coral);color:#ffd4c8;font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em;line-height:1.45}.metric-card dl{display:grid;grid-template-columns:112px 1fr;gap:9px 12px;margin:18px 0 0}.metric-card dt{color:var(--muted);font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase}.metric-card dd{margin:0;color:var(--white);font-size:13px;line-height:1.4}.metric-card.declared dd{color:#d6c5bd}.representativeness{display:inline-block;margin-left:8px;padding:3px 6px;border:1px solid var(--coral);color:var(--coral);font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.quick-grid>div{min-height:104px;border-top:3px solid #597077}.quick-grid>div.verified{border-top-color:var(--green)}.quick-grid>div.declared,.quick-grid>div.self-attested{border-top-color:var(--coral);background:#211b1a}.quick-grid>div.missing{border-top-color:#718a92}.quick-grid strong{display:block;color:var(--lime);font-size:28px;font-weight:400}.quick-grid>div.declared strong{color:var(--coral)}.quick-grid span{display:block;margin-top:10px;color:var(--muted);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.09em;text-transform:uppercase}.decision-summary{border-left:4px solid var(--green)}.browser-summary{border-left:4px solid #718a92}.confidence-warning{border-left:4px solid var(--gold)}.confidence-warning .state{display:block;color:var(--gold)}details{margin-top:18px;border:1px solid var(--line);background:#0b1416}details>summary{padding:16px;color:var(--lime);cursor:pointer;font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.detail-section{padding:24px;border-top:1px solid var(--line)}.detail-section:first-of-type{border-top:0}.detail-section>p:not(.eyebrow){max-width:760px;color:var(--muted);line-height:1.5}.detail-section h3{margin:28px 0 10px;font-weight:400}.warning-list{margin-top:18px;padding:14px;border-left:4px solid var(--gold);background:#101d20}.warning-list strong{color:var(--gold)}.warning-list li{margin-top:8px;color:var(--muted);line-height:1.4}.health-ok{color:var(--green)!important}.readiness-card{margin-top:8px;border:1px solid var(--line);background:#101d20}.readiness-card summary{display:flex;justify-content:space-between;gap:12px;padding:14px;cursor:pointer}.readiness-card summary strong{display:block;font-weight:400}.readiness-card summary small{display:block;margin-top:5px;color:var(--muted);font-size:13px;line-height:1.35}.readiness-card summary b,.readiness-card div b{color:var(--gold);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.readiness-card div{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:0 14px 14px}.readiness-card div p{margin:0;color:var(--muted);font-size:13px;line-height:1.45}.readiness-card div p b{display:block;margin-bottom:5px;color:var(--white)}table{width:100%;border-collapse:collapse;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}th,td{padding:11px 8px;border-top:1px solid var(--line);text-align:left}th{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase}pre{overflow:auto;margin:0;padding:16px;color:#cce0dd;background:#050b0d;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45}@media(max-width:720px){main{padding:12px}.hero,.panel{padding:20px}.hero-top,.heading{display:block}.local-badge{display:inline-block;margin-top:16px}.readiness-card div{grid-template-columns:1fr}.metric-card dl{grid-template-columns:1fr}.detail-section{overflow-x:auto}}@media print{body{background:#fff;color:#111}main{max-width:none;padding:0}.hero,.panel,.layer-card,.metric-card,.quick-grid>div,.readiness-card,details{background:#fff;color:#111;box-shadow:none;border-color:#888}.hero p,.heading>p,.layer-card p,.detail-section>p:not(.eyebrow),.readiness-card summary small,.readiness-card div p{color:#333}.metric-card dd{color:#111}}</style></head><body><main>
+<section class='hero'><div class='hero-top'><div><p class='eyebrow'>PRE-D / LOCAL EVALUATION REPORT</p><h1>Evidence before <em>assurance.</em></h1></div><span class='local-badge'>LOCAL ONLY / NOT UPLOADED</span></div><p>One report, three distinct local evidence layers: application workflow, AI decisions, and operational telemetry. Missing evidence stays visible; it is never converted into a product verdict.</p>""" + declared_notice + """<div class='hero-meta'><div>SUBJECT <span>""" + _escape(subject.get("agent_id", "unknown")) + "</span></div><div>VERSION <span>" + _escape(subject.get("subject_version", "unknown")) + "</span></div><div>DATASET <span>" + _escape(subject.get("dataset_version", "unknown")) + "</span></div><div>METHOD <span>" + _escape(method) + "</span></div>" + task_meta + "<div>RUNNER <span>" + _escape(report.get("runner_version", "unknown")) + "</span></div></div></section>" + _decision_summary(report) + _trust_summary(report, metrics, names) + _confidence_warning(metrics) + _evaluation_layers(report) + _browser_summary(report) + """<details><summary>VIEW DETAILED LOCAL METRICS</summary><section class='detail-section'><p class='eyebrow'>SCORECARD</p><h2>Metric trust and results</h2><div class='metric-grid'>""" + _metric_cards(metrics, names) + "</div></section>" + _dataset_health(report) + _decision_metric_details(metrics) + _evidence_preflight(preflight) + _measurement_readiness(readiness) + "</details><details><summary>VIEW SCOPE, COVERAGE, AND DIAGNOSTICS</summary>" + _coverage_details(report) + _diagnostics(report) + "</details><details><summary>VIEW REDACTED RESULT DATA</summary><pre>" + payload + "</pre></details></main></body></html>"

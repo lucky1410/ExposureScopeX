@@ -588,15 +588,13 @@ def _annotate_metric_trust(
 def summarize_metric_trust(
     metrics: dict[str, dict[str, Any]], names: list[str] | None = None,
 ) -> dict[str, int]:
-    """Count active metrics by evidence trust without inflating missing scores."""
+    """Assign every active metric to exactly one evidence-trust bucket."""
     selected = names if names is not None else list(metrics)
-    counts = {"verified": 0, "declared": 0, "missing": 0, "non_representative": 0}
+    counts = {"verified": 0, "declared": 0, "missing": 0}
     for name in selected:
         metric = metrics.get(name, {})
         status = metric.get("trust_status", "missing") if isinstance(metric, dict) else "missing"
         counts[status if status in counts else "missing"] += 1
-        if isinstance(metric, dict) and metric.get("representativeness") == "non_representative":
-            counts["non_representative"] += 1
     return counts
 
 

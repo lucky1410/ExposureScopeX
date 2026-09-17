@@ -637,15 +637,25 @@ def _print_coverage_model(coverage: dict[str, object], package: dict[str, object
     discovered = coverage["discovered"]
     approved = coverage["approved"]
     executed = coverage["executed"]
-    measured = coverage["measured"]
+    metric_trust = coverage["metric_trust"]
     assert isinstance(discovered, dict) and isinstance(approved, dict)
-    assert isinstance(executed, dict) and isinstance(measured, dict)
+    assert isinstance(executed, dict) and isinstance(metric_trust, dict)
     print("\nCOVERAGE BOUNDARY")
     print(f"Discovered components: {discovered['component_count']} | Approved components: {approved['component_count']}")
-    print(f"Requested cases: {executed.get('requested_case_count', executed['case_count'])} | Executed cases: {executed['case_count']} | Measured dimensions: {measured['dimension_count']} of {measured['required_dimension_count']}")
+    print(
+        f"Requested cases: {executed.get('requested_case_count', executed['case_count'])} | "
+        f"Executed cases: {executed['case_count']} | Metric trust: "
+        f"{metric_trust['verified_count']} verified, {metric_trust['declared_count']} declared, "
+        f"{metric_trust['missing_count']} missing"
+    )
     execution = package["execution"]
     assert isinstance(execution, dict)
-    if execution.get("adapter_type") == "browser_journey":
+    if executed.get("kind") == "decision_evaluation":
+        print(
+            f"Decision coverage: {executed['correct_case_count']} correct | "
+            f"{executed['incorrect_case_count']} incorrect | {executed['blocked_case_count']} blocked"
+        )
+    elif execution.get("adapter_type") == "browser_journey":
         print(f"Browser coverage: {executed['pre_auth_case_count']} pre-auth completed | {executed['authenticated_case_count']} authenticated completed | {executed['blocked_case_count']} blocked at session setup | {executed['passed_case_count']} passed | {executed['failed_case_count']} workflow assertions need review")
         if executed["blocked_case_count"]:
             print("Coverage note: Blocked cases did not enter the application workflow. They are not application findings and do not affect quality metrics.")
@@ -746,14 +756,11 @@ def run_command(args: argparse.Namespace) -> int:
     measurement_readiness = build_measurement_readiness(
         local_metrics, package["evaluation"].get("required_dimensions", [])
     )
-    evidence_preflight = _report_evidence_preflight(
-        config, args.config, telemetry_path, local_metrics,
-    )
     assurance_graph = build_assurance_graph(package, local_metrics, discovery=discovery, scope=scope, plan=plan, telemetry=telemetry)
     coverage = build_coverage_model(package, local_metrics, discovery=discovery, scope=scope)
     report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.json")
     report = {
-        "schema_version": "esx-local-evaluation-report-1.1",
+        "schema_version": "esx-local-evaluation-report-1.2",
         "status": "completed_locally",
         "package_id": package["package_id"],
         "runner_version": package["runner_version"],
@@ -774,7 +781,6 @@ def run_command(args: argparse.Namespace) -> int:
             metric_names(local_metrics, package["evaluation"].get("required_dimensions", [])),
         ),
         "measurement_readiness": measurement_readiness,
-        "evidence_preflight": evidence_preflight,
         "coverage": coverage,
         "execution": package["execution"],
         "assurance_graph": assurance_graph,
@@ -819,43 +825,6 @@ def evidence_check_command(args: argparse.Namespace) -> int:
         "metrics": result["metrics"],
     }, indent=2))
     return 0
-
-
-def _report_evidence_preflight(
-    config: dict[str, object], config_path: str, telemetry_path: str | None,
-    metrics: dict[str, dict[str, object]],
-) -> dict[str, object]:
-    """Carry exact evidence gaps into the completed report without hiding results."""
-    default_measurements = Path(config_path).resolve().parent / "full_metric_measurements.json"
-    result = inspect_evidence_preflight(
-        config,
-        telemetry_path=telemetry_path,
-        measurements_path=default_measurements if default_measurements.is_file() else None,
-    )
-    entries = result.get("metrics")
-    if not isinstance(entries, list):
-        return result
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        metric = metrics.get(entry.get("metric"))
-        metric = metric if isinstance(metric, dict) else {}
-        observed_status = metric.get("measurement_status")
-        observed_reason = metric.get("reason")
-        if observed_status == "measured":
-            entry["status"] = "measured"
-            entry["missing"] = []
-        elif observed_status == "not_applicable":
-            entry["status"] = "not_applicable"
-            entry["missing"] = [str(observed_reason)] if observed_reason else []
-        elif entry.get("status") in {"ready_to_collect", "evidence_ready"}:
-            # The plan was valid, but the completed adapter did not return the
-            # observation that was required to calculate this score.
-            entry["status"] = "evidence_incomplete"
-            entry["missing"] = [
-                str(observed_reason) if observed_reason else "The completed run did not return the required observed evidence.",
-            ]
-    return result
 
 
 def _audit_path(output_path: str | Path, config: dict[str, object]) -> Path:
@@ -937,12 +906,8 @@ def report_command(args: argparse.Namespace) -> int:
         plan=plan, telemetry=telemetry_summary(telemetry_path) if telemetry_path else None,
     )
     coverage = build_coverage_model(package, metrics, discovery=discovery, scope=scope)
-    evidence_preflight = (
-        _report_evidence_preflight(config, config_path, telemetry_path, metrics)
-        if config_path else None
-    )
     report = {
-        "schema_version": "esx-local-assurance-report-1.1", "status": "completed_locally",
+        "schema_version": "esx-local-assurance-report-1.2", "status": "completed_locally",
         "package_id": package["package_id"], "runner_version": package["runner_version"],
         "subject": {"agent_id": package["evaluation"]["agent_id"], "subject_version": package["evaluation"]["subject_version"], "dataset_version": package["evaluation"]["dataset_version"]},
         "evaluation": {
@@ -959,7 +924,6 @@ def report_command(args: argparse.Namespace) -> int:
         "measurement_readiness": build_measurement_readiness(
             metrics, package["evaluation"].get("required_dimensions", []),
         ),
-        "evidence_preflight": evidence_preflight,
         "coverage": coverage, "execution": package.get("execution", {}), "assurance_graph": graph,
         "notice": "This Assurance Graph was assembled locally from the specified scope and evidence. It is not a shared release decision.",
     }
