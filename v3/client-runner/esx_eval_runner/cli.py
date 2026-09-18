@@ -24,6 +24,7 @@ from .local_metrics import calculate_local_metrics, summarize_metric_trust
 from .discovery import discover_repository
 from .metric_registry import ADVANCED_CLI_DISPLAY, NEVER_UPLOAD_DIMENSIONS, metric_title
 from .report_html import render_local_report
+from .release_cli import register_release_commands, release_command
 from .runner import (
     AdapterExecutionError,
     RunnerError,
@@ -690,7 +691,7 @@ def _print_local_results(
         print(f"Confidence: NOT MEASURABLE - {confidence['reason']}")
     print(f"Duration: {execution['duration_ms']} ms | Required metrics: {', '.join(evaluation['required_dimensions'])}")
     if classification.get("sample_size", 0) and classification["sample_size"] < 20:
-        print(f"Sample-size note: {classification['sample_size']} cases are valid for local testing. The 20-case minimum applies only to an optional governed ExposureScopeX release decision.")
+        print(f"Sample-size note: {classification['sample_size']} cases are valid for local testing. Local release reviews default to 20 decision cases; release policies can require a larger representative pack.")
     _print_advanced_metrics(metrics, evaluation["required_dimensions"])
     if not summary_only:
         dataset = config["dataset"]
@@ -907,6 +908,12 @@ def run_command(args: argparse.Namespace) -> int:
         "status": "completed_locally",
         "package_id": package["package_id"],
         "runner_version": package["runner_version"],
+        "run_provenance": {
+            "issued_at": package["issued_at"],
+            "project_key": package["evaluation"]["project_key"],
+            "package_sha256": sha256(package),
+            "config_sha256": sha256(config),
+        },
         "subject": {
             "agent_id": package["evaluation"]["agent_id"],
             "subject_version": package["evaluation"]["subject_version"],
@@ -917,6 +924,10 @@ def run_command(args: argparse.Namespace) -> int:
             "decision_task": package["evaluation"].get("decision_task"),
             "required_dimensions": package["evaluation"].get("required_dimensions", []),
             "dataset_health": package["evaluation"].get("dataset_health", {}),
+            "comparison_basis": {
+                "dataset_sha256": package["evaluation"].get("dataset_sha256"),
+                "protocol_sha256": package["evaluation"].get("comparison_protocol_sha256"),
+            },
         },
         "metrics": local_metrics,
         "metric_trust_summary": summarize_metric_trust(
@@ -1110,12 +1121,22 @@ def report_command(args: argparse.Namespace) -> int:
     report = {
         "schema_version": "esx-local-assurance-report-1.2", "status": "completed_locally",
         "package_id": package["package_id"], "runner_version": package["runner_version"],
+        "run_provenance": {
+            "issued_at": package.get("issued_at"),
+            "project_key": package["evaluation"].get("project_key"),
+            "package_sha256": sha256(package),
+            "config_sha256": sha256(config) if config else None,
+        },
         "subject": {"agent_id": package["evaluation"]["agent_id"], "subject_version": package["evaluation"]["subject_version"], "dataset_version": package["evaluation"]["dataset_version"]},
         "evaluation": {
             "scorecard_type": package["evaluation"].get("scorecard_type", "decision_evaluation"),
             "decision_task": package["evaluation"].get("decision_task"),
             "required_dimensions": package["evaluation"].get("required_dimensions", []),
             "dataset_health": package["evaluation"].get("dataset_health", {}),
+            "comparison_basis": {
+                "dataset_sha256": package["evaluation"].get("dataset_sha256"),
+                "protocol_sha256": package["evaluation"].get("comparison_protocol_sha256"),
+            },
         },
         "metrics": metrics,
         "metric_trust_summary": summarize_metric_trust(
@@ -1434,6 +1455,7 @@ def upload_command(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="esx-eval", description="Run a local AI pre-release evaluation")
     commands = root.add_subparsers(dest="command", required=True)
+    register_release_commands(commands)
     keygen = commands.add_parser("keygen", help="Create a local Ed25519 keypair")
     keygen.add_argument("--private-key", required=True, help="New private-key file; never upload this file")
     init = commands.add_parser("init", help="Create an editable colleague-ready evaluation starter")
@@ -1555,6 +1577,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "release":
+            return release_command(args)
         if args.command == "keygen":
             print(json.dumps(generate_keypair(args.private_key), indent=2))
             return 0

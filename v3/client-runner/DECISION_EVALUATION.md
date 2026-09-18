@@ -98,7 +98,11 @@ The first report section states separately whether PRE-D measured:
 
 - Decision evaluation
 - PRE-D telemetry evidence
-- PRE-D local release readiness
+- This run's evidence readiness
+
+For a separate application-level recommendation across modules, use
+[`esx-eval release`](RELEASE_REVIEW.md). A single-run readiness section is not
+a whole-application release decision.
 
 Browser workflows remain useful for authentication and protected UI coverage,
 but they do not replace decision evaluation. For RAG, groundedness, tool use,

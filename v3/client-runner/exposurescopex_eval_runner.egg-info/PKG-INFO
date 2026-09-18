@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: exposurescopex-eval-runner
-Version: 0.11.3
+Version: 0.12.0
 Summary: Run local-first ExposureScopeX AI pre-release evaluations in a customer environment.
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
@@ -10,11 +10,151 @@ Requires-Dist: playwright<2,>=1.49; extra == "browser"
 
 # ExposureScopeX Local AI Evaluation Runner
 
+**PRE-D Local 0.12.0: local AI evaluation and application release review.**
+
 `esx-eval` is a **local-first pre-release evaluator** for a model, RAG
 application, agent, or multi-agent system. It runs next to the AI system being
 tested and prints results in the local terminal. A normal `run` command does
 not connect to ExposureScopeX and does not upload prompts, model outputs, source
 code, traces, environment variables, stderr, credentials, or results.
+
+## Start here
+
+| What you want to do | Start with |
+| --- | --- |
+| Install or upgrade the standalone runner | [Local-only quick start](#local-only-quick-start) |
+| Score application decisions, labels, and confidence | [Decision evaluation](DECISION_EVALUATION.md) |
+| Test approved login and multi-step browser workflows | [Browser workflow guide](BROWSER_WORKFLOWS.md) |
+| Review required modules and decide what blocks a release | [Application release review](RELEASE_REVIEW.md) |
+| Compare two versions without hiding coverage changes | [Baseline comparison](RELEASE_REVIEW.md#compare-a-candidate-against-a-baseline) |
+| Connect groundedness, hallucination, or other metric evidence | [Evidence guide](PRE-D_EVIDENCE_GUIDE.md) |
+| See what changed and what remains unsupported | [0.12.0 release notes](RELEASE_NOTES.md) |
+
+Python 3.11+ is required. Browser testing additionally needs Playwright and its
+Chromium runtime; semantic evaluation needs the configured independent local
+judge. Installing packages may require network access. Local evaluation is not
+automatically offline: the application or its configured providers can still
+make external requests.
+
+## What is new in 0.12.0
+
+The new `release` commands build on the existing metric engines, rather than
+replacing them. They combine existing plans into a scoped application review:
+
+- Explicit required workflow/decision coverage, module owners, exclusions, and
+  dependency readiness. A passing decision pack cannot cover a missing workflow.
+- Four recommendations: **Ship**, **Ship with conditions**, **Do not ship**, and
+  **Insufficient evidence**. A critical failure is not averaged into a green score.
+- Verified, declared, missing, stale, duplicate, and incomplete evidence stay
+  distinguishable; declared perfect scores cannot pass verified release gates.
+- Baseline comparisons for classification, calibration, workflow outcomes, and
+  decision-evidence alignment, with changed cases and scope/policy differences.
+- Local HTML/JSON reports, links to detailed evaluations, and hash-linked audit
+  records. No new service, background process, Docker build, or database.
+
+The single-run report now calls its readiness section **This run's evidence
+readiness**, to avoid confusing one evaluation with an application release review.
+
+## Choose the right evaluation
+
+| Evaluation | What it can establish | What the tester provides |
+| --- | --- | --- |
+| Decision/API/adapter | Accuracy, precision, recall, F1, Brier score, calibration, and configured evidence-reference checks | Representative labelled cases, the real decision endpoint/adapter, returned labels and genuine confidence values |
+| Browser workflow | Approved login, navigation, executed workflows, and visible expected signals | A test identity/session and reviewed journeys with stable assertions |
+| Semantic groundedness/hallucination | Claim-level judgments against supplied sources, plus supported abstention checks | Actual response text, exact source material, an independent local judge, and configured review/gold expectations |
+| Telemetry-backed metrics | Supported retrieval, tools, trajectory, security, robustness, agreement, repeatability, or usage measures | The dimension-specific observations and expectations described in the evidence guide |
+| Application release review | Whether the declared modules and suites satisfy an explicit release policy | Module inventory, owners, existing plans/reports, exclusions, dependencies, and thresholds |
+
+Browser outcomes are not model-quality labels or confidence estimates.
+Evidence-ID overlap is not proof that a claim is true. Model-judge verdicts
+remain fallible even when obtained independently. Missing observations are
+reported as missing, not replaced with fabricated scores.
+
+## Application release quick start
+
+First create and validate ordinary local evaluation plans. Each suite's
+`evaluation.project_key`, `agent_id`, and `subject_version` must match the
+application and subject declared in the release manifest.
+
+```text
+esx-eval release init --application-id my-app --subject-version candidate-1 --module decisions --module dashboard --out release.json
+```
+
+The new manifest starts with an unconfirmed inventory and empty modules. Review
+it, add owners and explicit `required_kinds`, attach each suite's `config` or
+completed `report`, and set `inventory_complete` only after confirming scope.
+[The full guide](RELEASE_REVIEW.md#attach-the-existing-plans) includes a complete
+manifest example and explains all supported fields.
+
+```text
+esx-eval release check --manifest release.json --run --out out/release-review.json
+esx-eval view --report out/release-review.html
+```
+
+`--run` explicitly executes config-backed suites, sequentially. Without it,
+PRE-D only assesses supplied reports; it never silently calls the application.
+Failed suites are retained as gaps, and no failed workflow is automatically
+retried by the release orchestrator.
+
+Preserve a previous release-review JSON to compare versions:
+
+```text
+esx-eval release check --manifest candidate-release.json --baseline out/previous-release.json --run --out out/candidate-release.json --require-ship
+```
+
+The baseline is never rerun or overwritten. Matching suite IDs, subjects,
+dataset-content fingerprints, scoring protocols, evidence, and metric policies
+are required for like-for-like deltas. Changed inputs are **Not comparable**,
+not an apparent improvement. Newly failing cases remain visible even when
+aggregate accuracy is unchanged.
+
+Exit codes: `0` for a written review, `1` for command/manifest errors, and `2`
+when `--require-ship` is set and the recommendation is anything other than Ship.
+Without `--require-ship`, exit `0` does not mean the application passed.
+
+**Default thresholds are starting policies, not universal safety standards.**
+Decision suites default to 20 cases, accuracy >= 0.95, macro F1 >= 0.90, and
+ECE <= 0.15. Workflow suites require execution and signal-match rates of 1.0.
+Choose appropriate cases and thresholds for the application before interpreting
+the recommendation.
+
+## Testing boundary and upgrade notes
+
+Use an isolated test instance or tenant for workflows that write data. Running
+locally does not stop a configured app from sending notifications, changing
+permissions, or calling external write APIs. PRE-D does not provide automatic
+rollback or make a production action harmless. Test identities and data should
+be scoped accordingly; use real isolated writes when validating side effects.
+
+Existing evaluation plans remain supported. The release commands are opt-in;
+upgrading the runner does not run an application, change its code, or modify
+existing reports. Install the new wheel into the same Python environment used
+for evaluation, then verify the imported version:
+
+```text
+python -c "from esx_eval_runner import __version__; print(__version__)"
+esx-eval release check --help
+```
+
+Use `py` on Windows or `python3` on macOS/Linux if that is the interpreter for
+your evaluation environment. The version should be `0.12.0`. If the import
+shows the new version but `esx-eval` has no `release` command, the executable on
+PATH belongs to another environment; use the matching environment's executable.
+
+Old reports can be regenerated for ordinary review, but regeneration does not
+create missing original dataset fingerprints or fresh executions. For a
+comparable baseline, rerun the baseline pack with fingerprint support. Changing
+the PRE-D version also changes the protocol fingerprint; rerun both application
+versions under the same evaluator version when making that comparison.
+
+**Current limits:** advanced semantic/telemetry metrics can still be used in
+current-release gates, but their regression comparisons are not yet supported.
+Declared inventory is not automatic discovery of every business journey. The
+release layer does not add load tests, arbitrary permissions probes, automatic
+root-cause localization, or production-wide correctness guarantees. Local test
+fixtures validate runner behavior, not independent real-application acceptance.
+
+## Detailed metric and workflow guides
 
 For a plain-language explanation of the evidence each local metric needs, see
 [`PRE-D_EVIDENCE_GUIDE.md`](PRE-D_EVIDENCE_GUIDE.md). It separates the
@@ -29,11 +169,23 @@ synthetic starter dataset is available at
 [`examples/decision-evaluation.sample.json`](examples/decision-evaluation.sample.json).
 
 For planning coverage across a larger application, see the
-[VINI module coverage example](examples/vini-module-coverage.md). It maps a
-tester-supplied 15-module inventory to browser and decision evaluation paths,
-persona requirements, exclusions, and current reporting gaps. VINI is an
-example target application; the plan is not a completed run or a built-in
-product-specific integration.
+[application module coverage example](examples/application-module-coverage.md).
+It maps a tester-supplied 15-module inventory to browser and decision
+evaluation paths, persona requirements, exclusions, and current reporting
+gaps. The plan is not a completed run or a built-in product-specific
+integration.
+
+To run existing evaluation plans across multiple modules and produce one local
+release recommendation, see [Application release review](RELEASE_REVIEW.md).
+The new `esx-eval release` commands combine module coverage, explicit thresholds,
+evidence provenance, and actionable findings in a standalone HTML/JSON report.
+They require no platform connection or additional infrastructure.
+Declare required workflow/decision coverage and module dependencies, then use
+`release check --baseline previous-release.json` to see matched-pack metric and
+case regressions. Changed datasets, protocols, or thresholds are not presented
+as like-for-like improvements. Advanced semantic/telemetry metrics remain
+available for current-release checks; their regression comparisons are not yet
+supported.
 
 Use the optional shared workflow only when a team wants ExposureScopeX to retain
 a governed release decision and formal report.
@@ -444,25 +596,35 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.11.3"
+   $version = "0.12.0"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
    if ($actual -ne $expected) { throw "Checksum verification failed. Do not install this file." }
-   py -m pip install ".\$wheel"
+   py -m pip install --upgrade ".\$wheel"
+   py -c "from esx_eval_runner import __version__; print(__version__)"
    esx-eval --help
    ```
 
    On macOS or Linux, the equivalent install command is:
 
    ```bash
-   python3 -m pip install ./exposurescopex_eval_runner-0.11.3-py3-none-any.whl
+   shasum -a 256 -c SHA256SUMS
+   python3 -m pip install --upgrade ./exposurescopex_eval_runner-0.12.0-py3-none-any.whl
+   python3 -c "from esx_eval_runner import __version__; print(__version__)"
    ```
 
-4. Start a local test copy of the AI application. It needs one endpoint that
-   accepts `POST {"message": "..."}` and returns JSON with a text outcome and
-   numeric confidence. Do not use production credentials, customer data, or a
-   production endpoint.
+   Download the accompanying documentation assets too when checking the entire
+   `SHA256SUMS` file; it covers the wheel and those guides. A missing guide is a
+   missing file, not necessarily a wheel checksum mismatch.
+
+4. Start a local test copy of the AI application. For decision evaluation,
+   select an endpoint accepting `POST {"case_id": "...", "input": {...}}` and
+   returning JSON with a real text outcome and numeric confidence. Confirm the
+   field mappings in setup. Use labelled cases with at least two expected
+   classes; do not invent confidence values merely to make a score measurable.
+   See [the decision contract](DECISION_EVALUATION.md) for a full example. Do not
+   use production credentials, customer data, or a production write endpoint.
 
    ```powershell
    # Example only: use the actual URL of the application being tested.
@@ -626,7 +788,10 @@ local test execution, not a claim that eight examples prove release readiness.
 The runner allows 1 to 10,000 cases. A one-case run is a connection smoke test,
 not enough data to describe model quality. ExposureScopeX's optional governed
 release policy requires at least 20 labelled cases and at least two ground-truth
-classes. That threshold is never applied to a local-only run.
+classes. A plain local run does not enforce that release floor. The separate
+local `release check` command defaults to a 20-case decision-suite minimum,
+which can be configured in the manifest. Neither floor guarantees statistical
+representativeness.
 
 ## Optional shared platform decision
 

@@ -16,6 +16,10 @@ esx_eval_runner/metric_registry.py
 esx_eval_runner/ollama_grounding_judge.py
 esx_eval_runner/preflight.py
 esx_eval_runner/profiles.py
+esx_eval_runner/release.py
+esx_eval_runner/release_cli.py
+esx_eval_runner/release_comparison.py
+esx_eval_runner/release_html.py
 esx_eval_runner/report_html.py
 esx_eval_runner/runner.py
 esx_eval_runner/semantic_grounding.py
@@ -29,6 +33,8 @@ exposurescopex_eval_runner.egg-info/entry_points.txt
 exposurescopex_eval_runner.egg-info/requires.txt
 exposurescopex_eval_runner.egg-info/top_level.txt
 tests/test_cli_local.py
+tests/test_release.py
+tests/test_release_comparison.py
 tests/test_semantic_grounding.py
 tests/test_semantic_hallucination.py
 tests/test_semantic_hardening.py

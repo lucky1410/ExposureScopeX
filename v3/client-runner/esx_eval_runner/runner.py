@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from . import __version__
 from .http_utils import build_no_redirect_opener
+from .local_metrics import METRIC_CALCULATION_VERSION
 from .metric_registry import (
     DECISION_BASELINE_DIMENSIONS as BASE_DIMENSIONS,
     SUPPORTED_DIMENSIONS,
@@ -1267,6 +1268,16 @@ def build_package(
             "subject_type": evaluation.get("subject_type", "agent"),
             "project_key": evaluation["project_key"],
             "dataset_version": evaluation["dataset_version"],
+            "dataset_sha256": sha256(cases),
+            "comparison_protocol_sha256": sha256({
+                "schema": "pre-d-comparison-protocol-1.0",
+                "runner_version": __version__,
+                "metric_calculation_version": METRIC_CALCULATION_VERSION,
+                "adapter_type": adapter["type"],
+                "decision_task": evaluation.get("decision_task"),
+                "scorecard_type": evaluation.get("scorecard_type", "decision_evaluation"),
+                "browser_plan": adapter if adapter["type"] == "browser_journey" else None,
+            }),
             "policy_id": evaluation.get("policy_id", "esx-ai-evaluator-release-1.0"),
             "required_dimensions": evaluation.get("required_dimensions", ["classification", "confidence"]),
             "scorecard_type": "workflow_assurance" if adapter["type"] == "browser_journey" else evaluation.get("scorecard_type", "decision_evaluation"),

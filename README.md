@@ -26,6 +26,30 @@ Current product truth, deployment boundaries, and backlog are maintained in
 
 ---
 
+## PRE-D Local: AI Application Release Evaluation
+
+**PRE-D Local 0.12.0** is a separate ExposureScopeX component for evaluating
+AI applications next to the application being tested. It does **not** require
+the Docker platform below, an ExposureScopeX account, a database, or an upload.
+
+Start with the [detailed PRE-D README](v3/client-runner/README.md), or download the
+runner wheel, checksums, and guides from
+[the 0.12.0 release](https://github.com/lucky1410/ExposureScopeX/releases/tag/esx-eval-runner-v0.12.0).
+
+- Run labelled decision evaluations and approved authenticated browser journeys.
+- Calculate evidence-supported local AI metrics without treating browser smoke
+  results or target-declared scores as independent AI-quality verification.
+- Combine module suites into an evidence-aware release recommendation, with
+  explicit missing coverage, dependency readiness, owners, and suggested actions.
+- Compare candidate and baseline releases using matched datasets and evaluation
+  protocols, including newly failing cases hidden by unchanged aggregate scores.
+
+See [release-review instructions](v3/client-runner/RELEASE_REVIEW.md),
+[metric evidence requirements](v3/client-runner/PRE-D_EVIDENCE_GUIDE.md), and
+[0.12.0 release notes](v3/client-runner/RELEASE_NOTES.md).
+Recommendations apply only to the declared inventory and executed tests; PRE-D
+does not automatically certify every production behavior or roll back live writes.
+
 ## Start the Platform
 
 ```bash

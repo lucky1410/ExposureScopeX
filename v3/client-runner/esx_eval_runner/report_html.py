@@ -397,12 +397,12 @@ def _evaluation_layers(report: dict[str, Any]) -> str:
     calibration_review = isinstance(calibration_error, (int, float)) and calibration_error > 0.15
     if is_browser:
         readiness = _layer_card(
-            "PRE-D local release readiness", "WORKFLOW EVIDENCE ONLY",
+            "This run's evidence readiness", "WORKFLOW EVIDENCE ONLY",
             "Workflow reachability is available for review. Decision-quality readiness was not evaluated because this run did not use a decision endpoint or local adapter.",
         )
     elif _metric_status(classification) == "measured" and _metric_status(confidence) == "measured":
         readiness = _layer_card(
-            "PRE-D local release readiness", "DEEP EVIDENCE PENDING" if pending else ("REVIEW REQUIRED" if trust_review or calibration_review else "EVIDENCE READY"),
+            "This run's evidence readiness", "DEEP EVIDENCE PENDING" if pending else ("REVIEW REQUIRED" if trust_review or calibration_review else "EVIDENCE READY"),
             (
                 "Decision baseline is measured locally. Add telemetry or adapter evidence before making claims about " + ", ".join(_title(item).lower() for item in pending) + "."
                 if pending else
@@ -418,7 +418,7 @@ def _evaluation_layers(report: dict[str, Any]) -> str:
         )
     else:
         readiness = _layer_card(
-            "PRE-D local release readiness", "DECISION EVIDENCE INCOMPLETE",
+            "This run's evidence readiness", "DECISION EVIDENCE INCOMPLETE",
             "This run cannot support a decision-quality release review until labelled outcomes and observed confidence are measured locally.",
         )
     return """<section class='panel'>

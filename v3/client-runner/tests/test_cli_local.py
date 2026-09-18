@@ -834,7 +834,7 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertIn("COMPLETED LOCALLY", output.getvalue())
             self.assertIn("Cases: 8 | Correct: 8 | Accuracy: 1.000", output.getvalue())
-            self.assertIn("20-case minimum applies only", output.getvalue())
+            self.assertIn("Local release reviews default to 20 decision cases", output.getvalue())
             self.assertNotIn("signature", read_json(output_path))
             self.assertTrue(output_path.with_name("evaluation.local-report.html").is_file())
             audit = verify_audit_log(output_path.with_name("evaluation.audit.jsonl"))
@@ -1534,7 +1534,7 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("generated response and retrieved source chunks", page)
         self.assertIn("Approved relevant document IDs", page)
         self.assertIn("PRE-D telemetry evidence", page)
-        self.assertIn("PRE-D local release readiness", page)
+        self.assertIn("This run&#x27;s evidence readiness", page)
 
     def test_local_html_separates_browser_coverage_from_model_measurement(self) -> None:
         report = {
