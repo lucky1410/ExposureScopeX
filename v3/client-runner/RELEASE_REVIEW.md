@@ -12,6 +12,120 @@ hash-linked audit log. It uses the existing browser, decision, semantic, and
 telemetry metric engines. No ExposureScopeX connection, database, Docker service,
 or new runtime dependency is required.
 
+## Execute the entire declared inventory
+
+The `scope`, `bind`, `attach`, `preflight`, and `run` commands below require
+PRE-D Local 0.13.0 or later. The existing `release check` workflow
+remains supported for explicitly partial runs and report review.
+
+PRE-D can run all modules using their approved browser and decision plans in
+one invocation. There is no built-in list of supported business modules. A
+settings, administration, or non-AI module can use workflow tests; an AI module
+uses decision tests; a mixed module needs both. Existing personas, sessions,
+semantic judges, telemetry, and adapter settings stay in their original plans.
+
+First list **every** module. Use `--inventory-complete` only after reviewing this
+list; it is your scope declaration, not automatic discovery certification.
+
+```text
+esx-eval release init --application-id my-app --subject-version candidate-1 --module dashboard --module decisions --module settings --inventory-complete --out release.json
+esx-eval release scope --manifest release.json --module dashboard --profile workflow --persona analyst
+esx-eval release scope --manifest release.json --module decisions --profile mixed --persona analyst
+esx-eval release scope --manifest release.json --module settings --profile workflow --persona admin
+esx-eval release attach --manifest release.json --module dashboard --suite-id dashboard-ui --config dashboard/esx-eval.json --read-only
+esx-eval release attach --manifest release.json --module decisions --suite-id decisions-api --config decisions/esx-eval.json --read-only --require-kind workflow
+esx-eval release attach --manifest release.json --module decisions --suite-id decisions-ui --config decisions/browser.json --read-only
+esx-eval release attach --manifest release.json --module settings --suite-id settings-ui --config settings/esx-eval.json --read-only
+```
+
+These commands do **not** yet create a runnable full scope: review the generated
+objectives and bind each to real cases in those plans. For example, if the
+dashboard plan contains the reviewed case `open-dashboard`:
+
+```text
+esx-eval release bind --manifest release.json --module dashboard --requirement workflow-analyst-happy-path --suite-id dashboard-ui --case-id open-dashboard --assertion "The analyst sees the expected dashboard heading after login."
+esx-eval release preflight --manifest release.json --out out/preflight.json
+```
+
+Repeat binding for the actual negative, recovery, authorization, decision, and
+integration objectives. Preflight names every missing binding before making any
+target call. Once it is ready:
+
+```text
+esx-eval release run --manifest release.json --out out/release-review.json --require-ship
+```
+
+Alternatively, `esx-eval setup --application` provides local forms and case
+selectors for this process. See [Application setup](APPLICATION_SETUP.md).
+
+`attach` validates application/version/subject bindings and stores relative
+config paths. It adds the plan's kind to the module's required test kinds;
+`--require-kind` can declare additional kinds that are still needed. Repeat it
+for additional workflows, decision tasks, personas, or metric packs. Existing
+suite replacement requires `--replace` and preserves its release thresholds.
+It does not invent expected outcomes or silently rewrite the evaluation plan.
+
+`preflight` calls no adapter or browser. It checks every module for missing or
+invalid plans, unconfirmed test kinds/objectives, missing case/persona bindings,
+unasserted browser journeys, exclusions, reused reports, duplicate
+plans, and missing or stale execution approvals. A valid config is not a
+connectivity check. Fix all listed issues before the all-module run starts.
+
+`run` performs that same preflight before calling any target. Unlike
+`check --run`, it refuses to start a partial application run. Every module must
+be included with runnable configs; an existing report cannot substitute for
+fresh execution. After dispatch starts, a suite failure is recorded and the
+remaining approved suites still run sequentially. No failed suite is retried
+automatically. Blocked or failed executions cannot yield complete coverage.
+
+Approval is bound to the config hash. Reattach with `--replace` after reviewing
+a changed config. For writes, use `--isolated-writes --isolation-note "..."`
+instead of `--read-only`, describing the disposable environment and disabled or
+sandboxed external integrations. These flags record operator approval; they do
+not intercept app-side writes, verify isolation, or provide rollback. A read-only
+plan still needs review, including login and backend side effects. Do not mark a
+write plan read-only simply to pass preflight.
+
+The report's **What actually ran** section and JSON `execution_review` distinguish
+execution attempts, fully executed modules, existing reports, unexecuted modules,
+and whether a baseline comparison was performed. All-module execution means
+every declared suite/case completed, not that every possible behavior was tested
+or that the quality gates passed. `all_modules_executed` is independent of the
+release recommendation.
+
+The **test objective** summary is separate from execution completeness. Each
+objective names its test kind, category, optional browser persona or module
+dependency, actual suite/case IDs, and a reviewer-written assertion description.
+Its status follows the recorded case outcomes: passed, failed, missing, or
+incomplete (blocked). A failed objective blocks release even if an aggregate
+score is high. Incomplete or duplicated case ledgers cannot satisfy objectives.
+This verifies the mapping and outcomes, not the semantic sufficiency of a test.
+Reviewers must not label a heading check as proof of a business transaction.
+
+`depends_on` alone is a declared relationship, not an executed integration.
+Reports explicitly distinguish declared-only dependencies from passed or failed
+mapped integration cases. An untested dependency path is an evidence gap.
+Changing objectives, personas, assertions, or case bindings is disclosed in a
+baseline comparison rather than called an application improvement.
+
+All-module runs require objectives for every declared test kind. The older
+`release check` path still supports bounded reviews without that depth model;
+its HTML explicitly says test depth is unspecified, and must not be read as
+proof of whole-application coverage.
+
+Exit codes for `preflight`/`run`: `0` means ready/fully executed, `2` means blocked
+or incomplete, and `1` means a command or manifest error. With `--require-ship`,
+`run` also returns `2` for a non-Ship recommendation. Use a fresh full execution
+with `--baseline out/previous-release.json` to test regressions, not just prepare
+a hypothetical baseline.
+
+Application-specific routes, expected outcomes, labelled data, approved sessions,
+and safe execution interfaces still need to exist. For a module without those,
+PRE-D explains what plan is missing instead of inventing a passing test. The
+current engines cover browser workflows and decision/API/command evaluations;
+they do not automatically supply load tests, arbitrary API contract tests, or
+every infrastructure test a production release may need.
+
 ## Start with an application inventory
 
 ```text

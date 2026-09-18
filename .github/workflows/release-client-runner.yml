@@ -34,7 +34,7 @@ jobs:
           python -m unittest discover -s tests -v
           python -m compileall -q esx_eval_runner
           python -m build --wheel --outdir dist
-          cp README.md RELEASE_REVIEW.md RELEASE_NOTES.md PRE-D_EVIDENCE_GUIDE.md DECISION_EVALUATION.md BROWSER_WORKFLOWS.md ADAPTER_V2.md CONNECTORS.md SECURITY.md dist/
+          cp README.md APPLICATION_SETUP.md RELEASE_REVIEW.md RELEASE_NOTES.md PRE-D_EVIDENCE_GUIDE.md DECISION_EVALUATION.md BROWSER_WORKFLOWS.md ADAPTER_V2.md CONNECTORS.md SECURITY.md dist/
           cd dist
           sha256sum *.whl *.md > SHA256SUMS
 

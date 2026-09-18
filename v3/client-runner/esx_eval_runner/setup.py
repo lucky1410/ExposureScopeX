@@ -19,7 +19,7 @@ from .discovery import discover_repository
 from .evidence_requirements import render_evidence_requirements_markdown
 from .http_utils import build_no_redirect_opener
 from .profiles import PROFILE_NAMES, build_cases, profile
-from .runner import CONFIG_SCHEMA_VERSION, _is_loopback_host
+from .runner import CONFIG_SCHEMA_VERSION, RunnerError, _is_loopback_host
 from .workflows import build_workflow_pack_catalog
 
 
@@ -705,8 +705,10 @@ def _rank_response_candidates(fields: list[dict[str, Any]], *, kind: str) -> lis
     return [{"path": path, "type": value_type} for _score, path, value_type in sorted(ranked, key=lambda item: (-item[0], item[1]))]
 
 
-def serve_setup(default_directory: str | None = None) -> None:
+def serve_setup(default_directory: str | None = None, *, application: bool = False) -> None:
     """Serve one local page on loopback until the user presses Ctrl+C."""
+    from .release_setup import _SETUP_LOCK
+
     token = secrets.token_urlsafe(24)
     verified_connections: dict[str, dict[str, Any]] = {}
 
@@ -723,13 +725,26 @@ def serve_setup(default_directory: str | None = None) -> None:
             self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/browser":
+            # Plan validation temporarily changes cwd; all setup routes share its lock.
+            with _SETUP_LOCK:
+                self._get()
+
+        def _get(self) -> None:
+            if self.headers.get("Host") not in {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}:
+                self.send_error(403)
+                return
+            if self.path == "/application":
+                from .release_setup import application_setup_html
+                body = application_setup_html(token, default_directory).encode("utf-8")
+            elif self.path == "/browser":
                 body = _guided_setup_html_with_evidence(token, default_directory).encode("utf-8")
             elif self.path == "/":
                 body = _pred_local_setup_html(token, default_directory).encode("utf-8")
             else:
                 self.send_error(404)
                 return
+            if self.path != "/application":
+                body = body.replace(b"<main>", b"<main><nav aria-label='Evaluation setup' style='margin-bottom:24px'><a href='/application'>Whole-application setup</a> | <a href='/'>Decision / API plan</a> | <a href='/browser'>Browser plan</a></nav>", 1)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -737,7 +752,12 @@ def serve_setup(default_directory: str | None = None) -> None:
             self.wfile.write(body)
 
         def do_POST(self) -> None:  # noqa: N802
-            if self.headers.get("X-ESX-Setup-Token") != token:
+            with _SETUP_LOCK:
+                self._post()
+
+        def _post(self) -> None:
+            if (self.headers.get("Host") not in {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
+                    or self.headers.get("X-ESX-Setup-Token") != token):
                 self._json(403, {"error": "Local setup authorization failed"})
                 return
             try:
@@ -748,6 +768,11 @@ def serve_setup(default_directory: str | None = None) -> None:
                 if not isinstance(values, dict):
                     raise ValueError("Request must be a JSON object")
                 values["host_os"] = _host_os()
+                if self.path in {"/api/application/preview", "/api/application/create"}:
+                    from .release_setup import create_application, preview_application
+                    result = (create_application(values) if self.path.endswith("/create") else preview_application(values))
+                    self._json(201 if self.path.endswith("/create") else 200, result)
+                    return
                 if self.path == "/api/discover":
                     self._json(200, discover_repository(values.get("repository", "")))
                     return
@@ -790,11 +815,13 @@ def serve_setup(default_directory: str | None = None) -> None:
                     self._json(201, {"config": str(path), "cases": len(config["dataset"]["cases"]), "profile": config["plan"]["profile"], "files": ["esx-eval.json", "discovery.json", "assurance-scope.json", "risk-plan.json", "workflow-packs.json", "PRE-D_EVIDENCE_REQUIREMENTS.md", "README.md"], "planned_dimensions": config["assurance"]["planned_dimensions"], "connection_type": connection_type})
                     return
                 self._json(404, {"error": "Unknown local setup endpoint"})
-            except (ValueError, json.JSONDecodeError) as exc:
+            except (ValueError, RunnerError) as exc:
                 self._json(400, {"error": str(exc)})
+            except OSError:
+                self._json(400, {"error": "Cannot access the local plan or output folder. Check permissions and choose a new empty output directory."})
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    url = f"http://127.0.0.1:{server.server_port}/"
+    url = f"http://127.0.0.1:{server.server_port}/" + ("application" if application else "")
     print(f"Open the local setup page: {url}")
     print("The page is local-only. Press Ctrl+C here when you are finished.")
     webbrowser.open(url)

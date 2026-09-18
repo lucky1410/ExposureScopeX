@@ -1469,6 +1469,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--full-metrics", action="store_true", help="Require grounding, security, trajectory, RAG, robustness, agreement, repeatability, and cost metrics")
     setup = commands.add_parser("setup", help="Open a local page to connect an app and generate a reviewable test plan")
     setup.add_argument("--directory", help="Suggested new folder for the generated local plan")
+    setup.add_argument("--application", action="store_true", help="Open the guided multi-module application setup instead of a single-plan setup")
     discover = commands.add_parser("discover", help="Scan a local repository for integration hints without exporting source")
     discover.add_argument("--repository", required=True, help="Local application repository folder")
     discover.add_argument("--out", help="Write local discovery JSON for scope review")
@@ -1527,7 +1528,7 @@ def parser() -> argparse.ArgumentParser:
     persona_add.add_argument("--config", required=True)
     persona_add.add_argument("--id", required=True, help="Lowercase persona ID, such as analyst or read-only")
     persona_add.add_argument("--label", help="Human-readable persona label")
-    persona_add.add_argument("--role", required=True, choices=["admin", "analyst", "read_only", "service"])
+    persona_add.add_argument("--role", required=True, help="Role metadata only; grants no permissions. Use up to 64 lowercase letters, digits, underscores, or hyphens, starting with a letter.")
     persona_add.add_argument("--login-path", required=True, help="Same-origin local sign-in path")
     persona_add.add_argument("--success-text", required=True, help="Stable local text after approved sign-in")
     persona_add.add_argument("--session-state-path", help="Relative local session-state path")
@@ -1585,7 +1586,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "init":
             return init_command(args)
         if args.command == "setup":
-            serve_setup(args.directory)
+            serve_setup(args.directory, application=args.application)
             return 0
         if args.command == "discover":
             return discover_command(args)

@@ -18,9 +18,9 @@ _SAFE_PATH = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
 _SAFE_ENV = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 _SAFE_LOCAL_FILE = re.compile(r"^[A-Za-z0-9._/-]{1,240}$")
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
+_SAFE_PERSONA_ROLE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _WAIT_UNTIL = {"commit", "domcontentloaded", "load", "networkidle"}
 _SELECTOR_STATES = {"attached", "detached", "visible", "hidden"}
-_PERSONA_ROLES = {"admin", "analyst", "read_only", "service"}
 _RETRYABLE_ACTIONS = {"goto", "wait_for_selector", "expect_visible", "wait_for_text", "expect_text", "wait_for_url", "wait_for_navigation", "wait_for_stable", "assert_path", "assert_title"}
 
 
@@ -570,8 +570,9 @@ def _validate_personas(value: object) -> None:
             raise RunnerError("Each browser persona needs label, role, session_state_path, and session_bootstrap only")
         if not isinstance(profile["label"], str) or not profile["label"].strip() or len(profile["label"]) > 120:
             raise RunnerError("browser persona label must be non-empty text up to 120 characters")
-        if profile["role"] not in _PERSONA_ROLES:
-            raise RunnerError("browser persona role must be admin, analyst, read_only, or service")
+        # Role labels describe the target account; its session determines permissions.
+        if not isinstance(profile["role"], str) or not _SAFE_PERSONA_ROLE.fullmatch(profile["role"]):
+            raise RunnerError("browser persona role must start with a lowercase letter and contain at most 64 lowercase letters, digits, underscores, or hyphens")
         _validate_local_file(profile["session_state_path"], f"browser persona {persona}.session_state_path")
         _validate_session_bootstrap(profile["session_bootstrap"])
 

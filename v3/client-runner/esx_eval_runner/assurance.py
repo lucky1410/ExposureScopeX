@@ -520,6 +520,10 @@ def _persona_coverage(
             "capability_areas": set(),
         })
 
+    for persona in configured:
+        if isinstance(persona, str) and persona:
+            row_for(persona)
+
     cases = (config or {}).get("dataset", {}).get("cases", [])
     cases = cases if isinstance(cases, list) else []
     for case in cases:

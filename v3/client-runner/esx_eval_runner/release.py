@@ -8,6 +8,8 @@ import re
 from typing import Any
 
 from .metric_registry import metric_title
+from .release_coverage import coverage_totals, evaluate_requirements, validate_requirements
+from .release_observations import decision_observation, policy_disclosure
 from .runner import RunnerError, sha256
 
 
@@ -127,7 +129,7 @@ def validate_manifest(raw: dict[str, Any]) -> dict[str, Any]:
     for module in modules:
         if not isinstance(module, dict):
             raise RunnerError("Each release module must be an object")
-        _fields(module, {"id", "name", "owner", "required", "exclusion_reason", "suites", "required_kinds", "depends_on"}, "Module")
+        _fields(module, {"id", "name", "owner", "required", "exclusion_reason", "suites", "required_kinds", "depends_on", "test_requirements"}, "Module")
         module_id = _identifier(module.get("id"), "module.id")
         if module_id in module_ids:
             raise RunnerError(f"Duplicate release module: {module_id}")
@@ -149,7 +151,7 @@ def validate_manifest(raw: dict[str, Any]) -> dict[str, Any]:
         for suite in suites:
             if not isinstance(suite, dict):
                 raise RunnerError("Each release suite must be an object")
-            _fields(suite, {"id", "kind", "config", "report", "subject_id", "minimum_cases", "gates"}, "Suite")
+            _fields(suite, {"id", "kind", "config", "report", "subject_id", "minimum_cases", "gates", "execution_policy"}, "Suite")
             suite_id = _identifier(suite.get("id"), "suite.id")
             if suite_id in suite_ids:
                 raise RunnerError(f"Duplicate release suite: {suite_id}")
@@ -194,8 +196,20 @@ def validate_manifest(raw: dict[str, Any]) -> dict[str, Any]:
                 raise RunnerError(f"Suite {suite_id}: gates must cover {', '.join(sorted(baseline))}")
             if kind == "workflow" and not {"workflow_coverage.workflow_execution_rate", "workflow_coverage.workflow_signal_match_rate"} <= seen:
                 raise RunnerError(f"Suite {suite_id}: workflow gates must check both execution and signal matching")
+            execution_policy = suite.get("execution_policy")
+            if execution_policy is not None:
+                if not isinstance(execution_policy, dict):
+                    raise RunnerError(f"Suite {suite_id}: execution_policy must be an object")
+                _fields(execution_policy, {"mode", "config_sha256", "isolation_note"}, "execution_policy")
+                if (execution_policy.get("mode") not in ("read_only", "isolated_write")
+                        or not isinstance(execution_policy.get("config_sha256"), str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", execution_policy["config_sha256"])):
+                    raise RunnerError(f"Suite {suite_id}: execution approval requires a mode and config_sha256")
+                if execution_policy["mode"] == "isolated_write" or "isolation_note" in execution_policy:
+                    _text(execution_policy.get("isolation_note"), "execution_policy.isolation_note")
             entries.append({"id": suite_id, "kind": kind, source: source_path, "subject_id": subject,
-                            "minimum_cases": min_cases, "gates": checked})
+                            "minimum_cases": min_cases, "gates": checked,
+                            **({"execution_policy": dict(execution_policy)} if execution_policy is not None else {})})
         kinds = module.get("required_kinds")
         if kinds is not None and (not isinstance(kinds, list) or not kinds or any(k not in ("decision", "workflow") for k in kinds)
                                   or len(set(kinds)) != len(kinds) or not required):
@@ -203,10 +217,18 @@ def validate_manifest(raw: dict[str, Any]) -> dict[str, Any]:
         dependencies = module.get("depends_on", [])
         if not isinstance(dependencies, list) or any(not isinstance(d, str) for d in dependencies) or len(set(dependencies)) != len(dependencies):
             raise RunnerError(f"Module {module_id}: depends_on must be a list of distinct module IDs")
+        requirements = None
+        if "test_requirements" in module:
+            if not required:
+                raise RunnerError("Excluded modules cannot declare executable test requirements")
+            requirements = validate_requirements(module["test_requirements"], entries, dependencies)
+            if not set(r["kind"] for r in requirements) <= set(kinds or []):
+                raise RunnerError("Every requirement kind must be listed in module.required_kinds")
         normalized.append({"id": module_id, "name": _text(module.get("name", module_id), "module.name"),
                            "owner": _text(module.get("owner", "Unassigned"), "module.owner"),
                            "required": required, "exclusion_reason": reason, "suites": entries,
                            **({"required_kinds": sorted(kinds)} if kinds is not None else {}),
+                           **({"test_requirements": requirements} if requirements is not None else {}),
                            "depends_on": dependencies})
     if not any(module["required"] for module in normalized):
         raise RunnerError("A release manifest must include at least one required module")
@@ -293,6 +315,7 @@ def build_release_report(
             report = item.get("report")
             gates = []
             result = {"id": suite["id"], "kind": suite["kind"], "gates": gates,
+                      "policy_disclosure": policy_disclosure(suite["kind"], suite["gates"]),
                       "subject_id": suite["subject_id"], "minimum_cases": suite["minimum_cases"],
                       "comparison_basis": {}, "case_outcomes": [], "evidence_complete": False,
                       "artifact": item.get("artifact"), "report_sha256": item.get("report_sha256"),
@@ -353,6 +376,14 @@ def build_release_report(
                 continue
             result.update(requested_cases=requested, executed_cases=scored)
             result["run_id"] = package_id
+            if not expected_browser:
+                observation = decision_observation(report, scored)
+                result["decision_observation"] = observation
+                if observation and metrics.get("classification", {}).get("measurement_status") != "measured" and observation["incorrect_cases"]:
+                    add("observed_decision_errors", f"{observation['incorrect_cases']} of {scored} executed decisions did not match their expected labels. Aggregate classification is unavailable, but these observed errors remain real on this pack.",
+                        "Inspect the listed cases and expected outcomes. Fix the decision path or a demonstrably wrong label, then rerun. Add representative classes for broader classification estimates.",
+                        module=module, suite=suite, severity="blocker", category="decision_quality",
+                        pointer="metrics.classification.case_results", cases=observation["case_ids"])
             result["comparison_basis"] = evaluation.get("comparison_basis", {})
             # Only content-free identifiers/outcomes enter the release snapshot.
             rows = metrics.get("classification", {}).get("case_results", []) if isinstance(metrics.get("classification"), dict) else []
@@ -360,7 +391,8 @@ def build_release_report(
                 rows = execution.get("browser_case_diagnostics", [])
             if isinstance(rows, list):
                 result["case_outcomes"] = [
-                    {"case_id": r["case_id"], "outcome": r.get("outcome") if expected_browser else ("passed" if r.get("correct") is True else "failed")}
+                    {"case_id": r["case_id"], "outcome": r.get("outcome") if expected_browser else ("passed" if r.get("correct") is True else "failed"),
+                     **({"persona": r.get("persona")} if expected_browser else {})}
                     for r in rows if isinstance(r, dict) and isinstance(r.get("case_id"), str)
                     and (r.get("outcome") in {"passed", "failed", "blocked"} if expected_browser else type(r.get("correct")) is bool)
                 ]
@@ -463,11 +495,36 @@ def build_release_report(
                         module=module, suite=suite, severity="warning", category="evaluation_quality", pointer=f"metrics.{dimension}")
             result["verdict"] = _verdict(findings[start:])
             result["evidence_complete"] = not any(f["severity"] == "gap" for f in findings[start:])
+        requirements = evaluate_requirements(module, suite_results)
+        for requirement in requirements:
+            if requirement["status"] != "passed":
+                failed = requirement["status"] == "failed"
+                add("requirement_failed" if failed else "requirement_coverage_gap",
+                    f"{requirement['id']}: mapped test outcomes are {requirement['status']}. {requirement['description']}",
+                    ("Inspect the mapped case and its expected result. A browser mismatch requires assertion review, not an assumed product defect. Fix the observed problem and rerun."
+                     if failed else "Bind and execute every required case with the correct persona. Resolve missing or blocked outcomes; an attached suite alone does not satisfy this objective."),
+                    module=module, severity="blocker" if failed else "gap", category="test_objectives",
+                    pointer=f"modules.{module['id']}.test_requirements.{requirement['id']}",
+                    cases=[c["case_id"] for c in requirement["cases"] if c["status"] != "passed"])
+        dependency_coverage = []
+        for dependency in module["depends_on"]:
+            checks = [r for r in requirements if r.get("dependency") == dependency]
+            status = ("declared_only" if not checks else "mapped_cases_passed" if all(r["status"] == "passed" for r in checks)
+                      else "mapped_cases_failed" if any(r["status"] == "failed" for r in checks) else "incomplete")
+            dependency_coverage.append({"module_id": dependency, "status": status,
+                                        "requirement_ids": [r["id"] for r in checks]})
+            if not checks:
+                add("dependency_path_untested", f"Dependency {dependency} is declared, but no integration objective is mapped to executed cases.",
+                    "Add an integration requirement with an observable cross-module assertion. Passing each module separately does not establish their integration.",
+                    module=module, category="dependency_coverage")
         module_findings = findings[module_start:]
         modules.append({"id": module["id"], "name": module["name"], "owner": module["owner"],
                         "required": module["required"], "exclusion_reason": module["exclusion_reason"],
                         "verdict": _verdict(module_findings), "suites": suite_results,
                         "depends_on": module["depends_on"],
+                        "dependency_coverage": dependency_coverage,
+                        "test_requirements": requirements,
+                        "test_requirements_sha256": sha256(module.get("test_requirements", [])),
                         "coverage_basis": "declared_requirements" if "required_kinds" in module else "attached_plans_only",
                         "coverage": [{
                             "kind": kind,
@@ -514,6 +571,7 @@ def build_release_report(
                         "evidence_gaps": sum(f["severity"] == "gap" for f in findings),
                         "conditions": sum(f["severity"] == "warning" for f in findings)},
             "modules": modules, "findings": sorted(findings, key=lambda f: {"blocker": 0, "gap": 1, "warning": 2}[f["severity"]]),
+            "test_coverage": coverage_totals(modules),
             "comparison": comparison,
             "limitations": ["A passing pack establishes results on its cases; it does not establish correctness for every production input.",
                             "Recommendations identify areas to investigate. Exact code-level root causes require additional evidence.",

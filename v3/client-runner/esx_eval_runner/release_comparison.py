@@ -152,6 +152,8 @@ def compare_releases(manifest: dict, modules: list[dict], baseline: dict) -> tup
                 changed("module_policy_changed", module_id, f"Module {module_id}: {key} differs from the baseline.")
         if _required_kinds(old) != _required_kinds(module):
             changed("coverage_requirements_changed", module_id, f"Module {module_id}: required test kinds changed.")
+        if old.get("test_requirements_sha256") != module.get("test_requirements_sha256"):
+            changed("test_objectives_changed", module_id, f"Module {module_id}: objective, persona, assertion, or case bindings changed or were not recorded in the baseline. This is not a demonstrated coverage improvement.")
         old_suites = {s["id"]: s for s in old["suites"]}
         new_suites = {s["id"]: s for s in module["suites"]}
         for suite_id in sorted(old_suites.keys() - new_suites.keys()):

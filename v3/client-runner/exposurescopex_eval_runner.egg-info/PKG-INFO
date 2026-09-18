@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: exposurescopex-eval-runner
-Version: 0.12.0
+Version: 0.13.0
 Summary: Run local-first ExposureScopeX AI pre-release evaluations in a customer environment.
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
@@ -10,7 +10,7 @@ Requires-Dist: playwright<2,>=1.49; extra == "browser"
 
 # ExposureScopeX Local AI Evaluation Runner
 
-**PRE-D Local 0.12.0: local AI evaluation and application release review.**
+**PRE-D Local 0.13.0: guided setup, reviewed module coverage, and local AI evaluation.**
 
 `esx-eval` is a **local-first pre-release evaluator** for a model, RAG
 application, agent, or multi-agent system. It runs next to the AI system being
@@ -25,10 +25,11 @@ code, traces, environment variables, stderr, credentials, or results.
 | Install or upgrade the standalone runner | [Local-only quick start](#local-only-quick-start) |
 | Score application decisions, labels, and confidence | [Decision evaluation](DECISION_EVALUATION.md) |
 | Test approved login and multi-step browser workflows | [Browser workflow guide](BROWSER_WORKFLOWS.md) |
+| Set up reviewed multi-module coverage without editing the release manifest | [Guided application setup](APPLICATION_SETUP.md) |
 | Review required modules and decide what blocks a release | [Application release review](RELEASE_REVIEW.md) |
 | Compare two versions without hiding coverage changes | [Baseline comparison](RELEASE_REVIEW.md#compare-a-candidate-against-a-baseline) |
 | Connect groundedness, hallucination, or other metric evidence | [Evidence guide](PRE-D_EVIDENCE_GUIDE.md) |
-| See what changed and what remains unsupported | [0.12.0 release notes](RELEASE_NOTES.md) |
+| See what changed and what remains unsupported | [0.13.0 release notes](RELEASE_NOTES.md) |
 
 Python 3.11+ is required. Browser testing additionally needs Playwright and its
 Chromium runtime; semantic evaluation needs the configured independent local
@@ -36,7 +37,26 @@ judge. Installing packages may require network access. Local evaluation is not
 automatically offline: the application or its configured providers can still
 make external requests.
 
-## What is new in 0.12.0
+## What is new in 0.13.0
+
+- `esx-eval setup --application` provides local forms for module inventory,
+  existing evaluation plans, personas, dependencies, and reviewed case bindings.
+- `release scope`, `bind`, `attach`, `preflight`, and `run` prepare and execute
+  the entire declared inventory. Missing plans or objectives block execution
+  before a target is called; a completed report is not a fresh execution.
+- Reusable objectives cover positive, negative, boundary, recovery,
+  authorization, and integration scenarios. They are review templates, not
+  generated tests or expected labels.
+- Reports distinguish actual execution, objective outcomes, dependency gaps,
+  observed decision errors, and selected release thresholds.
+- Plan approval is tied to its configuration; guided creation requires the
+  reviewed preview to match current plans and bindings. Local setup requests
+  are serialized to avoid cross-request path resolution errors.
+
+See [Application setup](APPLICATION_SETUP.md) for the guided path, and
+[release notes](RELEASE_NOTES.md) for validation and limits.
+
+### Retained from 0.12.0
 
 The new `release` commands build on the existing metric engines, rather than
 replacing them. They combine existing plans into a scoped application review:
@@ -71,6 +91,30 @@ remain fallible even when obtained independently. Missing observations are
 reported as missing, not replaced with fabricated scores.
 
 ## Application release quick start
+
+**Available in 0.13.0: guided application setup and all-module execution.**
+Run `esx-eval setup --application` for the local multi-module setup page. Reuse
+real browser/decision plans, review scenario and persona objectives, and bind
+them to actual case IDs without hand-editing a release manifest. See the
+[guided application setup](APPLICATION_SETUP.md). No target is called by this
+setup; unbound objectives remain visible and block all-module execution.
+
+Use `release scope` and `release bind` for the same objective authoring from the
+CLI. Release browser plans now require explicit assertions, not navigation alone.
+Raw observed decision errors remain visible even when a single-class pack cannot
+provide a broad classification estimate; custom gate thresholds are disclosed.
+
+Use `release attach` to
+bind approved plans without hand-editing the manifest, `release preflight` to
+check the entire inventory without target calls, and `release run` to execute
+all declared modules. Missing plans, exclusions, report reuse, and unapproved
+execution block this mode before any suite starts. Upgrade to 0.13.0 to use
+these commands. See the
+[all-module guide](RELEASE_REVIEW.md#execute-the-entire-declared-inventory).
+
+Each module still needs real workflows or decision cases and expected behavior;
+this is not automatic full-application test generation. The partial/report-only
+workflow below remains available and is labelled separately in new reports.
 
 First create and validate ordinary local evaluation plans. Each suite's
 `evaluation.project_key`, `agent_id`, and `subject_version` must match the
@@ -137,8 +181,8 @@ esx-eval release check --help
 ```
 
 Use `py` on Windows or `python3` on macOS/Linux if that is the interpreter for
-your evaluation environment. The version should be `0.12.0`. If the import
-shows the new version but `esx-eval` has no `release` command, the executable on
+your evaluation environment. The version should be `0.13.0`. If the import
+shows the new version but `esx-eval setup --help` has no `--application` option, the executable on
 PATH belongs to another environment; use the matching environment's executable.
 
 Old reports can be regenerated for ordinary review, but regeneration does not
@@ -596,7 +640,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.12.0"
+   $version = "0.13.0"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -610,7 +654,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 
    ```bash
    shasum -a 256 -c SHA256SUMS
-   python3 -m pip install --upgrade ./exposurescopex_eval_runner-0.12.0-py3-none-any.whl
+   python3 -m pip install --upgrade ./exposurescopex_eval_runner-0.13.0-py3-none-any.whl
    python3 -c "from esx_eval_runner import __version__; print(__version__)"
    ```
 

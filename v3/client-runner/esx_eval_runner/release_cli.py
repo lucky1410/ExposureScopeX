@@ -14,10 +14,12 @@ from typing import Any
 from uuid import uuid4
 
 from .audit import append_audit_event
+from .release_authoring import authoring_command, register_authoring_commands
 from .release import MANIFEST_SCHEMA, build_release_report, validate_manifest
 from .release_comparison import validate_baseline
+from .release_execution import execution_summary, load_plan, preflight_all_modules
 from .release_html import render_release_report
-from .runner import RunnerError, _validate_config, read_json, sha256
+from .runner import RunnerError, read_json, sha256
 
 
 def _write(path: Path, value: object) -> None:
@@ -28,10 +30,12 @@ def _write(path: Path, value: object) -> None:
 def register_release_commands(commands: Any) -> None:
     release = commands.add_parser("release", help="Evaluate an application release using existing local PRE-D plans")
     actions = release.add_subparsers(dest="release_action", required=True)
+    register_authoring_commands(actions)
     init = actions.add_parser("init", help="Create a module inventory for a local release review")
     init.add_argument("--application-id", required=True, help="Must match evaluation.project_key in the plans")
     init.add_argument("--subject-version", required=True)
     init.add_argument("--module", action="append", required=True, help="Module ID; repeat for each application module")
+    init.add_argument("--inventory-complete", action="store_true", help="Explicitly confirm that all release-relevant modules have been listed")
     init.add_argument("--out", required=True)
     check = actions.add_parser("check", help="Assess local reports against the declared release policy")
     check.add_argument("--manifest", required=True)
@@ -39,6 +43,26 @@ def register_release_commands(commands: Any) -> None:
     check.add_argument("--run", action="store_true", help="Execute the config-backed plans sequentially before assessment")
     check.add_argument("--require-ship", action="store_true", help="Exit 2 unless the recommendation is Ship")
     check.add_argument("--baseline", help="Compare against a previous local release-review JSON; does not execute that release")
+    attach = actions.add_parser("attach", help="Bind an approved existing plan to a module without editing the manifest by hand")
+    attach.add_argument("--manifest", required=True)
+    attach.add_argument("--module", required=True)
+    attach.add_argument("--suite-id", required=True)
+    attach.add_argument("--config", required=True)
+    attach.add_argument("--require-kind", choices=("workflow", "decision"), action="append", help="Additional required test kind for this module; repeat for both")
+    attach.add_argument("--minimum-cases", type=int)
+    attach.add_argument("--replace", action="store_true", help="Explicitly replace and reapprove this existing suite, preserving its release gates")
+    approval = attach.add_mutually_exclusive_group(required=True)
+    approval.add_argument("--read-only", action="store_true", help="Declare that the reviewed test plans will not mutate application or external state")
+    approval.add_argument("--isolated-writes", action="store_true", help="Approve writes only in a disposable test environment, with external production effects disabled")
+    attach.add_argument("--isolation-note", help="Required for isolated writes; record the isolation controls, not secrets")
+    preflight = actions.add_parser("preflight", help="Check every declared module's plans and approvals without calling the app")
+    preflight.add_argument("--manifest", required=True)
+    preflight.add_argument("--out", required=True)
+    run = actions.add_parser("run", help="Execute all declared modules; reject exclusions, report reuse, and missing or unapproved plans before any target calls")
+    run.add_argument("--manifest", required=True)
+    run.add_argument("--out", required=True)
+    run.add_argument("--baseline", help="Previous release-review JSON for an actual matched-pack comparison")
+    run.add_argument("--require-ship", action="store_true", help="Also exit 2 when complete execution does not yield Ship")
 
 
 def release_command(args: argparse.Namespace) -> int:
@@ -51,19 +75,36 @@ def release_command(args: argparse.Namespace) -> int:
 
 
 def _release_command(args: argparse.Namespace) -> int:
+    if args.release_action in ("scope", "bind"):
+        return authoring_command(args)
     if args.release_action == "init":
         target = Path(args.out).resolve()
         if target.exists():
             raise RunnerError(f"Refusing to overwrite existing release manifest: {target}")
         manifest = validate_manifest({
             "schema_version": MANIFEST_SCHEMA,
-            "application": {"id": args.application_id, "version": args.subject_version, "inventory_complete": False},
+            "application": {"id": args.application_id, "version": args.subject_version, "inventory_complete": args.inventory_complete},
             "modules": [{"id": item, "required": True, "suites": []} for item in args.module],
         })
         _write(target, manifest)
-        print(json.dumps({"manifest": str(target), "next_step": "Add existing evaluation plans to each module and review the release thresholds."}))
+        print(json.dumps({"manifest": str(target), "next_step": "Use release attach for each approved workflow/decision plan, then release preflight and release run."}))
         return 0
 
+    if args.release_action == "attach":
+        return _attach_plan(args)
+    if args.release_action == "preflight":
+        path = Path(args.manifest).resolve()
+        manifest = validate_manifest(read_json(path))
+        out = Path(args.out).resolve()
+        if out.suffix.lower() != ".json" or out in _manifest_sources(manifest, path):
+            raise RunnerError("Preflight --out must be a JSON path that does not overwrite the manifest or its input files")
+        preflight, _ = preflight_all_modules(manifest, path)
+        _write(out, preflight)
+        print(json.dumps({"preflight": str(out), **preflight}))
+        return 0 if preflight["status"] == "ready" else 2
+
+    all_modules = args.release_action == "run"
+    run_requested = all_modules or args.run
     manifest_path = Path(args.manifest).resolve()
     out = Path(args.out).resolve()
     if out.suffix.lower() != ".json":
@@ -76,11 +117,16 @@ def _release_command(args: argparse.Namespace) -> int:
     sources: set[Path] = {manifest_path}
     baseline = None
     baseline_path = None
+    preflight = None
+    attempted: list[str] = []
+    reused: list[str] = []
     if getattr(args, "baseline", None):
         baseline_path = Path(args.baseline).resolve()
         baseline = read_json(baseline_path)
         validate_baseline(baseline, manifest["application"]["id"], datetime.now(timezone.utc))
         sources.update({baseline_path, baseline_path.with_suffix(".html")})
+    if all_modules:
+        preflight, prepared = preflight_all_modules(manifest, manifest_path)
     # Resolve and validate every plan before running any target. Paths in a
     # plan keep their established meaning relative to that plan's directory.
     for module in manifest["modules"]:
@@ -88,29 +134,34 @@ def _release_command(args: argparse.Namespace) -> int:
             key = "config" if "config" in suite else "report"
             path = (manifest_path.parent / suite[key]).resolve()
             sources.add(path)
+            if all_modules:
+                if key == "report":
+                    sources.add(path.with_suffix(".html"))
+                if preflight["status"] != "ready":
+                    evidence[suite["id"]] = {"error_code": "all_module_preflight_blocked", "error": "No suite was run: the whole-inventory preflight has unresolved module, plan, or execution-approval gaps. Review execution_review.preflight.issues."}
+                continue
             if key == "report":
                 sources.add(path.with_suffix(".html"))
                 evidence[suite["id"]] = _load_report(path, out.parent)
+                if isinstance(evidence[suite["id"]].get("report"), dict):
+                    reused.append(suite["id"])
                 continue
-            if not args.run:
+            if not run_requested:
                 evidence[suite["id"]] = {"error_code": "run_not_requested", "error": "This suite references a plan which has not been executed for this release review. Use --run or supply its completed report."}
                 continue
             try:
-                config = read_json(path)
-                with chdir(path.parent):
-                    evaluation, _, adapter = _validate_config(config)
-                if (evaluation.get("project_key") != manifest["application"]["id"]
-                        or evaluation.get("subject_version") != manifest["application"]["version"]
-                        or evaluation.get("agent_id") != suite["subject_id"]
-                        or (adapter["type"] == "browser_journey") != (suite["kind"] == "workflow")):
-                    raise RunnerError("Plan identity does not match release scope")
-                prepared[suite["id"]] = (path, sha256(config))
+                _, _, _, digest = load_plan(path, manifest["application"], suite)
+                prepared[suite["id"]] = (path, digest)
             except (RunnerError, OSError, ValueError):
                 evidence[suite["id"]] = {"error_code": "invalid_plan", "error": "The evaluation plan is invalid or its project, subject, version, or type does not match this release suite. Review the plan with esx-eval evidence-check."}
     if {out, html, audit} & sources:
         raise RunnerError("Release output paths must not overwrite the manifest, an evaluation plan, or an input report")
     out.parent.mkdir(parents=True, exist_ok=True)
-    append_audit_event(audit, "release_review_started", {"manifest_sha256": sha256(manifest), "execute_plans": args.run,
+    if all_modules and preflight["status"] != "ready":
+        prepared.clear()
+    append_audit_event(audit, "release_review_started", {"manifest_sha256": sha256(manifest), "execute_plans": run_requested,
+                                                       "execution_mode": "all_modules" if all_modules else "partial_or_report_review",
+                                                       "preflight_status": preflight["status"] if preflight else None,
                                                        "baseline_sha256": sha256(baseline) if baseline is not None else None})
     run_dir = out.parent / (out.stem + ".runs") / uuid4().hex
     for suite_id, (path, digest) in prepared.items():
@@ -127,9 +178,14 @@ def _release_command(args: argparse.Namespace) -> int:
                 scope=None, plan=None, telemetry=None, ground_truth=None, grounding_material=None,
             )
             with chdir(path.parent), redirect_stdout(io.StringIO()):
+                append_audit_event(audit, "release_suite_started", {"suite_id": suite_id, "config_sha256": digest})
+                attempted.append(suite_id)
                 run_command(run_args)
             item = _load_report(package.with_name("evaluation.local-report.json"), out.parent)
-            if isinstance(item.get("report"), dict) and item["report"].get("run_provenance", {}).get("config_sha256") != digest:
+            if not isinstance(item.get("report"), dict):
+                raise RunnerError("Suite did not produce a completed local report")
+            provenance = item["report"].get("run_provenance")
+            if not isinstance(provenance, dict) or provenance.get("config_sha256") != digest:
                 raise RunnerError("Run configuration differs from validated plan")
             evidence[suite_id] = item
             append_audit_event(audit, "release_suite_completed", {"suite_id": suite_id, "report_sha256": item.get("report_sha256")})
@@ -138,6 +194,10 @@ def _release_command(args: argparse.Namespace) -> int:
             evidence[suite_id] = {"error_code": "suite_execution_failed", "error": f"The suite did not produce a usable completed report. Review its local evaluation audit/debug artifacts under {diagnostic_dir} and rerun the plan."}
             append_audit_event(audit, "release_suite_failed", {"suite_id": suite_id})
     report = build_release_report(manifest, evidence, baseline=baseline)
+    report["execution_review"] = execution_summary(
+        report, mode="all_modules" if all_modules else ("configured_suites" if run_requested else "report_review_only"),
+        attempted=attempted, reused=reused, preflight=preflight,
+    )
     if baseline_path and report["comparison"]:
         try:
             report["comparison"]["artifact"] = Path(os.path.relpath(baseline_path, out.parent)).as_posix()
@@ -147,8 +207,65 @@ def _release_command(args: argparse.Namespace) -> int:
     html.write_text(render_release_report(report), encoding="utf-8")
     append_audit_event(audit, "release_review_completed", {"manifest_sha256": report["manifest_sha256"], "report_sha256": sha256(report), "verdict": report["verdict"]})
     print(json.dumps({"report": str(out), "html_report": str(html), "audit_log": str(audit),
-                      "verdict": report["verdict"], "summary": report["summary"], "uploaded": False}))
+                      "verdict": report["verdict"], "summary": report["summary"],
+                      "all_modules_executed": report["execution_review"]["all_modules_executed"], "uploaded": False}))
+    if all_modules and (preflight["status"] != "ready" or not report["execution_review"]["all_modules_executed"]):
+        return 2
     return 2 if args.require_ship and report["verdict"] != "ship" else 0
+
+
+def _manifest_sources(manifest: dict, path: Path) -> set[Path]:
+    sources = {path}
+    for module in manifest["modules"]:
+        for suite in module["suites"]:
+            key = "config" if "config" in suite else "report"
+            source = (path.parent / suite[key]).resolve()
+            sources.add(source)
+            if key == "report":
+                sources.add(source.with_suffix(".html"))
+    return sources
+
+
+def _attach_plan(args: argparse.Namespace) -> int:
+    path = Path(args.manifest).resolve()
+    manifest = validate_manifest(read_json(path))
+    module = next((m for m in manifest["modules"] if m["id"] == args.module), None)
+    if module is None or not module["required"]:
+        raise RunnerError("Attach requires an existing required module; review excluded scope explicitly before changing it")
+    config_path = Path(args.config).resolve()
+    evaluation, _, adapter, digest = load_plan(config_path, manifest["application"])
+    kind = "workflow" if adapter["type"] == "browser_journey" else "decision"
+    existing = next((s for s in module["suites"] if s["id"] == args.suite_id), None)
+    if existing is not None and not args.replace:
+        raise RunnerError("Suite already exists; use --replace only after reviewing the changed plan")
+    if existing is not None and existing["kind"] != kind:
+        raise RunnerError("Replacing a suite cannot change its evaluation kind; use a new suite ID and review coverage requirements")
+    for other in manifest["modules"]:
+        for suite in other["suites"]:
+            if suite is not existing and "config" in suite and (path.parent / suite["config"]).resolve() == config_path:
+                raise RunnerError("This plan is already attached; use a distinct plan for additional module coverage")
+    try:
+        config_reference = Path(os.path.relpath(config_path, path.parent)).as_posix()
+    except ValueError:
+        config_reference = config_path.as_posix()
+    entry = {**(existing or {}), "id": args.suite_id, "kind": kind,
+             "subject_id": evaluation["agent_id"], "config": config_reference,
+             "execution_policy": {"mode": "isolated_write" if args.isolated_writes else "read_only", "config_sha256": digest}}
+    entry.pop("report", None)
+    if args.isolation_note is not None:
+        entry["execution_policy"]["isolation_note"] = args.isolation_note
+    if args.minimum_cases is not None:
+        entry["minimum_cases"] = args.minimum_cases
+    if existing is not None:
+        module["suites"][module["suites"].index(existing)] = entry
+    else:
+        module["suites"].append(entry)
+    module["required_kinds"] = sorted(set(module.get("required_kinds", [])) | {kind} | set(args.require_kind or []))
+    manifest = validate_manifest(manifest)
+    _write(path, manifest)
+    print(json.dumps({"manifest": str(path), "module": args.module, "suite": args.suite_id, "kind": kind,
+                      "next_step": "Run release preflight to check all modules. Approval records your reviewed execution scope; it does not sandbox external side effects."}))
+    return 0
 
 
 def _load_report(path: Path, output_dir: Path) -> dict[str, Any]:
