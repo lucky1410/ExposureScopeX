@@ -16,7 +16,7 @@ import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+from urllib.request import HTTPSHandler, Request
 from uuid import uuid4
 
 from cryptography.exceptions import InvalidSignature
@@ -24,6 +24,12 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from . import __version__
+from .http_utils import build_no_redirect_opener
+from .metric_registry import (
+    DECISION_BASELINE_DIMENSIONS as BASE_DIMENSIONS,
+    SUPPORTED_DIMENSIONS,
+    WORKFLOW_DIMENSIONS,
+)
 
 
 CONFIG_SCHEMA_VERSION = "esx-client-runner-config-1.0"
@@ -32,32 +38,20 @@ ADAPTER_REQUEST_SCHEMA_VERSION_V1 = "esx-client-adapter-request-1.0"
 ADAPTER_RESPONSE_SCHEMA_VERSION_V1 = "esx-client-adapter-response-1.0"
 ADAPTER_REQUEST_SCHEMA_VERSION_V2 = "esx-client-adapter-request-2.0"
 ADAPTER_RESPONSE_SCHEMA_VERSION_V2 = "esx-client-adapter-response-2.0"
-BASE_DIMENSIONS = {"classification", "confidence"}
-WORKFLOW_DIMENSIONS = {"workflow_coverage"}
-SUPPORTED_DIMENSIONS = BASE_DIMENSIONS | WORKFLOW_DIMENSIONS | {
-    "groundedness",
-    "hallucination",
-    "security",
-    "trajectory",
-    "tool_use",
-    "rag",
-    "robustness",
-    "judge_agreement",
-    "reproducibility",
-    "cost_efficiency",
-}
 _SAFE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$")
-
-
-class _NoRedirect(HTTPRedirectHandler):
-    """Keep a configured evaluation target from silently reaching another URL."""
-
-    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
-        return None
 
 
 class RunnerError(RuntimeError):
     pass
+
+
+class AdapterExecutionError(RunnerError):
+    """Local adapter failures keep stderr on disk instead of in the package."""
+
+    def __init__(self, returncode: int, stderr: bytes) -> None:
+        self.returncode = returncode
+        self.stderr = stderr
+        super().__init__(f"Local adapter exited with status {returncode}; its stderr remains local")
 
 
 def canonical_json(value: object) -> bytes:
@@ -420,7 +414,7 @@ def _verify_target_attestation(adapter: dict[str, Any], opener: Any) -> str | No
 def _http_opener(adapter: dict[str, Any]):
     tls = adapter.get("tls")
     if not isinstance(tls, dict):
-        return build_opener(_NoRedirect())
+        return build_no_redirect_opener()
     context = ssl.create_default_context(cafile=tls.get("ca_certificate_path"))
     password_env = tls.get("private_key_password_env")
     password = None
@@ -433,7 +427,7 @@ def _http_opener(adapter: dict[str, Any]):
         context.load_cert_chain(tls["client_certificate_path"], tls["client_private_key_path"], password=password)
     except (OSError, ssl.SSLError) as exc:
         raise RunnerError("Could not load the mutual-TLS certificate or private key") from exc
-    return build_opener(_NoRedirect(), HTTPSHandler(context=context))
+    return build_no_redirect_opener(HTTPSHandler(context=context))
 
 
 def _invoke_command_adapter(
@@ -473,7 +467,7 @@ def _invoke_command_adapter(
         raise RunnerError("Local adapter exceeded its configured timeout") from exc
     duration_ms = round((time.monotonic() - started) * 1000)
     if completed.returncode != 0:
-        raise RunnerError(f"Local adapter exited with status {completed.returncode}; its stderr remains local")
+        raise AdapterExecutionError(completed.returncode, completed.stderr)
     max_response_bytes = adapter.get("max_response_bytes", 1_048_576)
     if not isinstance(max_response_bytes, int) or max_response_bytes < 1 or max_response_bytes > 10_485_760:
         raise RunnerError("adapter.max_response_bytes must be between 1 and 10,485,760")

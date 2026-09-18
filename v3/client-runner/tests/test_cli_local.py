@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
+import textwrap
 import sys
 from tempfile import TemporaryDirectory
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,7 +19,7 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from esx_eval_runner.cli import _starter_cases, evidence_check_command, init_command, run_command
+from esx_eval_runner.cli import _starter_cases, evidence_check_command, init_command, run_command, upload_command
 from esx_eval_runner.audit import append_audit_event, verify_audit_log
 from esx_eval_runner.assurance import build_assurance_graph, build_coverage_model, build_risk_plan, create_scope
 from esx_eval_runner.browser import _local_only_session_state, validate_browser_adapter, validate_browser_case
@@ -37,6 +38,7 @@ from esx_eval_runner.preflight import lint_browser_plan
 from esx_eval_runner.profiles import build_cases
 from esx_eval_runner.report_html import render_local_report
 from esx_eval_runner.runner import RunnerError, _adapter_command, _browser_execution_summary, _browser_scored_inputs, _dataset_health, _normalise_results, _verify_target_attestation, attach_local_measurements, build_package, canonical_json, read_json
+from esx_eval_runner.semantic_grounding import evaluate_semantic_grounding
 from esx_eval_runner.setup import _guided_setup_html_with_evidence, _pred_local_setup_html, _probe_local_http_target, create_guided_plan, create_http_plan
 from esx_eval_runner.telemetry import derive_telemetry_measurements, redact_otel_payload, telemetry_summary
 from esx_eval_runner.workflows import add_candidate_to_config, apply_reusable_pack, build_workflow_pack_catalog, export_reusable_pack
@@ -129,6 +131,18 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(boundaries["correctness_brier_score"], 0.0)
         self.assertEqual(boundaries["expected_calibration_error"], 0.0)
         self.assertEqual(sum(item["count"] for item in boundaries["bins"]), 2)
+
+        mixed_boundaries = confidence_metrics(
+            ["safe", "unsafe", "safe", "unsafe"],
+            ["safe", "unsafe", "safe", "unsafe"],
+            [0.0, 0.1, 0.5, 1.0],
+        )
+        by_lower = {item["lower"]: item["count"] for item in mixed_boundaries["bins"]}
+        self.assertEqual(sum(item["count"] for item in mixed_boundaries["bins"]), 4)
+        self.assertEqual(by_lower[0.0], 1)
+        self.assertEqual(by_lower[0.1], 1)
+        self.assertEqual(by_lower[0.5], 1)
+        self.assertEqual(by_lower[0.9], 1)
 
     def test_macro_metrics_are_computed_before_display_rounding(self) -> None:
         expected = ["a", "a", "a", "b", "b", "c", "b"]
@@ -392,7 +406,7 @@ class LocalRunTests(unittest.TestCase):
         }
         self.assertEqual(metric_states, {"verified", "declared"})
         self.assertEqual(coverage["executed"]["kind"], "decision_evaluation")
-        self.assertEqual(coverage["schema_version"], "esx-coverage-model-1.1")
+        self.assertEqual(coverage["schema_version"], "esx-coverage-model-1.2")
         self.assertEqual(coverage["executed"]["correct_case_count"], 20)
         self.assertEqual(coverage["executed"]["incorrect_case_count"], 0)
         self.assertNotIn("passed_case_count", coverage["executed"])
@@ -410,6 +424,170 @@ class LocalRunTests(unittest.TestCase):
         self.assertLess(page.index("CALIBRATION WARNING"), page.index("METRIC TRUST"))
         self.assertIn("Decision evaluation coverage", page)
         self.assertNotIn("ARCHIVED PRE-RUN EXPECTATION", page)
+
+    def test_verified_semantic_groundedness_report_shows_extraction_comparison_and_scoring(self) -> None:
+        material = read_json(METRIC_FIXTURES / "semantic-grounding-mixed.json")
+        judge = {
+            "type": "command_json_v1",
+            "command": [sys.executable, str(METRIC_FIXTURES / "semantic-grounding-judge.py")],
+            "identity": "semantic-grounding-fixture",
+            "version": "1.0.0",
+            "independent_from_target": True,
+        }
+        groundedness = evaluate_semantic_grounding(
+            material, judge, subject_id="demo-agent", capture_source="local_grounding_material_file",
+        )
+        report = {
+            "subject": {"agent_id": "demo-agent", "subject_version": "1.0.0", "dataset_version": "grounding-1.0"},
+            "evaluation": {"required_dimensions": ["groundedness"]},
+            "execution": {"adapter_type": "http_json_target"},
+            "metrics": {
+                "groundedness": {
+                    **groundedness,
+                    "trust_status": "verified",
+                    "evidence_source": "Calculated locally by extracting atomic claims and independently comparing them with source chunks captured through local_grounding_material_file.",
+                },
+            },
+        }
+        page = render_local_report(report)
+        self.assertIn("SEMANTIC GROUNDING", page)
+        self.assertIn("Claim extraction", page)
+        self.assertIn("Evidence comparison", page)
+        self.assertIn("Groundedness scoring", page)
+        self.assertIn("Case verdict summary", page)
+        self.assertIn("VIEW CLAIM-LEVEL VERDICTS", page)
+        self.assertIn("semantic-grounding-fixture", page)
+        self.assertIn("local_grounding_material_file", page)
+        self.assertIn("supported", page)
+        self.assertIn("contradicted", page)
+        self.assertIn("insufficient", page)
+
+    def test_semantic_grounding_fails_closed_when_extraction_review_finds_missing_claims(self) -> None:
+        material = {
+            "schema_version": "pre-d-grounding-material-1.0",
+            "cases": [{
+                "case_id": "case-1",
+                "response": "Alpha. Beta.",
+                "evidence": [{"evidence_id": "doc-1", "text": "Alpha and Beta are both documented."}],
+            }],
+        }
+        with TemporaryDirectory() as directory:
+            judge_script = Path(directory) / "judge.py"
+            judge_script.write_text(textwrap.dedent("""
+                import json
+                import sys
+
+                request = json.load(sys.stdin)
+                operation = request["operation"]
+                if operation == "extract_claims":
+                    results = [{"case_id": "case-1", "claims": ["Alpha."], "abstained": False}]
+                elif operation == "review_claims":
+                    results = [{"case_id": "case-1", "complete": False, "missing_claims": ["Beta."]}]
+                else:
+                    results = []
+                json.dump({
+                    "schema_version": "pre-d-grounding-judge-response-1.0",
+                    "operation": operation,
+                    "results": results,
+                }, sys.stdout)
+            """).strip() + "\n", encoding="utf-8")
+            judge = {
+                "type": "command_json_v1",
+                "command": [sys.executable, str(judge_script)],
+                "identity": "incomplete-extraction-fixture",
+                "version": "1.0.0",
+                "independent_from_target": True,
+            }
+            with self.assertRaisesRegex(RunnerError, "Extraction review found omitted or altered claims"):
+                evaluate_semantic_grounding(material, judge, subject_id="demo-agent")
+
+    def test_semantic_grounding_retains_partial_case_evidence_without_issuing_full_score(self) -> None:
+        material = {
+            "schema_version": "pre-d-grounding-material-1.0",
+            "cases": [
+                {
+                    "case_id": "case-1",
+                    "response": "The alert started at 09:15 UTC.",
+                    "evidence": [{"evidence_id": "doc-1", "text": "The first confirmed alert was recorded at 09:15 UTC."}],
+                },
+                {
+                    "case_id": "case-2",
+                    "response": "The account was disabled.",
+                    "evidence": [{"evidence_id": "doc-2", "text": "The affected account remains active."}],
+                },
+            ],
+        }
+        with TemporaryDirectory() as directory:
+            judge_script = Path(directory) / "judge.py"
+            judge_script.write_text(textwrap.dedent("""
+                import json
+                import sys
+
+                request = json.load(sys.stdin)
+                operation = request["operation"]
+                if operation == "extract_claims":
+                    results = []
+                    for case in request["cases"]:
+                        results.append({"case_id": case["case_id"], "claims": [case["response"]], "abstained": False})
+                elif operation == "review_claims":
+                    results = []
+                    for case in request["cases"]:
+                        results.append({"case_id": case["case_id"], "complete": True, "missing_claims": []})
+                else:
+                    results = []
+                    for item in request["claims"]:
+                        if item["case_id"] == "case-1":
+                            results.append({
+                                "claim_id": item["claim_id"],
+                                "verdict": "supported",
+                                "confidence": 0.92,
+                                "evidence_ids": ["doc-1"],
+                            })
+                        else:
+                            results.append({
+                                "claim_id": item["claim_id"],
+                                "verdict": "supported",
+                                "confidence": 0.84,
+                                "evidence_ids": ["unknown-doc"],
+                            })
+                json.dump({
+                    "schema_version": "pre-d-grounding-judge-response-1.0",
+                    "operation": operation,
+                    "results": results,
+                }, sys.stdout)
+            """).strip() + "\n", encoding="utf-8")
+            judge = {
+                "type": "command_json_v1",
+                "command": [sys.executable, str(judge_script)],
+                "identity": "partial-grounding-fixture",
+                "version": "1.0.0",
+                "independent_from_target": True,
+            }
+            groundedness = evaluate_semantic_grounding(
+                material, judge, subject_id="demo-agent", capture_source="local_grounding_material_file",
+            )
+        self.assertEqual(groundedness["measurement_status"], "not_measurable")
+        self.assertEqual(groundedness["completion_status"], "partial")
+        self.assertEqual(groundedness["completed_case_count"], 1)
+        self.assertEqual(len(groundedness["failed_cases"]), 1)
+        self.assertIn("unknown source chunks", groundedness["failed_cases"][0]["reason"])
+        self.assertEqual(len(groundedness["case_results"]), 1)
+
+        page = render_local_report({
+            "subject": {"agent_id": "demo-agent", "subject_version": "1.0.0", "dataset_version": "grounding-1.0"},
+            "evaluation": {"required_dimensions": ["groundedness"]},
+            "execution": {"adapter_type": "http_json_target"},
+            "metrics": {
+                "groundedness": {
+                    **groundedness,
+                    "trust_status": "missing",
+                    "evidence_source": "Calculated locally by extracting atomic claims and independently comparing them with source chunks captured through local_grounding_material_file.",
+                },
+            },
+        })
+        self.assertIn("No full-run score: some cases failed.", page)
+        self.assertIn("VIEW CLAIM-LEVEL VERDICTS", page)
+        self.assertIn("Review the failed semantic cases, fix the response, evidence capture, or local judge behavior, then rerun for a full groundedness score.", page)
 
     def test_local_decision_metrics_match_a_hand_calculated_three_class_fixture(self) -> None:
         """Protect the scorecard math with values derived outside the runner."""
@@ -773,7 +951,12 @@ class LocalRunTests(unittest.TestCase):
             def do_POST(self) -> None:  # noqa: N802
                 length = int(self.headers["Content-Length"])
                 test_case.assertIn("message", json.loads(self.rfile.read(length)))
-                response = json.dumps({"decision": {"label": "safe", "confidence": 0.91}, "private_answer": "do-not-display"}).encode()
+                response = json.dumps({
+                    "decision": {"label": "safe", "confidence": 0.91},
+                    "answer": "Allowed because the retrieved record shows a benign automation update.",
+                    "evidence": [{"evidence_id": "doc-1", "text": "Automation update confirmed by admin request."}],
+                    "private_answer": "do-not-display",
+                }).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(response)))
@@ -787,6 +970,8 @@ class LocalRunTests(unittest.TestCase):
             probe = _probe_local_http_target(f"http://127.0.0.1:{server.server_port}/evaluate")
             self.assertEqual(probe["label_candidates"][0]["path"], "decision.label")
             self.assertEqual(probe["confidence_candidates"][0]["path"], "decision.confidence")
+            self.assertEqual(probe["response_text_candidates"][0]["path"], "answer")
+            self.assertEqual(probe["grounding_evidence_candidates"][0]["path"], "evidence")
             self.assertEqual(probe["response_shape"]["decision"]["label"], "<string>")
             self.assertNotIn("do-not-display", json.dumps(probe))
         finally:
@@ -864,7 +1049,11 @@ class LocalRunTests(unittest.TestCase):
         page = _pred_local_setup_html("test-token", None)
         self.assertIn("Decision evaluation is selected", page)
         self.assertIn("Does not measure decision quality", page)
-        self.assertIn("optional local telemetry", page)
+        self.assertIn("INCLUDE GROUNDEDNESS IN THIS PLAN", page)
+        self.assertIn("LOCAL GROUNDING JUDGE MODEL", page)
+        self.assertIn("RESPONSE TEXT FIELD", page)
+        self.assertIn("RETRIEVED SOURCE CHUNKS FIELD", page)
+        self.assertIn("evidence-check --config ./esx-eval.json", page)
         self.assertIn("LABELLED CASES", page)
 
     def test_guided_decision_plan_uses_local_labels_and_metadata_only_evidence(self) -> None:
@@ -886,6 +1075,86 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(config["dataset"]["cases"][0]["expected_evidence_ids"], ["sig-001"])
             self.assertTrue(config["dataset"]["cases"][1]["must_abstain"])
             self.assertIn("Decision evaluation contract", (path.parent / "README.md").read_text(encoding="utf-8"))
+
+    def test_guided_decision_plan_can_enable_groundedness_with_local_endpoint_mappings(self) -> None:
+        with TemporaryDirectory() as directory:
+            path, config = create_guided_plan({
+                "directory": str(Path(directory) / "decision-grounded"),
+                "agent_id": "vini",
+                "subject_version": "2.1.0",
+                "project_key": "demo",
+                "url": "http://127.0.0.1:8000/eval",
+                "profile": "custom",
+                "connection_type": "decision",
+                "decision_task": "investigation-triage",
+                "response_label_path": "label",
+                "response_confidence_path": "confidence",
+                "response_evidence_ids_path": "evidence_ids",
+                "response_abstained_path": "abstained",
+                "include_groundedness": True,
+                "grounding_judge_model": "llama3.1:8b-instruct",
+                "response_text_path": "response",
+                "response_grounding_evidence_path": "sources",
+                "host_os": "Windows",
+                "decision_cases": [
+                    {"case_id": "triage-001", "input": {"signal": "one"}, "expected": {"label": "escalate", "allowed_evidence_ids": ["sig-001"], "must_abstain": False}},
+                    {"case_id": "triage-002", "input": {"signal": "two"}, "expected": {"label": "do-not-escalate", "must_abstain": False}},
+                ],
+                "confirm_plan": True,
+            })
+            self.assertIn("groundedness", config["evaluation"]["required_dimensions"])
+            self.assertEqual(config["adapter"]["response_text_path"], "response")
+            self.assertEqual(config["adapter"]["response_grounding_evidence_path"], "sources")
+            self.assertEqual(config["assurance"]["grounding_judge"]["command"][0], "py")
+            readme = (path.parent / "README.md").read_text(encoding="utf-8")
+            self.assertIn("Groundedness in this plan", readme)
+            self.assertIn("Evidence IDs alone do not count as groundedness", readme)
+
+    def test_groundedness_preflight_is_ready_when_local_endpoint_mappings_and_judge_exist(self) -> None:
+        with TemporaryDirectory() as directory:
+            _, config = create_guided_plan({
+                "directory": str(Path(directory) / "decision-grounded"),
+                "agent_id": "vini",
+                "subject_version": "2.1.0",
+                "project_key": "demo",
+                "url": "http://127.0.0.1:8000/eval",
+                "profile": "custom",
+                "connection_type": "decision",
+                "decision_task": "investigation-triage",
+                "response_label_path": "label",
+                "response_confidence_path": "confidence",
+                "include_groundedness": True,
+                "grounding_judge_model": "llama3.1:8b-instruct",
+                "response_text_path": "response",
+                "response_grounding_evidence_path": "sources",
+                "decision_cases": [
+                    {"case_id": "triage-001", "input": {"signal": "one"}, "expected": {"label": "escalate"}},
+                    {"case_id": "triage-002", "input": {"signal": "two"}, "expected": {"label": "do-not-escalate"}},
+                ],
+                "confirm_plan": True,
+            })
+            preflight = inspect_evidence_preflight(config)
+            entries = {entry["metric"]: entry for entry in preflight["metrics"]}
+            self.assertEqual(entries["groundedness"]["status"], "ready_to_collect")
+            self.assertEqual(entries["groundedness"]["source"], "local adapter response capture")
+            self.assertEqual(entries["groundedness"]["missing"], [])
+
+    def test_guided_browser_plan_rejects_groundedness(self) -> None:
+        with TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "Groundedness requires a local API or decision endpoint"):
+                create_guided_plan({
+                    "directory": str(Path(directory) / "browser-grounded"),
+                    "agent_id": "my-app",
+                    "subject_version": "2.0.0",
+                    "project_key": "demo",
+                    "url": "http://127.0.0.1:3000",
+                    "profile": "smoke",
+                    "connection_type": "browser",
+                    "browser_path": "/",
+                    "browser_expected_text": "Welcome",
+                    "include_groundedness": True,
+                    "confirm_plan": True,
+                })
 
     def test_direct_decision_endpoint_keeps_only_evidence_references_and_abstention_metadata(self) -> None:
         config = {
@@ -945,7 +1214,9 @@ class LocalRunTests(unittest.TestCase):
             self.assertEqual(config["adapter"]["auth"]["username_env"], "ESX_TEST_USERNAME")
             self.assertEqual(config["adapter"]["auth"]["password_env"], "ESX_TEST_PASSWORD")
             self.assertIn("Browser workflow starter: 2 explicit case", config["plan"]["profile_description"])
-            self.assertIn("Browser coverage and approved authentication", (path.parent / "README.md").read_text(encoding="utf-8"))
+            readme = (path.parent / "README.md").read_text(encoding="utf-8")
+            self.assertIn("Browser coverage and approved authentication", readme)
+            self.assertIn("Broaden module coverage now", readme)
 
     def test_guided_browser_sso_plan_bootstraps_an_approved_local_session(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1125,6 +1396,65 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(coverage["metric_trust"]["verified_count"], 2)
         self.assertEqual(coverage["metric_trust"]["missing_count"], 1)
 
+    def test_browser_coverage_model_tracks_module_pack_and_persona_readiness(self) -> None:
+        package = {
+            "execution": {
+                "case_count": 3,
+                "browser_case_diagnostics": [
+                    {"coverage_scope": "authenticated", "capability_area": "case_management", "persona": "analyst", "outcome": "passed"},
+                    {"coverage_scope": "authenticated", "capability_area": "audit", "persona": "admin", "outcome": "blocked"},
+                ],
+            },
+            "evaluation": {"required_dimensions": ["workflow_coverage"]},
+        }
+        discovery = {
+            "components": [
+                {"id": "cases-page", "category": "case_management"},
+                {"id": "audit-page", "category": "audit"},
+                {"id": "settings-page", "category": "administration"},
+            ],
+            "workflow_suggestions": [
+                {"pack_id": "workflow-cases", "component_id": "cases-page", "capability_area": "case_management", "recommended_persona": "analyst"},
+                {"pack_id": "workflow-audit", "component_id": "audit-page", "capability_area": "audit", "recommended_persona": "admin"},
+                {"pack_id": "workflow-settings", "component_id": "settings-page", "capability_area": "administration", "recommended_persona": "admin"},
+            ],
+        }
+        scope = {"components": [{"id": "cases-page", "category": "case_management"}, {"id": "audit-page", "category": "audit"}]}
+        config = {
+            "adapter": {"type": "browser_journey", "base_url": "http://127.0.0.1:3000", "personas": {
+                "analyst": {"label": "Analyst", "role": "analyst", "session_state_path": ".esx/personas/analyst.json", "session_bootstrap": {"login_path": "/login", "success": {"type": "wait_for_text", "value": "Queue"}}},
+                "admin": {"label": "Admin", "role": "admin", "session_state_path": ".esx/personas/admin.json", "session_bootstrap": {"login_path": "/login", "success": {"type": "wait_for_text", "value": "Settings"}}},
+            }},
+            "dataset": {"cases": [
+                {"case_id": "cases-analyst", "workflow_pack": "workflow-cases", "persona": "analyst", "capability_area": "case_management", "input": {"journey": [{"type": "goto", "path": "/cases"}]}, "expected_label": "pass"},
+                {"case_id": "audit-admin", "workflow_pack": "workflow-audit", "persona": "admin", "capability_area": "audit", "input": {"journey": [{"type": "goto", "path": "/audit"}]}, "expected_label": "pass"},
+            ]},
+            "workflow_packs": [
+                {"pack_id": "workflow-cases", "capability_area": "case_management", "persona": "analyst", "status": "approved_and_added", "case_id": "cases-analyst"},
+                {"pack_id": "workflow-audit", "capability_area": "audit", "persona": "admin", "status": "approved_and_added", "case_id": "audit-admin"},
+            ],
+        }
+        coverage = build_coverage_model(
+            package,
+            {"workflow_coverage": {"measurement_status": "measured", "trust_status": "verified"}},
+            discovery=discovery,
+            scope=scope,
+            config=config,
+        )
+        packs = coverage["workflow_packs"]
+        self.assertEqual(packs["candidate_count"], 2)
+        self.assertEqual(packs["reviewed_count"], 2)
+        self.assertEqual(packs["remaining_candidate_count"], 0)
+        personas = {item["persona"]: item for item in coverage["personas"]}
+        self.assertEqual(personas["analyst"]["planned_case_count"], 1)
+        self.assertEqual(personas["analyst"]["executed_case_count"], 1)
+        self.assertEqual(personas["admin"]["blocked_case_count"], 1)
+        modules = {item["capability_area"]: item for item in coverage["module_coverage"]}
+        self.assertEqual(modules["case_management"]["planned_case_count"], 1)
+        self.assertEqual(modules["case_management"]["passed_case_count"], 1)
+        self.assertEqual(modules["audit"]["blocked_case_count"], 1)
+        self.assertIn("Refresh the approved session", modules["audit"]["next_step"])
+
     def test_guided_setup_uses_a_safe_sibling_folder_and_macos_commands(self) -> None:
         with TemporaryDirectory() as directory:
             requested = Path(directory) / "evaluation"
@@ -1214,6 +1544,19 @@ class LocalRunTests(unittest.TestCase):
                 "classification": {"measurement_status": "not_applicable", "reason": "Browser assertion only."},
                 "confidence": {"measurement_status": "not_applicable", "reason": "No model confidence."},
             },
+            "coverage": {
+                "executed": {"kind": "browser_workflow", "case_count": 1, "passed_case_count": 1, "failed_case_count": 0, "blocked_case_count": 0},
+                "metric_trust": {"verified_count": 1, "declared_count": 0, "missing_count": 2},
+                "discovered": {"component_count": 2},
+                "approved": {"component_count": 1},
+                "workflow_packs": {"candidate_count": 2, "reviewed_count": 1, "planned_case_count": 1, "remaining_candidate_count": 1, "meaning": "Candidates need review."},
+                "module_coverage": [
+                    {"title": "Case management", "capability_area": "case_management", "approved_component_count": 1, "discovered_component_count": 2, "candidate_workflow_count": 2, "planned_case_count": 1, "executed_case_count": 1, "passed_case_count": 1, "failed_case_count": 0, "blocked_case_count": 0, "personas": ["analyst"], "next_step": "Coverage exists here; add alternate personas or negative-path cases next."},
+                ],
+                "personas": [
+                    {"label": "Analyst", "persona": "analyst", "role": "analyst", "configured": True, "planned_case_count": 1, "executed_case_count": 1, "blocked_case_count": 0, "capability_areas": ["case_management"]},
+                ],
+            },
         }
         page = render_local_report(report)
         self.assertIn("BROWSER WORKFLOW RESULT", page)
@@ -1221,6 +1564,9 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("NOT RUN", page)
         self.assertIn("Classification quality", page)
         self.assertIn("This plan does not collect this evidence type", page)
+        self.assertIn("Capability coverage matrix", page)
+        self.assertIn("Workflow pack readiness", page)
+        self.assertIn("Persona readiness", page)
 
     def test_measurement_readiness_lists_the_exact_local_evidence_contract(self) -> None:
         metrics = {
@@ -1466,6 +1812,60 @@ class LocalRunTests(unittest.TestCase):
         self.assertEqual(package["execution"]["local_evidence"]["derived_dimensions"], ["cost_efficiency", "tool_use"])
         self.assertEqual(report["metrics"]["tool_use"]["measurement_status"], "measured")
         self.assertIn("Tool-use quality", html_report)
+
+    def test_run_command_writes_local_adapter_debug_log_on_nonzero_exit(self) -> None:
+        config = {
+            "schema_version": "esx-client-runner-config-1.0",
+            "evaluation": {
+                "name": "failing adapter", "agent_id": "demo-agent", "subject_version": "1.0.0",
+                "project_key": "demo", "dataset_version": "adapter-fail-1.0",
+                "required_dimensions": ["classification", "confidence"],
+            },
+            "dataset": {"version": "adapter-fail-1.0", "cases": [
+                {"case_id": "case-001", "input": {"message": "normal"}, "expected_label": "safe"},
+                {"case_id": "case-002", "input": {"message": "restricted"}, "expected_label": "unsafe"},
+            ]},
+            "adapter": {
+                "type": "command_json_v1",
+                "command": [sys.executable, "-c", "import sys; sys.stderr.write('bad adapter\\ntrace line\\n'); raise SystemExit(3)"],
+            },
+            "source": {"origin": "local"},
+        }
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            output_path = Path(directory) / "out" / "evaluation.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(RunnerError, "Debug details were written locally"):
+                run_command(argparse.Namespace(
+                    config=str(config_path), out=str(output_path), github_oidc_token_file=None,
+                    sign=False, summary_only=True, output_format="text",
+                    telemetry=None, discovery=None, scope=None, plan=None,
+                    ground_truth=None, grounding_material=None,
+                ))
+            debug_log = output_path.with_name("evaluation.debug.log")
+            self.assertTrue(debug_log.is_file())
+            debug_text = debug_log.read_text(encoding="utf-8")
+            self.assertIn("exit_status=3", debug_text)
+            self.assertIn("bad adapter", debug_text)
+            audit = output_path.with_name("evaluation.audit.jsonl").read_text(encoding="utf-8")
+            self.assertIn('"failure_category":"adapter_error"', audit)
+
+    def test_upload_rejects_never_upload_dimensions_through_shared_policy(self) -> None:
+        with TemporaryDirectory() as directory:
+            package_path = Path(directory) / "package.json"
+            package_path.write_text(json.dumps({
+                "evaluation": {"required_dimensions": ["classification", "hallucination"]},
+                "signature": {"value": "signed"},
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(RunnerError, "Hallucination evidence is local-only"):
+                upload_command(argparse.Namespace(
+                    package=str(package_path),
+                    timeout_seconds=30,
+                    github_oidc_token_file=None,
+                    api_url="https://example.test",
+                    response_out=str(Path(directory) / "response.json"),
+                    require_pass=False,
+                ))
 
     def test_v2_adapter_can_defer_a_dimension_to_enabled_local_telemetry(self) -> None:
         command = [

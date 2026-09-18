@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from .evidence_requirements import METRIC_REQUIREMENTS, build_measurement_readiness, metric_names
+from .metric_registry import REPORT_PRIMARY_SIGNALS, metric_title
 from .local_metrics import summarize_metric_trust
 
 
@@ -15,7 +16,7 @@ def _escape(value: object) -> str:
 
 
 def _title(name: str) -> str:
-    return METRIC_REQUIREMENTS.get(name, {}).get("title", name.replace("_", " ").title())
+    return metric_title(name)
 
 
 def _metric_status(metric: object) -> str:
@@ -46,23 +47,7 @@ def _status_label(status: str) -> str:
 
 
 def _primary_signal(name: str, metric: dict[str, Any]) -> str:
-    fields = {
-        "workflow_coverage": ("workflow_execution_rate", "Workflow execution", "percent"),
-        "classification": ("accuracy", "Accuracy", "percent"),
-        "confidence": ("expected_calibration_error", "Expected calibration error", "number"),
-        "decision_evidence": ("correct_abstention_rate", "Correct abstention", "percent"),
-        "groundedness": ("grounded_claim_rate", "Grounded claims", "percent"),
-        "hallucination": ("hallucinated_claim_rate", "Unsupported output", "percent"),
-        "security": ("attack_outcome_accuracy", "Attack outcome accuracy", "percent"),
-        "trajectory": ("score", "Trajectory score", "percent"),
-        "tool_use": ("selection_f1", "Tool selection F1", "percent"),
-        "rag": ("faithfulness", "Faithfulness", "percent"),
-        "robustness": ("accuracy", "Stable outcomes", "percent"),
-        "judge_agreement": ("pairwise_agreement", "Pairwise agreement", "percent"),
-        "reproducibility": ("pairwise_agreement", "Run agreement", "percent"),
-        "cost_efficiency": ("p95_latency_ms", "P95 latency", "milliseconds"),
-    }
-    key, label, unit = fields.get(name, ("score", "Local score", "number"))
+    key, label, unit = REPORT_PRIMARY_SIGNALS.get(name, ("score", "Local score", "number"))
     value = metric.get(key)
     if value is None:
         return "Evidence captured locally."
@@ -127,6 +112,18 @@ def _metric_why(name: str, metric: dict[str, Any], trust: str) -> str:
 
 def _metric_action(name: str, metric: dict[str, Any], trust: str) -> str:
     if metric.get("measurement_status") != "measured":
+        if (
+            name == "groundedness"
+            and metric.get("verification_basis") == "independent_local_semantic_judge"
+            and metric.get("completion_status") == "partial"
+        ):
+            return "Review the failed semantic cases, fix the response, evidence capture, or local judge behavior, then rerun for a full groundedness score."
+        if (
+            name == "hallucination"
+            and metric.get("verification_basis") == "independent_local_semantic_judge"
+            and metric.get("completion_status") == "partial"
+        ):
+            return "Review the failed semantic cases, fix the response, abstention behavior, evidence capture, or local judge behavior, then rerun for a full hallucination score."
         requirement = METRIC_REQUIREMENTS.get(name, {})
         return "Add " + str(requirement.get("application_emits", "the required local evidence")) + " and rerun."
     if name == "classification":
@@ -155,6 +152,80 @@ def _metric_action(name: str, metric: dict[str, Any], trust: str) -> str:
     if trust == "declared":
         return "Connect an independently observed local evidence source before using this result as a release gate."
     return "Review affected cases and rerun the same pack after changes."
+
+
+def _percent_text(value: object) -> str:
+    if isinstance(value, (int, float)):
+        return f"{float(value) * 100:.1f}%"
+    return "N/A"
+
+
+def _observed_text(value: object, *, unknown: str = "Not observed") -> str:
+    if value is True:
+        return "Yes"
+    if value is False:
+        return "No"
+    return unknown
+
+
+def _grounding_case_summary(metric: dict[str, Any]) -> list[dict[str, Any]]:
+    claim_rows = [
+        item for item in [*metric.get("case_results", []), *metric.get("partial_claim_results", [])]
+        if isinstance(item, dict) and isinstance(item.get("case_id"), str)
+    ]
+    response_rows = {
+        item["case_id"]: item for item in metric.get("response_results", [])
+        if isinstance(item, dict) and isinstance(item.get("case_id"), str)
+    }
+    claim_ids = set(metric.get("low_confidence_claim_ids", []))
+    summary: dict[str, dict[str, Any]] = {}
+    for row in claim_rows:
+        case = summary.setdefault(row["case_id"], {
+            "case_id": row["case_id"],
+            "claim_count": 0,
+            "supported_claim_count": 0,
+            "contradicted_claim_count": 0,
+            "insufficient_claim_count": 0,
+            "low_confidence_claim_count": 0,
+        })
+        case["claim_count"] += 1
+        verdict = row.get("verdict")
+        if verdict == "supported":
+            case["supported_claim_count"] += 1
+        elif verdict == "contradicted":
+            case["contradicted_claim_count"] += 1
+        elif verdict == "insufficient":
+            case["insufficient_claim_count"] += 1
+        if row.get("claim_id") in claim_ids:
+            case["low_confidence_claim_count"] += 1
+    for case_id, response in response_rows.items():
+        case = summary.setdefault(case_id, {
+            "case_id": case_id,
+            "claim_count": int(response.get("claim_count", 0)),
+            "supported_claim_count": 0,
+            "contradicted_claim_count": 0,
+            "insufficient_claim_count": 0,
+            "low_confidence_claim_count": 0,
+        })
+        case["abstained"] = response.get("abstained")
+    return [summary[key] for key in sorted(summary)]
+
+
+def _grounding_stage_cards(metric: dict[str, Any]) -> str:
+    material = metric.get("material_provenance", {})
+    material = material if isinstance(material, dict) else {}
+    requested = metric.get("requested_case_count", material.get("case_count", 0))
+    completed = metric.get("completed_case_count", 0)
+    cards = (
+        ("Claim extraction", f"{completed}/{requested}", "Responses reviewed", f"{int(metric.get('claim_count', 0))} atomic claims extracted. Extraction review: {str(metric.get('extraction_review_status', 'not_reviewed')).replace('_', ' ')}."),
+        ("Evidence comparison", f"{int(metric.get('supported_claim_count', 0))}/{int(metric.get('claim_count', 0))}", "Claims supported", f"{int(metric.get('contradicted_claim_count', 0))} contradicted, {int(metric.get('insufficient_evidence_claim_count', 0))} insufficient. Mean judge confidence: {_percent_text(metric.get('mean_judge_confidence'))}."),
+        ("Groundedness scoring", _percent_text(metric.get("grounded_claim_rate")), "Grounded claim rate", f"Contradiction rate: {_percent_text(metric.get('contradiction_rate'))}. Insufficient-evidence rate: {_percent_text(metric.get('insufficient_evidence_rate'))}."),
+    )
+    return "".join(
+        "<div><p class='eyebrow'>" + _escape(title) + "</p><strong>" + _escape(value)
+        + "</strong><span>" + _escape(label) + "</span><p>" + _escape(detail) + "</p></div>"
+        for title, value, label, detail in cards
+    )
 
 
 def _metric_cards(metrics: dict[str, Any], names: list[str]) -> str:
@@ -486,9 +557,25 @@ def _grounding_details(metrics: dict[str, Any]) -> str:
     metric = metrics.get("groundedness", {})
     if not isinstance(metric, dict) or metric.get("verification_basis") != "independent_local_semantic_judge":
         return ""
+    material = metric.get("material_provenance", {})
+    material = material if isinstance(material, dict) else {}
     failures = "".join(
         "<li>" + _escape(item.get("case_id", "unknown")) + ": " + _escape(item.get("reason", "Semantic evaluation failed")) + "</li>"
         for item in metric.get("failed_cases", []) if isinstance(item, dict)
+    )
+    case_rows = "".join(
+        "<tr><td>" + _escape(item.get("case_id", "unknown"))
+        + "</td><td>" + _escape(item.get("claim_count", 0))
+        + "</td><td>" + _escape(item.get("supported_claim_count", 0))
+        + "</td><td>" + _escape(item.get("contradicted_claim_count", 0))
+        + "</td><td>" + _escape(item.get("insufficient_claim_count", 0))
+        + "</td><td>" + _escape(
+            "Yes" if item.get("abstained") is True else
+            "No" if item.get("abstained") is False else
+            "Not observed"
+        )
+        + "</td><td>" + _escape(item.get("low_confidence_claim_count", 0)) + "</td></tr>"
+        for item in _grounding_case_summary(metric)
     )
     progress = (
         "<p><b>Responses completed:</b> " + _escape(metric.get("completed_case_count", "unknown"))
@@ -508,10 +595,98 @@ def _grounding_details(metrics: dict[str, Any]) -> str:
     )
     provenance = metric.get("judge_provenance", {})
     provenance = provenance if isinstance(provenance, dict) else {}
+    stage_cards = _grounding_stage_cards(metric)
+    case_table = ""
+    if case_rows:
+        case_table = """<h3>Case verdict summary</h3>
+    <table><thead><tr><th>Case</th><th>Claims</th><th>Supported</th><th>Contradicted</th><th>Insufficient</th><th>Abstained</th><th>Low confidence</th></tr></thead><tbody>""" + case_rows + "</tbody></table>"
     return """<section class='detail-section'><p class='eyebrow'>SEMANTIC GROUNDING</p><h2>Claim-level evidence comparison</h2>
     <p>Raw response and source text remain local and are omitted. Hashes make evaluated claims traceable without copying their content into this report.</p>
-    <p><b>Local judge:</b> """ + _escape(provenance.get("identity", "unknown")) + " / " + _escape(provenance.get("version", "unknown")) + "</p>" + progress + """
-    <table><thead><tr><th>Case</th><th>Claim</th><th>Claim hash</th><th>Verdict</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>""" + rows + "</tbody></table></section>"
+    <p><b>Local judge:</b> """ + _escape(provenance.get("identity", "unknown")) + " / " + _escape(provenance.get("version", "unknown")) + """<br><b>Capture source:</b> """ + _escape(material.get("capture_source", "local material")) + " | <b>Source chunks:</b> " + _escape(material.get("source_chunk_count", "unknown")) + "</p>" + progress + """
+    <div class='quick-grid'>""" + stage_cards + "</div>" + case_table + """
+    <details><summary>VIEW CLAIM-LEVEL VERDICTS</summary>
+    <table><thead><tr><th>Case</th><th>Claim</th><th>Claim hash</th><th>Verdict</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>""" + rows + "</tbody></table></details></section>"
+
+
+def _hallucination_details(metrics: dict[str, Any]) -> str:
+    metric = metrics.get("hallucination", {})
+    if not isinstance(metric, dict) or metric.get("verification_basis") != "independent_local_semantic_judge":
+        return ""
+    grounding = metrics.get("groundedness", {})
+    grounding = grounding if isinstance(grounding, dict) else {}
+    claim_rows = [
+        item for item in [*grounding.get("case_results", []), *grounding.get("partial_claim_results", [])]
+        if isinstance(item, dict) and isinstance(item.get("case_id"), str)
+    ] if grounding.get("verification_basis") == "independent_local_semantic_judge" else []
+    claim_counts: dict[str, dict[str, int]] = {}
+    for item in claim_rows:
+        bucket = claim_counts.setdefault(str(item["case_id"]), {"contradicted": 0, "insufficient": 0})
+        if item.get("verdict") == "contradicted":
+            bucket["contradicted"] += 1
+        elif item.get("verdict") == "insufficient":
+            bucket["insufficient"] += 1
+    material = metric.get("material_provenance", {})
+    material = material if isinstance(material, dict) else {}
+    provenance = metric.get("judge_provenance", {})
+    provenance = provenance if isinstance(provenance, dict) else {}
+    failures = "".join(
+        "<li>" + _escape(item.get("case_id", "unknown")) + ": " + _escape(item.get("reason", "Semantic evaluation failed")) + "</li>"
+        for item in metric.get("failed_cases", []) if isinstance(item, dict)
+    )
+    case_rows = "".join(
+        "<tr><td>" + _escape(item.get("case_id", "unknown"))
+        + "</td><td>" + _escape(item.get("claim_count", 0))
+        + "</td><td>" + _escape(item.get("unsupported_claim_count", 0))
+        + "</td><td>" + _escape(claim_counts.get(str(item.get("case_id", "unknown")), {}).get("contradicted", 0))
+        + "</td><td>" + _escape(claim_counts.get(str(item.get("case_id", "unknown")), {}).get("insufficient", 0))
+        + "</td><td>" + _escape(_observed_text(item.get("abstained")))
+        + "</td><td>" + _escape(
+            "Yes" if item.get("must_abstain") is True else
+            "No" if item.get("must_abstain") is False else
+            "Not required"
+        )
+        + "</td><td>" + _escape(
+            "Yes" if item.get("unsupported_confident_answer") is True else
+            "No" if item.get("unsupported_confident_answer") is False else
+            "N/A"
+        )
+        + "</td><td>" + _escape(
+            "Correct abstention"
+            if item.get("abstention_result") == "correct" else
+            "Failed required abstention"
+            if item.get("abstention_result") == "failed_required_abstention" else
+            "Unsupported output"
+            if item.get("unsupported_claim_count", 0) else
+            "No unsupported output"
+            if item.get("assessed") else
+            "Coverage gap"
+        )
+        + "</td></tr>"
+        for item in metric.get("case_results", []) if isinstance(item, dict)
+    )
+    progress = (
+        "<p><b>Responses completed:</b> " + _escape(metric.get("completed_case_count", "unknown"))
+        + "/" + _escape(metric.get("requested_case_count", metric.get("response_count", "unknown")))
+        + ". <b>Extraction review:</b> " + _escape(metric.get("extraction_review_status", "not recorded"))
+        + ". Unsupported means unsupported by the supplied local evidence; it does not prove real-world falsehood.</p>"
+        + ("<p>No full-run score: some cases failed. Completed hallucination evidence is retained below.</p><ul>" + failures + "</ul>" if failures else "")
+    )
+    stage_cards = "".join((
+        "<div><strong>" + _escape(
+            f"{metric.get('completed_case_count', 0)}/{metric.get('requested_case_count', metric.get('response_count', 0))}"
+        ) + "</strong><span>Claim extraction</span><small>Responses completed semantic review.</small></div>",
+        "<div><strong>" + _escape(len(claim_rows)) + "</strong><span>Evidence comparison</span><small>Claims were checked against supplied source chunks.</small></div>",
+        "<div><strong>" + _escape(_percent_text(metric.get("hallucinated_claim_rate"))) + "</strong><span>Unsupported-claim scoring</span><small>Contradicted and insufficient verdicts count as unsupported.</small></div>",
+        "<div><strong>" + _escape(_percent_text(metric.get("correct_abstention_rate"))) + "</strong><span>Abstention scoring</span><small>Required abstentions score only when the dataset asked for them.</small></div>",
+    ))
+    case_table = ""
+    if case_rows:
+        case_table = """<h3>Case hallucination summary</h3>
+    <table><thead><tr><th>Case</th><th>Claims</th><th>Unsupported</th><th>Contradicted</th><th>Insufficient</th><th>Abstained</th><th>Must abstain</th><th>High-confidence unsupported</th><th>Outcome</th></tr></thead><tbody>""" + case_rows + "</tbody></table>"
+    return """<section class='detail-section'><p class='eyebrow'>SEMANTIC HALLUCINATION</p><h2>Unsupported-claim and abstention review</h2>
+    <p>PRE-D reuses the independently reviewed claim extraction and evidence comparison, then scores a different question: where the response went beyond the supplied evidence, or answered when it should have abstained.</p>
+    <p><b>Local judge:</b> """ + _escape(provenance.get("identity", "unknown")) + " / " + _escape(provenance.get("version", "unknown")) + """<br><b>Capture source:</b> """ + _escape(material.get("capture_source", "local material")) + " | <b>Source chunks:</b> " + _escape(material.get("source_chunk_count", "unknown")) + "</p>" + progress + """
+    <div class='quick-grid'>""" + stage_cards + "</div>" + case_table + "</section>"
 
 
 def _evidence_preflight(preflight: object) -> str:
@@ -546,6 +721,12 @@ def _coverage_details(report: dict[str, Any]) -> str:
     approved = coverage.get("approved", {}) if isinstance(coverage.get("approved"), dict) else {}
     executed = coverage.get("executed", {}) if isinstance(coverage.get("executed"), dict) else {}
     trust = coverage.get("metric_trust", {}) if isinstance(coverage.get("metric_trust"), dict) else {}
+    modules = coverage.get("module_coverage", [])
+    modules = modules if isinstance(modules, list) else []
+    personas = coverage.get("personas", [])
+    personas = personas if isinstance(personas, list) else []
+    workflow_packs = coverage.get("workflow_packs", {})
+    workflow_packs = workflow_packs if isinstance(workflow_packs, dict) else {}
     if executed.get("kind") == "decision_evaluation":
         title = "Decision evaluation coverage"
         values = (
@@ -567,8 +748,63 @@ def _coverage_details(report: dict[str, Any]) -> str:
         f"<div class='{state}'><strong>{_escape(trust.get(state + '_count', 0))}</strong><span>{state.title()} metrics</span></div>"
         for state in ("verified", "declared", "missing")
     )
+    discovery_cards = (
+        "<div><strong>" + _escape(discovered.get("component_count", 0)) + "</strong><span>Discovered components</span></div>"
+        "<div><strong>" + _escape(approved.get("component_count", 0)) + "</strong><span>Approved components</span></div>"
+    )
+    workflow_summary = ""
+    if executed.get("kind") == "browser_workflow":
+        workflow_summary = (
+            "<h3>Workflow pack readiness</h3><div class='quick-grid'>"
+            + "<div><strong>" + _escape(workflow_packs.get("candidate_count", 0)) + "</strong><span>Approved candidates</span></div>"
+            + "<div><strong>" + _escape(workflow_packs.get("reviewed_count", 0)) + "</strong><span>Reviewed packs added</span></div>"
+            + "<div><strong>" + _escape(workflow_packs.get("planned_case_count", 0)) + "</strong><span>Reviewed browser cases</span></div>"
+            + "<div><strong>" + _escape(workflow_packs.get("remaining_candidate_count", 0)) + "</strong><span>Candidates still not reviewed</span></div>"
+            + "</div><p>" + _escape(workflow_packs.get("meaning", "")) + "</p>"
+        )
+    module_table = ""
+    if modules:
+        rows = "".join(
+            "<tr>"
+            f"<td>{_escape(item.get('title', item.get('capability_area', 'General')))}</td>"
+            f"<td>{_escape(item.get('approved_component_count', 0))}/{_escape(item.get('discovered_component_count', 0))}</td>"
+            f"<td>{_escape(item.get('candidate_workflow_count', 0))}</td>"
+            f"<td>{_escape(item.get('planned_case_count', 0))}</td>"
+            f"<td>{_escape(item.get('executed_case_count', 0))}</td>"
+            f"<td>{_escape(item.get('passed_case_count', 0))}</td>"
+            f"<td>{_escape(item.get('failed_case_count', 0))}</td>"
+            f"<td>{_escape(item.get('blocked_case_count', 0))}</td>"
+            f"<td>{_escape(', '.join(item.get('personas', [])) or 'Not assigned')}</td>"
+            f"<td>{_escape(item.get('next_step', 'Review this area.'))}</td>"
+            "</tr>"
+            for item in modules if isinstance(item, dict)
+        )
+        module_table = (
+            "<h3>Capability coverage matrix</h3>"
+            "<table><thead><tr><th>Area</th><th>Approved / discovered</th><th>Workflow candidates</th><th>Reviewed cases</th><th>Executed</th><th>Passed</th><th>Review</th><th>Blocked</th><th>Personas</th><th>Next step</th></tr></thead><tbody>"
+            + rows + "</tbody></table>"
+        )
+    persona_table = ""
+    if personas:
+        rows = "".join(
+            "<tr>"
+            f"<td>{_escape(item.get('label', item.get('persona', 'Persona')))}</td>"
+            f"<td>{_escape(item.get('role', 'implicit'))}</td>"
+            f"<td>{_escape('yes' if item.get('configured') else 'needs setup')}</td>"
+            f"<td>{_escape(item.get('planned_case_count', 0))}</td>"
+            f"<td>{_escape(item.get('executed_case_count', 0))}</td>"
+            f"<td>{_escape(item.get('blocked_case_count', 0))}</td>"
+            f"<td>{_escape(', '.join(item.get('capability_areas', [])) or 'Not scoped')}</td>"
+            "</tr>"
+            for item in personas if isinstance(item, dict)
+        )
+        persona_table = (
+            "<h3>Persona readiness</h3>"
+            "<table><thead><tr><th>Persona</th><th>Role</th><th>Configured</th><th>Reviewed cases</th><th>Executed</th><th>Blocked</th><th>Areas</th></tr></thead><tbody>"
+            + rows + "</tbody></table>"
+        )
     return """<section class='detail-section'><p class='eyebrow'>SCOPE AND COVERAGE</p><h2>""" + _escape(title) + """</h2>
-    <p>Discovery identifies local candidates. Execution counts cases; metric trust separately states what PRE-D verified, accepted as declared, or could not measure.</p><div class='quick-grid'>""" + cards + "</div><div class='quick-grid metric-trust-grid'>" + trust_cards + "</div></section>"
+    <p>Discovery identifies local candidates. Execution counts reviewed cases. Metric trust separately states what PRE-D verified, accepted as declared, or could not measure.</p><div class='quick-grid'>""" + cards + """</div><div class='quick-grid'>""" + discovery_cards + """</div><div class='quick-grid metric-trust-grid'>""" + trust_cards + "</div>" + workflow_summary + module_table + persona_table + "</section>"
 
 
 def _diagnostics(report: dict[str, Any]) -> str:
@@ -630,4 +866,4 @@ def render_local_report(report: dict[str, Any]) -> str:
     return """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>PRE-D Local Evaluation Report</title><style>
 :root{--ink:#0b1416;--panel:#142328;--line:#395055;--muted:#b9c5c3;--lime:#c9f36b;--coral:#ff8464;--gold:#f5cc67;--green:#6fdb9a;--white:#f8fbf7}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 100% 0,#243f3f 0,transparent 31rem),var(--ink);color:var(--white);font:16px Georgia,serif}main{max-width:1180px;margin:0 auto;padding:28px}.hero,.panel{border:1px solid var(--line);background:rgba(20,35,40,.95)}.hero{padding:38px;background:linear-gradient(135deg,rgba(28,51,54,.98),rgba(13,25,28,.98));box-shadow:10px 10px 0 rgba(0,0,0,.22)}.hero-top,.heading{display:flex;justify-content:space-between;gap:24px;align-items:flex-start}.eyebrow,.state{margin:0 0 12px;color:var(--coral);font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.16em}.hero h1{margin:0;font-size:clamp(40px,6vw,72px);font-weight:400;line-height:.92;letter-spacing:-.05em}.hero h1 em{color:var(--coral)}.hero p{max-width:670px;color:var(--muted);font-size:18px;line-height:1.5}.hero .declared-notice{max-width:none;padding:12px 14px;border:1px solid var(--coral);background:rgba(255,132,100,.1);color:#ffd4c8;font:700 12px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em}.local-badge{padding:8px 10px;color:var(--lime);border:1px solid rgba(201,243,107,.45);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;white-space:nowrap}.hero-meta{display:flex;gap:14px;flex-wrap:wrap;margin-top:30px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.hero-meta span{color:var(--white)}.panel{margin-top:18px;padding:26px}.heading h2,.detail-section h2,.confidence-warning h2{margin:0;font-size:31px;font-weight:400;letter-spacing:-.035em}.heading>p{max-width:480px;margin:4px 0;color:var(--muted);line-height:1.5}.layer-grid,.metric-grid,.quick-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:22px}.layer-card,.metric-card,.quick-grid>div{min-height:154px;padding:18px;background:#101d20;border:1px solid var(--line)}.layer-card,.metric-card{border-top:4px solid var(--gold)}.layer-card.measured,.layer-card.connected,.layer-card.evidence-ready,.layer-card.verified-locally,.metric-card.verified{border-top-color:var(--green)}.layer-card.not-run,.layer-card.not-connected,.layer-card.workflow-evidence-only,.metric-card.missing,.metric-card.not-measured{border-top-color:#718a92}.metric-card.declared{border:2px dashed var(--coral);background:repeating-linear-gradient(135deg,#161f20,#161f20 12px,#192527 12px,#192527 24px)}.layer-card h3,.metric-card h3{margin:10px 0 0;font-size:21px;font-weight:400}.layer-card p,.confidence-warning p{margin:18px 0 0;color:var(--muted);font-size:14px;line-height:1.45}.layer-card.measured .state,.layer-card.connected .state,.layer-card.evidence-ready .state,.layer-card.verified-locally .state,.metric-card.verified .state{color:var(--green)}.metric-card .state{display:inline-block;color:var(--gold)}.metric-card.declared .state{color:var(--coral)}.metric-card .trust-warning{margin:14px 0 0;padding:8px;border-left:3px solid var(--coral);color:#ffd4c8;font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em;line-height:1.45}.metric-card dl{display:grid;grid-template-columns:112px 1fr;gap:9px 12px;margin:18px 0 0}.metric-card dt{color:var(--muted);font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase}.metric-card dd{margin:0;color:var(--white);font-size:13px;line-height:1.4}.metric-card.declared dd{color:#d6c5bd}.representativeness{display:inline-block;margin-left:8px;padding:3px 6px;border:1px solid var(--coral);color:var(--coral);font:700 9px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.quick-grid>div{min-height:104px;border-top:3px solid #597077}.quick-grid>div.verified{border-top-color:var(--green)}.quick-grid>div.declared,.quick-grid>div.self-attested{border-top-color:var(--coral);background:#211b1a}.quick-grid>div.missing{border-top-color:#718a92}.quick-grid strong{display:block;color:var(--lime);font-size:28px;font-weight:400}.quick-grid>div.declared strong{color:var(--coral)}.quick-grid span{display:block;margin-top:10px;color:var(--muted);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.09em;text-transform:uppercase}.decision-summary{border-left:4px solid var(--green)}.browser-summary{border-left:4px solid #718a92}.confidence-warning{border-left:4px solid var(--gold)}.confidence-warning .state{display:block;color:var(--gold)}details{margin-top:18px;border:1px solid var(--line);background:#0b1416}details>summary{padding:16px;color:var(--lime);cursor:pointer;font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.detail-section{padding:24px;border-top:1px solid var(--line)}.detail-section:first-of-type{border-top:0}.detail-section>p:not(.eyebrow){max-width:760px;color:var(--muted);line-height:1.5}.detail-section h3{margin:28px 0 10px;font-weight:400}.warning-list{margin-top:18px;padding:14px;border-left:4px solid var(--gold);background:#101d20}.warning-list strong{color:var(--gold)}.warning-list li{margin-top:8px;color:var(--muted);line-height:1.4}.health-ok{color:var(--green)!important}.readiness-card{margin-top:8px;border:1px solid var(--line);background:#101d20}.readiness-card summary{display:flex;justify-content:space-between;gap:12px;padding:14px;cursor:pointer}.readiness-card summary strong{display:block;font-weight:400}.readiness-card summary small{display:block;margin-top:5px;color:var(--muted);font-size:13px;line-height:1.35}.readiness-card summary b,.readiness-card div b{color:var(--gold);font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em}.readiness-card div{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:0 14px 14px}.readiness-card div p{margin:0;color:var(--muted);font-size:13px;line-height:1.45}.readiness-card div p b{display:block;margin-bottom:5px;color:var(--white)}table{width:100%;border-collapse:collapse;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}th,td{padding:11px 8px;border-top:1px solid var(--line);text-align:left}th{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase}pre{overflow:auto;margin:0;padding:16px;color:#cce0dd;background:#050b0d;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45}@media(max-width:720px){main{padding:12px}.hero,.panel{padding:20px}.hero-top,.heading{display:block}.local-badge{display:inline-block;margin-top:16px}.readiness-card div{grid-template-columns:1fr}.metric-card dl{grid-template-columns:1fr}.detail-section{overflow-x:auto}}@media print{body{background:#fff;color:#111}main{max-width:none;padding:0}.hero,.panel,.layer-card,.metric-card,.quick-grid>div,.readiness-card,details{background:#fff;color:#111;box-shadow:none;border-color:#888}.hero p,.heading>p,.layer-card p,.detail-section>p:not(.eyebrow),.readiness-card summary small,.readiness-card div p{color:#333}.metric-card dd{color:#111}}</style></head><body><main>
-<section class='hero'><div class='hero-top'><div><p class='eyebrow'>PRE-D / LOCAL EVALUATION REPORT</p><h1>Evidence before <em>assurance.</em></h1></div><span class='local-badge'>LOCAL ONLY / NOT UPLOADED</span></div><p>One report, three distinct local evidence layers: application workflow, AI decisions, and operational telemetry. Missing evidence stays visible; it is never converted into a product verdict.</p>""" + declared_notice + """<div class='hero-meta'><div>SUBJECT <span>""" + _escape(subject.get("agent_id", "unknown")) + "</span></div><div>VERSION <span>" + _escape(subject.get("subject_version", "unknown")) + "</span></div><div>DATASET <span>" + _escape(subject.get("dataset_version", "unknown")) + "</span></div><div>METHOD <span>" + _escape(method) + "</span></div>" + task_meta + "<div>RUNNER <span>" + _escape(report.get("runner_version", "unknown")) + "</span></div></div></section>" + _decision_summary(report) + _confidence_warning(metrics) + _trust_summary(report, metrics, names) + _evaluation_layers(report) + _browser_summary(report) + """<details><summary>VIEW DETAILED LOCAL METRICS</summary><section class='detail-section'><p class='eyebrow'>SCORECARD</p><h2>Metric trust and results</h2><div class='metric-grid'>""" + _metric_cards(metrics, names) + "</div></section>" + _dataset_health(report) + _decision_metric_details(metrics) + _grounding_details(metrics) + _evidence_preflight(preflight) + _measurement_readiness(readiness) + "</details><details><summary>VIEW SCOPE, COVERAGE, AND DIAGNOSTICS</summary>" + _coverage_details(report) + _diagnostics(report) + "</details><details><summary>VIEW REDACTED RESULT DATA</summary><pre>" + payload + "</pre></details></main></body></html>"
+<section class='hero'><div class='hero-top'><div><p class='eyebrow'>PRE-D / LOCAL EVALUATION REPORT</p><h1>Evidence before <em>assurance.</em></h1></div><span class='local-badge'>LOCAL ONLY / NOT UPLOADED</span></div><p>One report, three distinct local evidence layers: application workflow, AI decisions, and operational telemetry. Missing evidence stays visible; it is never converted into a product verdict.</p>""" + declared_notice + """<div class='hero-meta'><div>SUBJECT <span>""" + _escape(subject.get("agent_id", "unknown")) + "</span></div><div>VERSION <span>" + _escape(subject.get("subject_version", "unknown")) + "</span></div><div>DATASET <span>" + _escape(subject.get("dataset_version", "unknown")) + "</span></div><div>METHOD <span>" + _escape(method) + "</span></div>" + task_meta + "<div>RUNNER <span>" + _escape(report.get("runner_version", "unknown")) + "</span></div></div></section>" + _decision_summary(report) + _confidence_warning(metrics) + _trust_summary(report, metrics, names) + _evaluation_layers(report) + _browser_summary(report) + """<details><summary>VIEW DETAILED LOCAL METRICS</summary><section class='detail-section'><p class='eyebrow'>SCORECARD</p><h2>Metric trust and results</h2><div class='metric-grid'>""" + _metric_cards(metrics, names) + "</div></section>" + _dataset_health(report) + _decision_metric_details(metrics) + _grounding_details(metrics) + _hallucination_details(metrics) + _evidence_preflight(preflight) + _measurement_readiness(readiness) + "</details><details><summary>VIEW SCOPE, COVERAGE, AND DIAGNOSTICS</summary>" + _coverage_details(report) + _diagnostics(report) + "</details><details><summary>VIEW REDACTED RESULT DATA</summary><pre>" + payload + "</pre></details></main></body></html>"

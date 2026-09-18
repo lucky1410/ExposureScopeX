@@ -11,6 +11,8 @@ from itertools import combinations
 import math
 from typing import Any
 
+from .metric_registry import BASELINE_VERIFIED_DIMENSIONS, TRACE_VERIFIED_DIMENSIONS
+
 
 METRIC_CALCULATION_VERSION = "pred-local-metrics-1.0"
 
@@ -150,45 +152,91 @@ def semantic_hallucination_metrics(grounding: dict[str, Any], evaluation: dict[s
     """Reuse the independently judged claims; keep absent denominators explicit."""
     if grounding.get("verification_basis") != "independent_local_semantic_judge":
         return _unavailable("Independent semantic claim comparison did not complete.")
-    if grounding.get("completion_status") == "partial":
-        return {
-            **_unavailable("Semantic evaluation is incomplete; review the failed cases and rerun."),
-            "failed_cases": grounding.get("failed_cases", []),
-            "completed_case_count": grounding.get("completed_case_count", 0),
-            "requested_case_count": grounding.get("requested_case_count", 0),
-        }
-    claims = grounding.get("case_results", [])
-    responses = grounding.get("response_results", [])
-    if not responses:
-        return _unavailable("Semantic response coverage is missing; rerun the local judge.")
     observations = {
         item["case_id"]: item for item in evaluation.get("decision_observations", [])
     }
     confidences = dict(zip(evaluation.get("case_ids", []), evaluation.get("confidences", [])))
+    threshold = 0.8
+    claims = grounding.get("case_results", [])
+    responses = grounding.get("response_results", [])
     rows = []
     for response in responses:
         case_id = response["case_id"]
         case_claims = [item for item in claims if item["case_id"] == case_id]
-        unsupported = sum(item["verdict"] != "supported" for item in case_claims)
+        supported = sum(item["verdict"] == "supported" for item in case_claims)
+        contradicted = sum(item["verdict"] == "contradicted" for item in case_claims)
+        insufficient = sum(item["verdict"] == "insufficient" for item in case_claims)
+        unsupported = contradicted + insufficient
         observed_abstention = response.get("abstained")
         # An empty extraction is not proof of an abstention or a successful answer.
         assessed = bool(case_claims) or observed_abstention is True
+        confidence = confidences.get(case_id)
         row = {
-            "case_id": case_id, "claim_count": len(case_claims),
+            "case_id": case_id,
+            "claim_count": len(case_claims),
+            "supported_claim_count": supported,
+            "contradicted_claim_count": contradicted,
+            "insufficient_evidence_claim_count": insufficient,
             "unsupported_claim_count": unsupported,
-            "abstained": observed_abstention, "assessed": assessed,
-            "unsupported_claim_ids": [item["claim_id"] for item in case_claims if item["verdict"] != "supported"],
+            "abstained": observed_abstention,
+            "assessed": assessed,
+            "unsupported_claim_ids": [
+                item["claim_id"] for item in case_claims if item["verdict"] != "supported"
+            ],
         }
+        if isinstance(confidence, (int, float)):
+            row["confidence"] = round(float(confidence), 6)
+            row["unsupported_confident_answer"] = bool(unsupported and confidence >= threshold)
         expected = observations.get(case_id, {}).get("must_abstain")
         if isinstance(expected, bool):
             row["must_abstain"] = expected
+            row["abstention_result"] = (
+                "correct"
+                if expected and observed_abstention is True and not unsupported else
+                "failed_required_abstention"
+                if expected else
+                "not_required"
+            )
         rows.append(row)
+    if grounding.get("completion_status") == "partial":
+        assessed = [row for row in rows if row["assessed"]]
+        return {
+            **_unavailable("Semantic evaluation is incomplete; review the failed cases and rerun."),
+            "verification_basis": "independent_local_semantic_judge",
+            "completion_status": "partial",
+            "failed_cases": grounding.get("failed_cases", []),
+            "completed_case_count": grounding.get("completed_case_count", 0),
+            "requested_case_count": grounding.get("requested_case_count", 0),
+            "response_count": grounding.get("requested_case_count", 0),
+            "assessed_response_count": len(assessed),
+            "response_assessment_coverage": round(
+                len(assessed) / grounding.get("requested_case_count", 0), 6
+            ) if grounding.get("requested_case_count", 0) else None,
+            "case_results": rows,
+            "partial_claim_results": grounding.get("partial_claim_results", []),
+            "judge_provenance": grounding.get("judge_provenance", {}),
+            "rubric_version": grounding.get("rubric_version"),
+            "extraction_review_status": grounding.get("extraction_review_status", "not_reviewed"),
+            "material_provenance": grounding.get("material_provenance", {}),
+            "confidence_threshold": threshold,
+            "definition": "Response claims judged unsupported or contradicted by the supplied evidence; lower unsupported rates are better.",
+            "limitations": [
+                "The retained rows cover only the cases that completed semantic review. PRE-D does not issue a full hallucination score until every requested case completes.",
+                *grounding.get("limitations", [])[:1],
+            ],
+        }
+    if not responses:
+        return _unavailable("Semantic response coverage is missing; rerun the local judge.")
     unsupported_count = sum(item["verdict"] != "supported" for item in claims)
     required = [row for row in rows if row.get("must_abstain") is True]
     abstention_complete = bool(required) and all(isinstance(row["abstained"], bool) for row in required)
-    correct_abstentions = sum(row["abstained"] is True and not row["unsupported_claim_count"] for row in required)
+    correct_abstentions = sum(row.get("abstention_result") == "correct" for row in required)
     assessed = [row for row in rows if row["assessed"]]
-    confident = [row for row in rows if row["claim_count"] and isinstance(confidences.get(row["case_id"]), (int, float)) and confidences[row["case_id"]] >= 0.8]
+    confident = [
+        row for row in rows
+        if row["claim_count"] and isinstance(row.get("confidence"), (int, float))
+        and row["confidence"] >= threshold
+    ]
     ratio = lambda numerator, denominator: round(numerator / denominator, 6) if denominator else None
     rate = ratio(unsupported_count, len(claims))
     return {
@@ -206,7 +254,7 @@ def semantic_hallucination_metrics(grounding: dict[str, Any], evaluation: dict[s
         "required_abstention_count": len(required),
         "correct_abstention_rate": ratio(correct_abstentions, len(required)) if abstention_complete else None,
         "false_answer_rate": ratio(len(required) - correct_abstentions, len(required)) if abstention_complete else None,
-        "confident_answer_count": len(confident), "confidence_threshold": 0.8,
+        "confident_answer_count": len(confident), "confidence_threshold": threshold,
         "unsupported_confident_answer_rate": ratio(sum(bool(row["unsupported_claim_count"]) for row in confident), len(confident)),
         "case_results": rows,
         "judge_provenance": grounding.get("judge_provenance", {}),
@@ -414,6 +462,8 @@ def confidence_metrics(
     bins = []
     for index in range(10):
         lower, upper = index / 10, (index + 1) / 10
+        # Keep every boundary value in exactly one bin. Only the final bin
+        # includes its upper bound so 1.0 remains measurable.
         members = [position for position, confidence in enumerate(confidences) if lower <= confidence <= upper and (index == 9 or confidence < upper)]
         if not members:
             continue
@@ -753,12 +803,6 @@ def _annotate_metric_trust(
         item for item in local_evidence.get("derived_dimensions", [])
         if isinstance(item, str)
     }
-    baseline_verified = {
-        "workflow_coverage", "classification", "confidence", "decision_evidence",
-    }
-    trace_verified = {
-        "trajectory", "tool_use", "judge_agreement", "reproducibility",
-    }
     annotated: dict[str, dict[str, Any]] = {}
     for name, raw_metric in metrics.items():
         metric = dict(raw_metric)
@@ -777,7 +821,7 @@ def _annotate_metric_trust(
             name in {"groundedness", "hallucination"}
             and metric.get("verification_basis") == "independent_local_semantic_judge"
         )
-        if name in baseline_verified:
+        if name in BASELINE_VERIFIED_DIMENSIONS:
             trust_status = "verified"
             evidence_source = {
                 "workflow_coverage": "Observed directly by the local PRE-D browser runner.",
@@ -793,7 +837,7 @@ def _annotate_metric_trust(
                 if isinstance(material_provenance, dict) else "local material"
             )
             evidence_source = f"Calculated locally by extracting atomic claims and independently comparing them with source chunks captured through {source}."
-        elif telemetry_derived and (name in trace_verified or cost_is_metered):
+        elif telemetry_derived and (name in TRACE_VERIFIED_DIMENSIONS or cost_is_metered):
             trust_status = "verified"
             evidence_source = "Calculated from redacted events observed by the local PRE-D telemetry collector."
         else:

@@ -12,11 +12,12 @@ import webbrowser
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import Request
 
 from .assurance import build_risk_plan, create_scope
 from .discovery import discover_repository
 from .evidence_requirements import render_evidence_requirements_markdown
+from .http_utils import build_no_redirect_opener
 from .profiles import PROFILE_NAMES, build_cases, profile
 from .runner import CONFIG_SCHEMA_VERSION, _is_loopback_host
 from .workflows import build_workflow_pack_catalog
@@ -35,6 +36,10 @@ _SETUP_FIELD_HELP = {
     "PROJECT KEY": "A short lowercase grouping name for this evaluation, such as payments or staging. It keeps local reports organized.",
     "LABEL RESPONSE PATH": "Where the outcome label is located in your API JSON response. For {\"decision\": {\"label\": \"safe\"}}, enter decision.label. The value must match the expected labels in the generated cases, such as safe or unsafe.",
     "CONFIDENCE RESPONSE PATH": "Where a numeric confidence value from 0 to 1 appears in your API JSON response. For {\"decision\": {\"confidence\": 0.91}}, enter decision.confidence. Leave it empty only when your application does not provide confidence.",
+    "INCLUDE GROUNDEDNESS": "Turn this on only when the endpoint can return the generated response text and the exact retrieved source chunks used for that case. PRE-D then compares claims with those sources using an independent local judge; it is not inferred from evidence IDs alone.",
+    "LOCAL GROUNDING JUDGE MODEL": "The installed local Ollama model PRE-D should use for claim extraction and evidence comparison. This stays on this computer and becomes part of the generated local judge command.",
+    "RESPONSE TEXT FIELD": "Where the generated response text appears in the tested JSON response. PRE-D reads this text locally for groundedness only; it is never copied into the final report.",
+    "RETRIEVED SOURCE CHUNKS FIELD": "Where the exact retrieved source chunks appear in the tested JSON response. PRE-D expects an array of objects such as [{\"evidence_id\":\"doc-1\",\"text\":\"chunk\"}]. Empty arrays are valid and mean no evidence was retrieved.",
     "START PATH": "The page route to open after the local web-app URL. Use / for the home page or /chat for a chat screen.",
     "EXPECTED VISIBLE TEXT": "Text that must be visible after the approved browser journey finishes, such as Welcome or Request blocked. This is the browser journey's observable pass condition.",
     "APPROVED LOGIN": "Turn this on only for a dedicated local test account. ExposureScopeX reads credentials from the named environment variables at run time and never stores their values in a plan, report, or log.",
@@ -53,13 +58,6 @@ _SETUP_FIELD_HELP = {
 }
 
 _PROBE_MESSAGE = "ESX local connection check. Return your normal JSON response without performing actions."
-
-
-class _NoRedirect(HTTPRedirectHandler):
-    """A setup probe must not follow a local endpoint to another destination."""
-
-    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
-        return None
 
 
 def create_http_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
@@ -109,6 +107,30 @@ def _decision_cases(values: object, task: str) -> list[dict[str, Any]]:
     return cases
 
 
+def _host_python_command(host_os: str) -> str:
+    """Use an OS-appropriate Python launcher in generated local commands."""
+    return "py" if host_os == "windows" else "python3"
+
+
+def _default_grounding_judge(host_os: str, model: object) -> dict[str, Any]:
+    """Generate a valid local Ollama grounding-judge block for setup-created plans."""
+    if not isinstance(model, str) or not _OPAQUE_REFERENCE.fullmatch(model.strip()):
+        raise ValueError("Grounding judge model must be an opaque local model name")
+    return {
+        "type": "command_json_v1",
+        "command": [
+            _host_python_command(host_os),
+            "-m",
+            "esx_eval_runner.ollama_grounding_judge",
+            "--model",
+            model.strip(),
+        ],
+        "identity": "local-ollama-grounding-judge",
+        "version": "1.0.0",
+        "independent_from_target": True,
+    }
+
+
 def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     """Create one self-contained, customer-confirmed local evaluation workflow."""
     for key in ("directory", "agent_id", "subject_version", "project_key", "url"):
@@ -129,6 +151,7 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
         # Decision datasets are authored around a product capability, not an
         # unrelated generic HTTP profile.
         profile_name = "custom"
+    host_os = _host_os(values.get("host_os"))
     target = _available_plan_directory(Path(values["directory"]).expanduser().resolve())
     decision_task = values.get("decision_task") if connection_type == "decision" else None
     dataset_version = f"{values['agent_id']}-{decision_task or profile_name}-1.0"
@@ -160,6 +183,9 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     # must not silently make unsupported evidence dimensions part of this run.
     # The active scorecard starts with the evidence this connection can collect.
     evaluation_dimensions = ["classification", "confidence"]
+    include_groundedness = bool(values.get("include_groundedness"))
+    if include_groundedness and connection_type == "browser":
+        raise ValueError("Groundedness requires a local API or decision endpoint, not a browser-only workflow")
     if connection_type == "browser":
         # A declared UI journey proves reachability and its approved signal. It
         # does not expose a model label or confidence, so use its own baseline.
@@ -265,6 +291,18 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     else:
         cases = build_cases(profile_name, additions)
         adapter = {"type": "http_json_target", "url": values["url"], "request_mode": values.get("request_mode", "message"), "response_label_path": values.get("response_label_path", "decision.label"), "response_confidence_path": values.get("response_confidence_path", "decision.confidence"), "timeout_seconds": 60, "allow_remote": bool(values.get("allow_remote")), "target_environment": target_environment, "max_cases": 500, "minimum_delay_ms": 100}
+    if include_groundedness:
+        response_text_path = values.get("response_text_path")
+        response_grounding_evidence_path = values.get("response_grounding_evidence_path")
+        dotted = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")
+        if not isinstance(response_text_path, str) or not re.fullmatch(dotted, response_text_path):
+            raise ValueError("Choose the response text field from the tested local API response")
+        if not isinstance(response_grounding_evidence_path, str) or not re.fullmatch(dotted, response_grounding_evidence_path):
+            raise ValueError("Choose the retrieved source chunks field from the tested local API response")
+        adapter["response_text_path"] = response_text_path
+        adapter["response_grounding_evidence_path"] = response_grounding_evidence_path
+        evaluation_dimensions.append("groundedness")
+        plan["notice"] += " This plan also requests groundedness from endpoint-returned response text and retrieved source chunks, scored locally with an independent grounding judge."
     config = {
         "schema_version": CONFIG_SCHEMA_VERSION,
         "evaluation": {
@@ -303,8 +341,12 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
             "generated_case_count": len(cases),
         },
         "assurance": {"discovery_file": "discovery.json", "scope_file": "assurance-scope.json", "plan_file": "risk-plan.json", "workflow_packs_file": "workflow-packs.json", "telemetry_file": "out/telemetry.jsonl", "planned_dimensions": plan["required_dimensions"]},
-        "environment": {"host_os": _host_os(values.get("host_os"))},
+        "environment": {"host_os": host_os},
     }
+    if include_groundedness:
+        config["assurance"]["grounding_judge"] = _default_grounding_judge(
+            host_os, values.get("grounding_judge_model", "your-local-ollama-model"),
+        )
     target.mkdir(parents=True, exist_ok=True)
     path = target / "esx-eval.json"
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
@@ -387,6 +429,21 @@ approved scope. They are not executed automatically. To list candidates, run
 `esx-eval workflow-pack list --config ./esx-eval.json`; to add one, supply its
 pack ID, a stable expected text, and an approved persona. See
 `BROWSER_WORKFLOWS.md` in the runner installation for the full commands.
+
+## Broaden module coverage now
+
+Use this workflow to expand beyond the starter case without guessing:
+
+1. Review `workflow-packs.json` and add one candidate per product area you want
+   to cover first, such as case management, threat hunt, audit, or settings.
+2. Add or bootstrap the approved persona for that area with
+   `esx-eval persona add` and `esx-eval browser-auth` when the default session
+   is not enough.
+3. Prefer one stable workflow signal per reviewed case, then rerun and inspect
+   the local coverage matrix in the HTML report.
+4. Once a case is stable, save it as a reusable pack with
+   `esx-eval workflow-pack save` so the next run extends coverage instead of
+   starting over.
 '''
     decision_note = ""
     if is_decision_plan:
@@ -411,6 +468,30 @@ For the full response contract and a reusable dataset example, see
 `DECISION_EVALUATION.md` in the runner installation. No ExposureScopeX account
 or platform connection is required.
 '''
+    groundedness_note = ""
+    if "groundedness" in config["evaluation"]["required_dimensions"] and adapter["type"] == "http_json_target":
+        groundedness_note = f'''
+
+## Groundedness in this plan
+
+This plan requests local groundedness. The endpoint must return the generated
+response text at `{adapter["response_text_path"]}` and the retrieved source
+chunks at `{adapter["response_grounding_evidence_path"]}` for every case.
+Evidence IDs alone do not count as groundedness.
+
+PRE-D uses the independent local judge configured in
+`assurance.grounding_judge` to extract atomic claims, review extraction
+completeness, and compare those claims with the supplied sources. Before the
+first run, confirm the configured local model name in `esx-eval.json`, then run:
+
+```text
+esx-eval evidence-check --config ./esx-eval.json
+```
+
+If your endpoint cannot return the response text and sources directly, keep this
+metric out of the plan and use a local `grounding-material.json` file later
+instead.
+'''
     return f'''# Local pre-release evaluation
 
 This folder was generated locally by `esx-eval setup` on {host_os}. It evaluates a customer-owned {connection} without uploading prompts, responses, source code, credentials, or results.
@@ -429,7 +510,7 @@ esx-eval view --report ./out/evaluation.local-report.html
 ```
 
 The terminal and HTML report are private and local. A successful smoke plan proves only this connection and the selected labelled cases, not universal safety or reliability.
-{browser_note}{decision_note}
+{browser_note}{decision_note}{groundedness_note}
 
 ## Scope, plan, and evidence
 
@@ -501,7 +582,7 @@ def _probe_local_http_target(url: object, request_mode: object = "message") -> d
         method="POST",
     )
     try:
-        with build_opener(_NoRedirect()).open(request, timeout=10) as response:
+        with build_no_redirect_opener().open(request, timeout=10) as response:
             response_bytes = response.read(1_048_577)
     except HTTPError as exc:
         schema = (
@@ -534,6 +615,8 @@ def _probe_local_http_target(url: object, request_mode: object = "message") -> d
         "confidence_candidates": confidence_candidates,
         "evidence_id_candidates": _rank_response_candidates(fields, kind="evidence_ids"),
         "abstained_candidates": _rank_response_candidates(fields, kind="abstained"),
+        "response_text_candidates": _rank_response_candidates(fields, kind="response_text"),
+        "grounding_evidence_candidates": _rank_response_candidates(fields, kind="grounding_evidence"),
     }
 
 
@@ -587,10 +670,30 @@ def _rank_response_candidates(fields: list[dict[str, Any]], *, kind: str) -> lis
             if field["type"] != "number" or not 0 <= float(value) <= 1:
                 continue
             score = 10 if any(word in name for word in ("confidence", "probability", "score")) else 1
+        elif kind == "response_text":
+            if field["type"] != "string":
+                continue
+            score = 0
+            if name in {"response", "answer", "output", "summary", "content", "text", "message", "completion"}:
+                score += 12
+            if any(word in name for word in ("response", "answer", "output", "summary", "content", "completion")):
+                score += 8
         elif kind == "evidence_ids":
             if field["type"] != "array" or not any(word in name for word in ("evidence", "citation", "source")):
                 continue
             score = 10
+        elif kind == "grounding_evidence":
+            if field["type"] != "array" or not any(word in name for word in ("evidence", "source", "chunk", "retriev", "context", "document", "support")):
+                continue
+            score = 5
+            if isinstance(value, list) and value:
+                first = value[0]
+                if isinstance(first, dict):
+                    keys = {str(key).lower() for key in first}
+                    if any(key in keys for key in {"evidence_id", "source_id", "document_id", "chunk_id", "id"}):
+                        score += 10
+                    if any(key in keys for key in {"text", "content", "chunk", "snippet", "passage"}):
+                        score += 10
         elif kind == "abstained":
             if field["type"] != "boolean" or not any(word in name for word in ("abstain", "refus", "declin")):
                 continue
@@ -675,6 +778,14 @@ def serve_setup(default_directory: str | None = None) -> None:
                             value = values.get(field)
                             if value and value not in {item["path"] for item in probe[candidate_key]}:
                                 raise ValueError(f"Choose {field.replace('_', ' ')} from the tested local API response")
+                        if values.get("include_groundedness"):
+                            for field, candidate_key in (
+                                ("response_text_path", "response_text_candidates"),
+                                ("response_grounding_evidence_path", "grounding_evidence_candidates"),
+                            ):
+                                value = values.get(field)
+                                if value not in {item["path"] for item in probe[candidate_key]}:
+                                    raise ValueError(f"Choose {field.replace('_', ' ')} from the tested local API response")
                     path, config = create_guided_plan(values)
                     self._json(201, {"config": str(path), "cases": len(config["dataset"]["cases"]), "profile": config["plan"]["profile"], "files": ["esx-eval.json", "discovery.json", "assurance-scope.json", "risk-plan.json", "workflow-packs.json", "PRE-D_EVIDENCE_REQUIREMENTS.md", "README.md"], "planned_dimensions": config["assurance"]["planned_dimensions"], "connection_type": connection_type})
                     return
@@ -697,7 +808,387 @@ def serve_setup(default_directory: str | None = None) -> None:
 
 def _pred_local_setup_html(token: str, default_directory: str | None) -> str:
     """Render local-first setup with an explicit decision-evaluation path."""
-    page = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D Local Setup</title><style>:root{--ink:#102022;--paper:#f7f5ee;--muted:#5e716b;--line:#b5c5bc;--coral:#ef7151;--lime:#c8ef72;--green:#216c4a}*{box-sizing:border-box}body{margin:0;background:linear-gradient(125deg,#e5eee5,#f8f2e7);color:var(--ink);font:16px Georgia,serif}main{max-width:1050px;margin:32px auto;padding:36px;background:var(--paper);border:1px solid var(--ink);box-shadow:8px 8px 0 var(--ink)}h1{margin:0;font-size:48px;letter-spacing:-.05em;line-height:.95}h1 em{color:var(--coral)}h2{margin:0 0 8px;font-size:26px;font-weight:400}.lead{max-width:700px;color:var(--muted);font-size:18px;line-height:1.5}.step{padding:26px 0;border-top:1px solid var(--line)}.choice,.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}.grid{grid-template-columns:1fr 1fr}.choice button{min-height:110px;margin:0;padding:15px;border:1px solid #738a7d;background:#fffdf7;color:var(--ink);box-shadow:none;text-align:left;font:16px Georgia,serif}.choice button.active{border:2px solid var(--ink);background:#e1f0df;box-shadow:4px 4px 0 var(--ink)}.choice strong,.choice small{display:block}.choice small{margin-top:6px;color:var(--muted);font-size:13px;line-height:1.35}.note,.warning,.success{margin:14px 0;padding:14px;border-left:4px solid var(--green);background:#e9f1e7;line-height:1.45}.warning{border-color:#b67522;background:#fff1dc}.success{background:#ddf2df}label{display:block;margin:14px 0 5px;font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.09em}input,select,textarea{width:100%;padding:11px;border:1px solid #71877b;background:#fffdf7;color:var(--ink);font:14px ui-monospace,SFMono-Regular,Consolas,monospace}textarea{min-height:180px}.hidden{display:none!important}.scope,#connection_probe_result{padding:14px;border:1px solid var(--line);background:#edf3ed;line-height:1.45}.scope label{font:14px Georgia,serif;letter-spacing:0}.scope input,.check input{width:auto;margin-right:8px}button{margin-top:16px;padding:12px 16px;border:2px solid var(--ink);background:var(--coral);color:#fff;font:700 13px ui-monospace,SFMono-Regular,Consolas,monospace;box-shadow:3px 3px 0 var(--ink);cursor:pointer}button.secondary{background:#dfe9df;color:var(--ink)}pre{overflow:auto;white-space:pre-wrap;word-break:break-word;padding:14px;background:#112224;color:#e2eee7;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}details{margin-top:14px;border:1px solid var(--line);padding:12px;background:#fffdf7}summary{cursor:pointer;font-weight:bold}@media(max-width:720px){main{margin:0;padding:22px;box-shadow:none;border:0}.grid,.choice{grid-template-columns:1fr}h1{font-size:38px}}</style></head><body><main><p style="font:700 11px ui-monospace,monospace;letter-spacing:.15em;color:var(--coral)">PRE-D LOCAL / NO ACCOUNT / NO UPLOAD</p><h1>Evaluate decisions <em>with evidence.</em></h1><p class="lead">PRE-D runs on this computer. Choose browser workflows for the app experience, a decision endpoint for AI quality, and optional local telemetry for RAG, tools, traces, security, and cost.</p><section class="step"><h2>1. Optional: discover and confirm scope</h2><p>Repository discovery identifies implemented candidates only. It never executes discovered code and does not turn routes or framework names into coverage.</p><label>APPLICATION REPOSITORY</label><input id="repository" placeholder="C:\\work\\my-ai-app"><button class="secondary" type="button" onclick="discover()">DISCOVER LOCALLY</button><div id="scope" class="scope">No repository scanned. This plan will contain one customer-declared entry point.</div></section><section class="step"><h2>2. Choose the evaluation method</h2><p class="note" id="method_note"><strong>Decision evaluation is selected.</strong> PRE-D will call a local endpoint with labelled cases and calculate decision metrics locally.</p><div class="choice"><button id="mode_decision" class="active" type="button" onclick="selectMode('decision')"><strong>Decision evaluation</strong><small>Accuracy, precision, recall, F1, and confidence from labelled local cases.</small></button><button id="mode_browser" type="button" onclick="selectMode('browser')"><strong>Browser workflow</strong><small>Login, navigation, and user-visible signals. Does not measure decision quality.</small></button><button id="mode_http" type="button" onclick="selectMode('http')"><strong>Generic JSON API</strong><small>Use existing baseline profiles for a simple local API.</small></button></div><input id="connection_type" type="hidden" value="decision"><div class="grid"><div><label id="url_label">LOCAL DECISION API URL</label><input id="url" value="http://127.0.0.1:8000/eval"></div><div><label>APPLICATION ID</label><input id="agent_id" value="my-ai-application"></div><div><label>VERSION UNDER TEST</label><input id="subject_version" value="0.1.0"></div><div><label>PROJECT KEY</label><input id="project_key" value="default"></div></div><div id="decision_fields"><label>DECISION TASK</label><input id="decision_task" value="investigation-triage" placeholder="For example: investigation-triage"><p class="note">Your endpoint receives <code>{&quot;case_id&quot;:&quot;case-001&quot;,&quot;input&quot;:{...}}</code> and returns a label and 0-to-1 confidence. Evidence IDs and an abstained flag are optional, but useful for their own local checks.</p><label>LABELLED CASES</label><input id="decision_file" type="file" accept="application/json"><textarea id="decision_cases" spellcheck="false">[{&quot;case_id&quot;:&quot;triage-001&quot;,&quot;input&quot;:{&quot;title&quot;:&quot;replace with a synthetic local test case&quot;},&quot;expected&quot;:{&quot;label&quot;:&quot;escalate&quot;,&quot;allowed_evidence_ids&quot;:[&quot;sig-001&quot;],&quot;must_abstain&quot;:false}},{&quot;case_id&quot;:&quot;triage-002&quot;,&quot;input&quot;:{&quot;title&quot;:&quot;replace with a second synthetic local test case&quot;},&quot;expected&quot;:{&quot;label&quot;:&quot;do-not-escalate&quot;,&quot;must_abstain&quot;:false}}]</textarea><p class="note">Import a JSON array or paste it here. Use at least two expected labels. These test cases remain on your computer and are not copied into the final result package.</p></div><div id="browser_fields" class="hidden"><p class="warning">This is browser workflow testing. It will prove only the visible signals you explicitly define. It will not produce accuracy, F1, hallucination, groundedness, or model confidence metrics.</p><div class="grid"><div><label>START PATH</label><input id="browser_path" value="/"></div><div><label>EXPECTED VISIBLE TEXT</label><input id="browser_expected_text" placeholder="For example: Dashboard"></div></div></div><div id="api_fields" class="hidden"><p class="note">Generic API mode uses a baseline profile. Use Decision evaluation for labelled business or AI decisions.</p><label>EVALUATION PROFILE</label><select id="profile"><option value="smoke">Smoke: 4 API baseline cases</option><option value="release">Release: 12 API baseline cases</option><option value="red_team">Adversarial: 12 authorized boundary cases</option><option value="custom">Custom: one editable starter case</option></select></div><div id="mapping_fields"><button class="secondary" type="button" onclick="testConnection()">TEST LOCAL CONNECTION</button><div id="connection_probe_result">Test the local endpoint before creating this plan. PRE-D retains only field names and types during the connection check.</div><input id="label_path" type="hidden" value="label"><input id="confidence_path" type="hidden" value="confidence"><input id="evidence_ids_path" type="hidden"><input id="abstained_path" type="hidden"></div></section><section class="step"><h2>3. Create the local plan</h2><p>The plan records only the approved scope, labelled cases, and response mappings required for this local run. Existing non-empty folders are never overwritten.</p><label>NEW EMPTY FOLDER FOR THIS PLAN</label><input id="directory" value="__DIRECTORY__"><label class="check"><input id="confirm_plan" type="checkbox"> I reviewed the local test scope and understand that a missing metric means missing evidence, not a pass or failure.</label><button type="button" onclick="createPlan()">CREATE LOCAL PLAN</button><pre id="result">First choose an evaluation method and test the local endpoint when using decision or API mode.</pre></section><section class="step"><h2>4. Run locally</h2><pre>cd &lt;your-plan-folder&gt;<br>esx-eval run --config ./esx-eval.json --out ./out/evaluation.json<br>esx-eval view --report ./out/evaluation.local-report.html</pre><details><summary>When do I need telemetry?</summary><p>Classification, F1, and confidence come from labelled local decision cases plus endpoint results. RAG, groundedness, tool use, trajectory, security behavior, cost, and latency need redacted local trace metadata. Run <code>esx-eval telemetry --out ./out/telemetry.jsonl</code> only when you are ready to connect an approved local connector or OpenTelemetry exporter.</p></details></section></main><script>const token=__TOKEN__;let latestDiscovery=null;const byId=id=>document.getElementById(id);async function post(path,data){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-ESX-Setup-Token':token},body:JSON.stringify(data)});const payload=await response.json();if(!response.ok)throw Error(payload.error||'Request failed');return payload}function selectMode(mode){byId('connection_type').value=mode;for(const item of ['decision','browser','http'])byId('mode_'+item).classList.toggle('active',item===mode);byId('decision_fields').classList.toggle('hidden',mode!=='decision');byId('browser_fields').classList.toggle('hidden',mode!=='browser');byId('api_fields').classList.toggle('hidden',mode!=='http');byId('mapping_fields').classList.toggle('hidden',mode==='browser');byId('url_label').textContent=mode==='browser'?'LOCAL WEB APP URL':mode==='decision'?'LOCAL DECISION API URL':'LOCAL API URL';byId('method_note').innerHTML=mode==='decision'?'<strong>Decision evaluation is selected.</strong> PRE-D sends labelled cases to a local endpoint and calculates accuracy, precision, recall, F1, and confidence locally.':mode==='browser'?'<strong>Browser workflow is selected.</strong> PRE-D checks the visible journey you define. Decision metrics are intentionally not produced by this mode.':'<strong>Generic JSON API is selected.</strong> PRE-D runs the selected local API profile. Use Decision evaluation for labelled business or AI decisions.';byId('connection_probe_result').textContent=mode==='browser'?'Browser mode has no endpoint connection probe.':'Test this local endpoint before creating a plan.'}function showScope(data){const holder=byId('scope');holder.replaceChildren();const components=data.components||[];if(!components.length){holder.textContent='No implemented integration hints found. The plan will contain one customer-declared entry point.';return}const heading=document.createElement('strong');heading.textContent='Approve only components safe to evaluate:';holder.append(heading);components.forEach((item,index)=>{const label=document.createElement('label'),box=document.createElement('input');box.type='checkbox';box.checked=index===0;box.dataset.component=item.id;label.append(box,document.createTextNode(' '+item.name+' ('+item.kind+'; '+(item.verification_status||'customer declared')+')'));holder.append(label)})}async function discover(){const holder=byId('scope');holder.textContent='Discovering locally...';try{latestDiscovery=await post('/api/discover',{repository:byId('repository').value});showScope(latestDiscovery)}catch(error){latestDiscovery=null;holder.textContent='Could not scan: '+error.message}}function renderMapping(title,field,candidates,optional){const target=byId('connection_probe_result'),label=document.createElement('label'),select=document.createElement('select');label.textContent=title;target.append(label);if(optional){const blank=document.createElement('option');blank.value='';blank.textContent='Do not map this field';select.append(blank)}for(const candidate of candidates){const option=document.createElement('option');option.value=candidate.path;option.textContent=candidate.path+' ('+candidate.type+')';select.append(option)}if(!candidates.length&&!optional){const note=document.createElement('p');note.textContent='No compatible field was found.';target.append(note)}select.addEventListener('change',()=>byId(field).value=select.value);byId(field).value=select.value;target.append(select)}async function testConnection(){const mode=byId('connection_type').value;if(mode==='browser')return;const target=byId('connection_probe_result');target.textContent='Testing the local endpoint with one harmless fixed request...';try{const probe=await post('/api/test-connection',{url:byId('url').value,request_mode:mode==='decision'?'decision':'message'});target.replaceChildren();const success=document.createElement('strong');success.textContent='Connection confirmed. Select response mappings.';target.append(success);renderMapping('DECISION LABEL','label_path',probe.label_candidates,false);renderMapping('DECISION CONFIDENCE','confidence_path',probe.confidence_candidates,false);if(mode==='decision'){renderMapping('EVIDENCE IDS (OPTIONAL)','evidence_ids_path',probe.evidence_id_candidates,true);renderMapping('ABSTAINED FLAG (OPTIONAL)','abstained_path',probe.abstained_candidates,true)}const shape=document.createElement('pre');shape.textContent='Value-redacted response structure: '+JSON.stringify(probe.response_shape,null,2);target.append(shape)}catch(error){target.textContent='Could not confirm connection: '+error.message}}function selectedComponents(){return [...document.querySelectorAll('[data-component]:checked')].map(item=>item.dataset.component)}byId('decision_file').addEventListener('change',event=>{const file=event.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=()=>{try{const value=JSON.parse(String(reader.result));if(!Array.isArray(value))throw Error('Expected a JSON array');byId('decision_cases').value=JSON.stringify(value,null,2)}catch(error){byId('result').textContent='Could not import labelled cases: '+error.message}};reader.readAsText(file)});async function createPlan(){const out=byId('result'),mode=byId('connection_type').value;out.className='';out.textContent='Creating the local plan...';try{let decisionCases=[];if(mode==='decision'){decisionCases=JSON.parse(byId('decision_cases').value);if(!Array.isArray(decisionCases))throw Error('Labelled cases must be a JSON array')}const payload={directory:byId('directory').value,agent_id:byId('agent_id').value,subject_version:byId('subject_version').value,project_key:byId('project_key').value,url:byId('url').value,connection_type:mode,profile:byId('profile').value,decision_task:byId('decision_task').value,decision_cases:decisionCases,confirm_plan:byId('confirm_plan').checked,response_label_path:byId('label_path').value,response_confidence_path:byId('confidence_path').value,response_evidence_ids_path:byId('evidence_ids_path').value,response_abstained_path:byId('abstained_path').value,browser_path:byId('browser_path').value,browser_expected_text:byId('browser_expected_text').value};if(latestDiscovery){payload.discovery=latestDiscovery;payload.selected_component_ids=selectedComponents()}const created=await post('/api/create-plan',payload);out.className='success';out.textContent='Created '+created.connection_type+' plan with '+created.cases+' case(s). Open README.md in the plan folder, then run the local command in step 4. The report will state exactly which evidence layers were measured.'}catch(error){out.textContent='Could not create plan: '+error.message}}</script></body></html>"""
+    page = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PRE-D Local Setup</title>
+<style>
+:root{--ink:#102022;--paper:#f7f5ee;--muted:#5e716b;--line:#b5c5bc;--coral:#ef7151;--lime:#c8ef72;--green:#216c4a}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(125deg,#e5eee5,#f8f2e7);color:var(--ink);font:16px Georgia,serif}
+main{max-width:1050px;margin:32px auto;padding:36px;background:var(--paper);border:1px solid var(--ink);box-shadow:8px 8px 0 var(--ink)}
+h1{margin:0;font-size:48px;letter-spacing:-.05em;line-height:.95}
+h1 em{color:var(--coral)}
+h2{margin:0 0 8px;font-size:26px;font-weight:400}
+.lead{max-width:760px;color:var(--muted);font-size:18px;line-height:1.5}
+.step{padding:26px 0;border-top:1px solid var(--line)}
+.choice,.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}
+.grid{grid-template-columns:1fr 1fr}
+.choice button{min-height:110px;margin:0;padding:15px;border:1px solid #738a7d;background:#fffdf7;color:var(--ink);box-shadow:none;text-align:left;font:16px Georgia,serif}
+.choice button.active{border:2px solid var(--ink);background:#e1f0df;box-shadow:4px 4px 0 var(--ink)}
+.choice strong,.choice small{display:block}
+.choice small{margin-top:6px;color:var(--muted);font-size:13px;line-height:1.35}
+.note,.warning,.success{margin:14px 0;padding:14px;border-left:4px solid var(--green);background:#e9f1e7;line-height:1.45}
+.warning{border-color:#b67522;background:#fff1dc}
+.success{background:#ddf2df}
+.small{font-size:14px;color:var(--muted);line-height:1.45}
+label{display:block;margin:14px 0 5px;font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.09em}
+input,select,textarea{width:100%;padding:11px;border:1px solid #71877b;background:#fffdf7;color:var(--ink);font:14px ui-monospace,SFMono-Regular,Consolas,monospace}
+textarea{min-height:180px}
+.hidden{display:none!important}
+.scope,#connection_probe_result{padding:14px;border:1px solid var(--line);background:#edf3ed;line-height:1.45}
+.scope label{font:14px Georgia,serif;letter-spacing:0}
+.scope input,.check input{width:auto;margin-right:8px}
+button{margin-top:16px;padding:12px 16px;border:2px solid var(--ink);background:var(--coral);color:#fff;font:700 13px ui-monospace,SFMono-Regular,Consolas,monospace;box-shadow:3px 3px 0 var(--ink);cursor:pointer}
+button.secondary{background:#dfe9df;color:var(--ink)}
+pre{overflow:auto;white-space:pre-wrap;word-break:break-word;padding:14px;background:#112224;color:#e2eee7;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}
+details{margin-top:14px;border:1px solid var(--line);padding:12px;background:#fffdf7}
+summary{cursor:pointer;font-weight:bold}
+@media(max-width:720px){main{margin:0;padding:22px;box-shadow:none;border:0}.grid,.choice{grid-template-columns:1fr}h1{font-size:38px}}
+</style>
+</head>
+<body>
+<main>
+<p style="font:700 11px ui-monospace,monospace;letter-spacing:.15em;color:var(--coral)">PRE-D LOCAL / NO ACCOUNT / NO UPLOAD</p>
+<h1>Evaluate decisions <em>with evidence.</em></h1>
+<p class="lead">PRE-D runs on this computer. Choose browser workflows for the app experience, a decision endpoint for AI quality, and optional local groundedness when the endpoint can return the generated response plus the exact retrieved source chunks for each case.</p>
+
+<section class="step">
+<h2>1. Optional: discover and confirm scope</h2>
+<p>Repository discovery identifies implemented candidates only. It never executes discovered code and does not turn routes or framework names into coverage.</p>
+<label>APPLICATION REPOSITORY</label>
+<input id="repository" placeholder="C:\\work\\my-ai-app">
+<button class="secondary" type="button" onclick="discover()">DISCOVER LOCALLY</button>
+<div id="scope" class="scope">No repository scanned. This plan will contain one customer-declared entry point.</div>
+</section>
+
+<section class="step">
+<h2>2. Choose the evaluation method</h2>
+<p class="note" id="method_note"><strong>Decision evaluation is selected.</strong> PRE-D will call a local endpoint with labelled cases and calculate decision metrics locally.</p>
+<div class="choice">
+<button id="mode_decision" class="active" type="button" onclick="selectMode('decision')"><strong>Decision evaluation</strong><small>Accuracy, precision, recall, F1, and confidence from labelled local cases.</small></button>
+<button id="mode_browser" type="button" onclick="selectMode('browser')"><strong>Browser workflow</strong><small>Login, navigation, and user-visible signals. Does not measure decision quality.</small></button>
+<button id="mode_http" type="button" onclick="selectMode('http')"><strong>Generic JSON API</strong><small>Use existing baseline profiles for a simple local API.</small></button>
+</div>
+<input id="connection_type" type="hidden" value="decision">
+
+<div class="grid">
+<div><label id="url_label">LOCAL DECISION API URL</label><input id="url" value="http://127.0.0.1:8000/eval"></div>
+<div><label>APPLICATION ID</label><input id="agent_id" value="my-ai-application"></div>
+<div><label>VERSION UNDER TEST</label><input id="subject_version" value="0.1.0"></div>
+<div><label>PROJECT KEY</label><input id="project_key" value="default"></div>
+</div>
+
+<div id="decision_fields">
+<label>DECISION TASK</label>
+<input id="decision_task" value="investigation-triage" placeholder="For example: investigation-triage">
+<p class="note">Your endpoint receives <code>{"case_id":"case-001","input":{...}}</code> and returns a label and 0-to-1 confidence. Evidence IDs and an abstained flag are optional. Groundedness is available only when the endpoint also returns the generated response text and the exact retrieved source chunks for that case.</p>
+<label>LABELLED CASES</label>
+<input id="decision_file" type="file" accept="application/json">
+<textarea id="decision_cases" spellcheck="false">[{"case_id":"triage-001","input":{"title":"replace with a synthetic local test case"},"expected":{"label":"escalate","allowed_evidence_ids":["sig-001"],"must_abstain":false}},{"case_id":"triage-002","input":{"title":"replace with a second synthetic local test case"},"expected":{"label":"do-not-escalate","must_abstain":false}}]</textarea>
+<p class="note">Import a JSON array or paste it here. Use at least two expected labels. These test cases remain on your computer and are not copied into the final result package.</p>
+</div>
+
+<div id="browser_fields" class="hidden">
+<p class="warning">This is browser workflow testing. It will prove only the visible signals you explicitly define. It will not produce accuracy, F1, hallucination, groundedness, or model confidence metrics.</p>
+<div class="grid">
+<div><label>START PATH</label><input id="browser_path" value="/"></div>
+<div><label>EXPECTED VISIBLE TEXT</label><input id="browser_expected_text" placeholder="For example: Dashboard"></div>
+</div>
+</div>
+
+<div id="api_fields" class="hidden">
+<p class="note">Generic API mode uses a baseline profile. Use Decision evaluation for labelled business or AI decisions.</p>
+<label>EVALUATION PROFILE</label>
+<select id="profile">
+<option value="smoke">Smoke: 4 API baseline cases</option>
+<option value="release">Release: 12 API baseline cases</option>
+<option value="red_team">Adversarial: 12 authorized boundary cases</option>
+<option value="custom">Custom: one editable starter case</option>
+</select>
+</div>
+
+<div id="groundedness_panel" class="note">
+<label class="check"><input id="include_groundedness" type="checkbox" onchange="groundednessChanged()"> INCLUDE GROUNDEDNESS IN THIS PLAN</label>
+<p class="small">Use this only for a local API or decision endpoint that can return both the generated response text and the exact retrieved source chunks used for that response. PRE-D then performs claim extraction, evidence comparison, and local groundedness scoring with an independent judge.</p>
+<div id="groundedness_fields" class="hidden">
+<div class="grid">
+<div><label>LOCAL GROUNDING JUDGE MODEL</label><input id="grounding_judge_model" value="llama3.1:8b-instruct"></div>
+</div>
+<p class="small" id="groundedness_mapping_note">Test the local endpoint to choose the response text and retrieved source chunk fields.</p>
+</div>
+<input id="response_text_path" type="hidden">
+<input id="response_grounding_evidence_path" type="hidden">
+</div>
+
+<div id="mapping_fields">
+<button class="secondary" type="button" onclick="testConnection()">TEST LOCAL CONNECTION</button>
+<div id="connection_probe_result">Test the local endpoint before creating this plan. PRE-D retains only field names and types during the connection check.</div>
+<input id="label_path" type="hidden" value="label">
+<input id="confidence_path" type="hidden" value="confidence">
+<input id="evidence_ids_path" type="hidden">
+<input id="abstained_path" type="hidden">
+</div>
+</section>
+
+<section class="step">
+<h2>3. Create the local plan</h2>
+<p>The plan records only the approved scope, labelled cases, and response mappings required for this local run. Existing non-empty folders are never overwritten.</p>
+<label>NEW EMPTY FOLDER FOR THIS PLAN</label>
+<input id="directory" value="__DIRECTORY__">
+<label class="check"><input id="confirm_plan" type="checkbox"> I reviewed the local test scope and understand that a missing metric means missing evidence, not a pass or failure.</label>
+<button type="button" onclick="createPlan()">CREATE LOCAL PLAN</button>
+<pre id="result">First choose an evaluation method and test the local endpoint when using decision or API mode.</pre>
+</section>
+
+<section class="step">
+<h2>4. Run locally</h2>
+<pre>cd &lt;your-plan-folder&gt;
+esx-eval evidence-check --config ./esx-eval.json
+esx-eval run --config ./esx-eval.json --out ./out/evaluation.json
+esx-eval view --report ./out/evaluation.local-report.html</pre>
+<details>
+<summary>When do I need telemetry?</summary>
+<p>Classification, F1, and confidence come from labelled local decision cases plus endpoint results. Groundedness comes from the generated response text, the exact retrieved source chunks, and a local judge configured in the plan. Telemetry is still for separate layers such as RAG traces, tool use, trajectory, security behavior, cost, and latency.</p>
+</details>
+</section>
+</main>
+<script>
+const token=__TOKEN__;
+let latestDiscovery=null;
+let latestProbe=null;
+const byId=id=>document.getElementById(id);
+
+async function post(path,data){
+  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-ESX-Setup-Token':token},body:JSON.stringify(data)});
+  const payload=await response.json();
+  if(!response.ok) throw Error(payload.error||'Request failed');
+  return payload;
+}
+
+function groundednessAllowed(){
+  return byId('connection_type').value!=='browser';
+}
+
+function renderMapping(target,title,field,candidates,optional,emptyText){
+  const label=document.createElement('label');
+  const select=document.createElement('select');
+  label.textContent=title;
+  target.append(label);
+  if(optional){
+    const blank=document.createElement('option');
+    blank.value='';
+    blank.textContent='Do not map this field';
+    select.append(blank);
+  }
+  for(const candidate of candidates||[]){
+    const option=document.createElement('option');
+    option.value=candidate.path;
+    option.textContent=candidate.path+' ('+candidate.type+')';
+    select.append(option);
+  }
+  const current=byId(field).value;
+  if(current && [...select.options].some(option=>option.value===current)) select.value=current;
+  byId(field).value=select.value;
+  select.addEventListener('change',()=>byId(field).value=select.value);
+  target.append(select);
+  if(!(candidates||[]).length){
+    const note=document.createElement('p');
+    note.className='small';
+    note.textContent=emptyText;
+    target.append(note);
+  }
+}
+
+function renderProbe(){
+  const mode=byId('connection_type').value;
+  const target=byId('connection_probe_result');
+  if(mode==='browser'){
+    target.textContent='Browser mode has no endpoint connection probe on this page.';
+    return;
+  }
+  if(!latestProbe){
+    target.textContent='Test this local endpoint before creating this plan. PRE-D retains only field names and types during the connection check.';
+    return;
+  }
+  target.replaceChildren();
+  const success=document.createElement('strong');
+  success.textContent='Connection confirmed. Select response mappings.';
+  target.append(success);
+  renderMapping(target,'DECISION LABEL','label_path',latestProbe.label_candidates,false,'No compatible label field was found.');
+  renderMapping(target,'DECISION CONFIDENCE','confidence_path',latestProbe.confidence_candidates,false,'No numeric 0-to-1 confidence field was found.');
+  if(mode==='decision'){
+    renderMapping(target,'EVIDENCE IDS (OPTIONAL)','evidence_ids_path',latestProbe.evidence_id_candidates,true,'Evidence IDs are optional for this plan.');
+    renderMapping(target,'ABSTAINED FLAG (OPTIONAL)','abstained_path',latestProbe.abstained_candidates,true,'An abstained flag is optional for this plan.');
+  } else {
+    byId('evidence_ids_path').value='';
+    byId('abstained_path').value='';
+  }
+  if(byId('include_groundedness').checked && groundednessAllowed()){
+    const groundednessNote=document.createElement('p');
+    groundednessNote.className='small';
+    groundednessNote.textContent='Groundedness needs the generated response text and the exact retrieved source chunks from this same response.';
+    target.append(groundednessNote);
+    renderMapping(target,'RESPONSE TEXT FIELD','response_text_path',latestProbe.response_text_candidates,false,'No likely response text field was found.');
+    renderMapping(target,'RETRIEVED SOURCE CHUNKS FIELD','response_grounding_evidence_path',latestProbe.grounding_evidence_candidates,false,'No likely retrieved source chunk array was found.');
+  } else {
+    byId('response_text_path').value='';
+    byId('response_grounding_evidence_path').value='';
+  }
+  const shape=document.createElement('pre');
+  shape.textContent='Value-redacted response structure: '+JSON.stringify(latestProbe.response_shape,null,2);
+  target.append(shape);
+}
+
+function selectMode(mode){
+  byId('connection_type').value=mode;
+  for(const item of ['decision','browser','http']) byId('mode_'+item).classList.toggle('active',item===mode);
+  byId('decision_fields').classList.toggle('hidden',mode!=='decision');
+  byId('browser_fields').classList.toggle('hidden',mode!=='browser');
+  byId('api_fields').classList.toggle('hidden',mode!=='http');
+  byId('mapping_fields').classList.toggle('hidden',mode==='browser');
+  byId('groundedness_panel').classList.toggle('hidden',mode==='browser');
+  byId('url_label').textContent=mode==='browser'?'LOCAL WEB APP URL':mode==='decision'?'LOCAL DECISION API URL':'LOCAL API URL';
+  byId('method_note').innerHTML=
+    mode==='decision'
+      ? '<strong>Decision evaluation is selected.</strong> PRE-D sends labelled cases to a local endpoint and calculates accuracy, precision, recall, F1, and confidence locally.'
+      : mode==='browser'
+        ? '<strong>Browser workflow is selected.</strong> PRE-D checks the visible journey you define. Decision metrics are intentionally not produced by this mode.'
+        : '<strong>Generic JSON API is selected.</strong> PRE-D runs the selected local API profile. Use Decision evaluation for labelled business or AI decisions.';
+  if(mode==='browser'){
+    byId('include_groundedness').checked=false;
+  }
+  groundednessChanged();
+  renderProbe();
+}
+
+function groundednessChanged(){
+  const enabled=byId('include_groundedness').checked && groundednessAllowed();
+  byId('groundedness_fields').classList.toggle('hidden',!enabled);
+  if(!enabled){
+    byId('response_text_path').value='';
+    byId('response_grounding_evidence_path').value='';
+  }
+  renderProbe();
+}
+
+function showScope(data){
+  const holder=byId('scope');
+  holder.replaceChildren();
+  const components=data.components||[];
+  if(!components.length){
+    holder.textContent='No implemented integration hints found. The plan will contain one customer-declared entry point.';
+    return;
+  }
+  const heading=document.createElement('strong');
+  heading.textContent='Approve only components safe to evaluate:';
+  holder.append(heading);
+  components.forEach((item,index)=>{
+    const label=document.createElement('label');
+    const box=document.createElement('input');
+    box.type='checkbox';
+    box.checked=index===0;
+    box.dataset.component=item.id;
+    label.append(box,document.createTextNode(' '+item.name+' ('+item.kind+'; '+(item.verification_status||'customer declared')+')'));
+    holder.append(label);
+  });
+}
+
+async function discover(){
+  const holder=byId('scope');
+  holder.textContent='Discovering locally...';
+  try{
+    latestDiscovery=await post('/api/discover',{repository:byId('repository').value});
+    showScope(latestDiscovery);
+  }catch(error){
+    latestDiscovery=null;
+    holder.textContent='Could not scan: '+error.message;
+  }
+}
+
+async function testConnection(){
+  const mode=byId('connection_type').value;
+  if(mode==='browser') return;
+  const target=byId('connection_probe_result');
+  target.textContent='Testing the local endpoint with one harmless fixed request...';
+  try{
+    latestProbe=await post('/api/test-connection',{url:byId('url').value,request_mode:mode==='decision'?'decision':'message'});
+    renderProbe();
+  }catch(error){
+    latestProbe=null;
+    target.textContent='Could not confirm connection: '+error.message;
+  }
+}
+
+function selectedComponents(){
+  return [...document.querySelectorAll('[data-component]:checked')].map(item=>item.dataset.component);
+}
+
+byId('decision_file').addEventListener('change',event=>{
+  const file=event.target.files[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    try{
+      const value=JSON.parse(String(reader.result));
+      if(!Array.isArray(value)) throw Error('Expected a JSON array');
+      byId('decision_cases').value=JSON.stringify(value,null,2);
+    }catch(error){
+      byId('result').textContent='Could not import labelled cases: '+error.message;
+    }
+  };
+  reader.readAsText(file);
+});
+
+async function createPlan(){
+  const out=byId('result');
+  const mode=byId('connection_type').value;
+  out.className='';
+  out.textContent='Creating the local plan...';
+  try{
+    let decisionCases=[];
+    if(mode==='decision'){
+      decisionCases=JSON.parse(byId('decision_cases').value);
+      if(!Array.isArray(decisionCases)) throw Error('Labelled cases must be a JSON array');
+    }
+    const payload={
+      directory:byId('directory').value,
+      agent_id:byId('agent_id').value,
+      subject_version:byId('subject_version').value,
+      project_key:byId('project_key').value,
+      url:byId('url').value,
+      connection_type:mode,
+      profile:byId('profile').value,
+      decision_task:byId('decision_task').value,
+      decision_cases:decisionCases,
+      confirm_plan:byId('confirm_plan').checked,
+      include_groundedness:byId('include_groundedness').checked && groundednessAllowed(),
+      grounding_judge_model:byId('grounding_judge_model').value,
+      response_label_path:byId('label_path').value,
+      response_confidence_path:byId('confidence_path').value,
+      response_evidence_ids_path:byId('evidence_ids_path').value,
+      response_abstained_path:byId('abstained_path').value,
+      response_text_path:byId('response_text_path').value,
+      response_grounding_evidence_path:byId('response_grounding_evidence_path').value,
+      browser_path:byId('browser_path').value,
+      browser_expected_text:byId('browser_expected_text').value
+    };
+    if(latestDiscovery){
+      payload.discovery=latestDiscovery;
+      payload.selected_component_ids=selectedComponents();
+    }
+    const created=await post('/api/create-plan',payload);
+    out.className='success';
+    out.textContent='Created '+created.connection_type+' plan with '+created.cases+' case(s). Open README.md in the plan folder, run evidence-check, then run the local evaluation command in step 4.';
+  }catch(error){
+    out.textContent='Could not create plan: '+error.message;
+  }
+}
+</script>
+</body>
+</html>"""
     redirect = "<script>document.getElementById('mode_browser').addEventListener('click',()=>{window.location.href='/browser'});</script>"
     return page.replace("__TOKEN__", json.dumps(token)).replace("__DIRECTORY__", json.dumps(default_directory or str(Path.cwd() / "pred-local-evaluation"))).replace("</body>", redirect + "</body>")
 

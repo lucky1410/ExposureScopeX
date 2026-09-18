@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
 import unittest
 
 from esx_eval_runner.local_metrics import calculate_local_metrics
@@ -46,6 +47,12 @@ class SemanticHallucinationTests(unittest.TestCase):
         self.assertIsNone(metric["correct_abstention_rate"])
         self.assertIsNone(metric["false_answer_rate"])
         page = render_local_report({"metrics": metrics, "evaluation": {"required_dimensions": ["hallucination"]}})
+        self.assertIn("SEMANTIC HALLUCINATION", page)
+        self.assertIn("Claim extraction", page)
+        self.assertIn("Evidence comparison", page)
+        self.assertIn("Unsupported-claim scoring", page)
+        self.assertIn("Abstention scoring", page)
+        self.assertIn("Case hallucination summary", page)
         self.assertIn("Unsupported claims 66.7%", page)
         self.assertNotIn("incident began", page)
 
@@ -109,6 +116,50 @@ class SemanticHallucinationTests(unittest.TestCase):
                             judge={**JUDGE, "command": [sys.executable, "-c", code]})["hallucination"]
         self.assertIsNone(metric["correct_abstention_rate"])
         self.assertEqual(metric["trust_status"], "missing")
+
+    def test_partial_semantic_hallucination_retains_completed_cases_without_full_score(self):
+        with TemporaryDirectory() as directory:
+            judge_script = Path(directory) / "judge.py"
+            judge_script.write_text(
+                (
+                    "import json,sys\n"
+                    "request=json.load(sys.stdin)\n"
+                    "operation=request['operation']\n"
+                    "if operation=='extract_claims':\n"
+                    "    results=[{'case_id':c['case_id'],'claims':[c['response']],'abstained':False} for c in request['cases']]\n"
+                    "elif operation=='review_claims':\n"
+                    "    results=[{'case_id':c['case_id'],'complete':True,'missing_claims':[]} for c in request['cases']]\n"
+                    "else:\n"
+                    "    results=[]\n"
+                    "    for item in request['claims']:\n"
+                    "        evidence_ids=['doc-1'] if item['case_id']=='case-1' else ['unknown-doc']\n"
+                    "        results.append({'claim_id':item['claim_id'],'verdict':'supported','confidence':0.92,'evidence_ids':evidence_ids})\n"
+                    "json.dump({'schema_version':'pre-d-grounding-judge-response-1.0','operation':operation,'results':results},sys.stdout)\n"
+                ),
+                encoding="utf-8",
+            )
+            metrics = self.score(
+                [
+                    {"case_id": "case-1", "response": "Alpha.", "evidence": [{"evidence_id": "doc-1", "text": "Alpha."}]},
+                    {"case_id": "case-2", "response": "Beta.", "evidence": [{"evidence_id": "doc-2", "text": "Beta."}]},
+                ],
+                judge={**JUDGE, "command": [sys.executable, str(judge_script)]},
+            )
+        metric = metrics["hallucination"]
+        self.assertEqual(metric["measurement_status"], "not_measurable")
+        self.assertEqual(metric["verification_basis"], "independent_local_semantic_judge")
+        self.assertEqual(metric["completion_status"], "partial")
+        self.assertEqual(metric["completed_case_count"], 1)
+        self.assertEqual(metric["requested_case_count"], 2)
+        self.assertEqual(len(metric["failed_cases"]), 1)
+        self.assertEqual(len(metric["case_results"]), 1)
+        page = render_local_report({"metrics": metrics, "evaluation": {"required_dimensions": ["hallucination"]}})
+        self.assertIn("No full-run score: some cases failed.", page)
+        self.assertIn("Completed hallucination evidence is retained below.", page)
+        self.assertIn(
+            "Review the failed semantic cases, fix the response, abstention behavior, evidence capture, or local judge behavior, then rerun for a full hallucination score.",
+            page,
+        )
 
 
 if __name__ == "__main__":

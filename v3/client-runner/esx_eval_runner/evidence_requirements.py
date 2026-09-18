@@ -7,14 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from .ground_truth import read_ground_truth, validate_ground_truth_case_ids
+from .metric_registry import ADVANCED_DIMENSIONS as _ADVANCED_DIMENSIONS, METRIC_ORDER, metric_title
 from .runner import RunnerError
-
-
-METRIC_ORDER = (
-    "workflow_coverage", "classification", "confidence", "decision_evidence",
-    "groundedness", "hallucination", "security", "trajectory", "tool_use", "rag", "robustness",
-    "judge_agreement", "reproducibility", "cost_efficiency",
-)
 
 
 # These are evidence contracts, not claims that a metric can be inferred from a
@@ -120,10 +114,9 @@ METRIC_REQUIREMENTS: dict[str, dict[str, str]] = {
     },
 }
 
+for _metric_name, _requirement in METRIC_REQUIREMENTS.items():
+    _requirement["title"] = metric_title(_metric_name)
 
-_ADVANCED_DIMENSIONS = frozenset(METRIC_ORDER) - {
-    "workflow_coverage", "classification", "confidence", "decision_evidence",
-}
 _MEASUREMENT_FIELD = {
     "groundedness": "claims", "hallucination": "claims",
     **{name: name for name in _ADVANCED_DIMENSIONS if name not in {"groundedness", "hallucination"}},

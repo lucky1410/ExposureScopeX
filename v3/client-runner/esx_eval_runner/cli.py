@@ -22,8 +22,18 @@ from .evidence_requirements import (
 from .ground_truth import ground_truth_summary, read_ground_truth, validate_ground_truth_case_ids
 from .local_metrics import calculate_local_metrics, summarize_metric_trust
 from .discovery import discover_repository
+from .metric_registry import ADVANCED_CLI_DISPLAY, NEVER_UPLOAD_DIMENSIONS, metric_title
 from .report_html import render_local_report
-from .runner import RunnerError, attach_local_measurements, build_package, generate_keypair, read_json, sha256, sign_package
+from .runner import (
+    AdapterExecutionError,
+    RunnerError,
+    attach_local_measurements,
+    build_package,
+    generate_keypair,
+    read_json,
+    sha256,
+    sign_package,
+)
 from .semantic_grounding import (
     _validate_judge, evaluate_semantic_grounding, grounding_material_summary,
     read_grounding_material,
@@ -35,6 +45,7 @@ from .preflight import lint_browser_plan
 
 
 _PROJECT_KEY = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
+_LOCAL_DEBUG_LOG_LIMIT_BYTES = 131_072
 
 
 def _starter_cases(case_count: int) -> list[dict[str, object]]:
@@ -591,22 +602,33 @@ def _metric_line(title: str, metrics: dict[str, object], fields: list[tuple[str,
 
 def _print_advanced_metrics(metrics: dict[str, dict[str, object]], dimensions: list[str]) -> None:
     print("\nADVANCED LOCAL RESULTS")
-    labels = {
-        "groundedness": ("Grounding", [("grounded_claim_rate", "grounded extracted claims"), ("contradiction_rate", "contradicted"), ("insufficient_evidence_rate", "insufficient evidence"), ("response_processing_rate", "responses processed"), ("extraction_review_status", "extraction review")]),
-        "hallucination": ("Hallucination", [("hallucinated_claim_rate", "unsupported claims"), ("hallucination_free_response_rate", "responses without unsupported claims"), ("correct_abstention_rate", "correct abstention"), ("false_answer_rate", "failed required abstentions"), ("response_assessment_coverage", "response coverage")]),
-        "security": ("Security", [("attack_outcome_accuracy", "attack outcome accuracy"), ("detection_rate", "detection rate"), ("false_detection_rate", "false detection rate"), ("evidence_coverage", "evidence coverage")]),
-        "trajectory": ("Trajectory and tool policy", [("score", "trajectory score"), ("milestone_coverage", "milestone coverage"), ("action_efficiency", "action efficiency"), ("policy_compliant", "policy compliant")]),
-        "tool_use": ("Tool-use quality", [("selection_f1", "selection F1"), ("authorization_rate", "authorized"), ("result_validity_rate", "valid results"), ("exact_tool_set_rate", "exact tool set")]),
-        "rag": ("RAG", [("context_precision", "context precision"), ("recall_at_k", "recall@K"), ("mean_reciprocal_rank", "MRR"), ("faithfulness", "faithfulness"), ("citation_validity", "citation validity")]),
-        "robustness": ("Robustness", [("accuracy", "variation accuracy"), ("consistency", "consistency"), ("variation_coverage", "variation coverage"), ("worst_confidence_drop", "worst confidence drop")]),
-        "judge_agreement": ("Cross-model judge agreement", [("pairwise_agreement", "pairwise agreement"), ("unanimous_case_rate", "unanimity"), ("judge_count", "judges")]),
-        "reproducibility": ("Repeatability", [("pairwise_agreement", "pairwise agreement"), ("unanimous_case_rate", "unanimity"), ("run_count", "runs")]),
-        "cost_efficiency": ("Cost and latency", [("total_cost_usd", "total USD"), ("cost_per_case_usd", "USD per case"), ("p95_latency_ms", "p95 ms"), ("timeout_rate", "timeout rate"), ("tool_call_count", "tool calls")]),
-    }
     for dimension in dimensions:
-        if dimension in labels:
-            title, fields = labels[dimension]
+        if dimension in ADVANCED_CLI_DISPLAY:
+            title, fields = ADVANCED_CLI_DISPLAY[dimension]
             _metric_line(title, metrics[dimension], fields)
+
+
+def _debug_log_path(out_path: str | Path) -> Path:
+    target = Path(out_path)
+    return target.with_name(target.stem + ".debug.log")
+
+
+def _write_local_adapter_debug_log(path: Path, exc: AdapterExecutionError) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = exc.stderr[:_LOCAL_DEBUG_LOG_LIMIT_BYTES]
+    stderr_text = raw.decode("utf-8", errors="replace").rstrip()
+    lines = [
+        "PRE-D local adapter debug log",
+        f"exit_status={exc.returncode}",
+        f"stderr_bytes_captured={len(exc.stderr)}",
+        f"stderr_bytes_written={len(raw)}",
+    ]
+    if len(exc.stderr) > len(raw):
+        lines.append("truncated=true")
+    lines.append("")
+    lines.append("stderr:")
+    lines.append(stderr_text or "(adapter produced no stderr output)")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _print_local_results(
@@ -813,6 +835,17 @@ def run_command(args: argparse.Namespace) -> int:
         package = build_package(
             config, github_oidc_token=oidc_token, local_artifacts=local_artifacts,
         )
+    except AdapterExecutionError as exc:
+        debug_log_path = _debug_log_path(args.out)
+        _write_local_adapter_debug_log(debug_log_path, exc)
+        append_audit_event(audit_path, "evaluation_failed", {
+            "config_sha256": sha256(config),
+            "failure_category": "adapter_error",
+            "debug_log": str(debug_log_path),
+        })
+        raise RunnerError(
+            f"Local adapter exited with status {exc.returncode}. Debug details were written locally to {debug_log_path}"
+        ) from exc
     except RunnerError:
         append_audit_event(audit_path, "evaluation_failed", {"config_sha256": sha256(config), "failure_category": "runner_error"})
         raise
@@ -867,7 +900,7 @@ def run_command(args: argparse.Namespace) -> int:
         local_metrics, package["evaluation"].get("required_dimensions", [])
     )
     assurance_graph = build_assurance_graph(package, local_metrics, discovery=discovery, scope=scope, plan=plan, telemetry=telemetry)
-    coverage = build_coverage_model(package, local_metrics, discovery=discovery, scope=scope)
+    coverage = build_coverage_model(package, local_metrics, discovery=discovery, scope=scope, config=config)
     report_path = Path(args.out).with_name(Path(args.out).stem + ".local-report.json")
     report = {
         "schema_version": "esx-local-evaluation-report-1.2",
@@ -1073,7 +1106,7 @@ def report_command(args: argparse.Namespace) -> int:
         package, metrics, discovery=discovery, scope=scope,
         plan=plan, telemetry=telemetry_summary(telemetry_path) if telemetry_path else None,
     )
-    coverage = build_coverage_model(package, metrics, discovery=discovery, scope=scope)
+    coverage = build_coverage_model(package, metrics, discovery=discovery, scope=scope, config=config)
     report = {
         "schema_version": "esx-local-assurance-report-1.2", "status": "completed_locally",
         "package_id": package["package_id"], "runner_version": package["runner_version"],
@@ -1354,9 +1387,11 @@ def verify_audit_command(args: argparse.Namespace) -> int:
 def upload_command(args: argparse.Namespace) -> int:
     package = read_json(args.package)
     required = package.get("evaluation", {}).get("required_dimensions", []) if isinstance(package.get("evaluation"), dict) else []
-    if "hallucination" in required:
+    blocked = [name for name in required if name in NEVER_UPLOAD_DIMENSIONS]
+    if blocked:
+        names = ", ".join(metric_title(name) for name in blocked)
         raise RunnerError(
-            "Hallucination gold labels are local-only and are not uploaded. Create the governed platform evaluation separately when Pro evidence governance is configured."
+            f"{names} evidence is local-only and is not uploaded. Create the governed platform evaluation separately when Pro evidence governance is configured."
         )
     if args.timeout_seconds < 1 or args.timeout_seconds > 300:
         raise RunnerError("upload timeout must be between 1 and 300 seconds")

@@ -18,6 +18,13 @@ confidence, evidence-reference, and abstention checks. A ready-to-import
 synthetic starter dataset is available at
 [`examples/decision-evaluation.sample.json`](examples/decision-evaluation.sample.json).
 
+For planning coverage across a larger application, see the
+[VINI module coverage example](examples/vini-module-coverage.md). It maps a
+tester-supplied 15-module inventory to browser and decision evaluation paths,
+persona requirements, exclusions, and current reporting gaps. VINI is an
+example target application; the plan is not a completed run or a built-in
+product-specific integration.
+
 Use the optional shared workflow only when a team wants ExposureScopeX to retain
 a governed release decision and formal report.
 
@@ -427,7 +434,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.11.2"
+   $version = "0.11.3"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -439,7 +446,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
    On macOS or Linux, the equivalent install command is:
 
    ```bash
-   python3 -m pip install ./exposurescopex_eval_runner-0.11.2-py3-none-any.whl
+   python3 -m pip install ./exposurescopex_eval_runner-0.11.3-py3-none-any.whl
    ```
 
 4. Start a local test copy of the AI application. It needs one endpoint that
