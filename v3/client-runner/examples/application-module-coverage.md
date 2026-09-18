@@ -1,14 +1,14 @@
-# PRE-D Local: VINI module coverage plan
+# PRE-D Local: application module coverage plan
 
 Status: planning artifact, not an executed evaluation or runnable configuration.
 Prepared on 2026-09-18 from the tester's module inventory and the current PRE-D
 source checkout. Capabilities in this checkout may not be in the installed
-release. No VINI environment, source code, credentials, or new run artifacts
+release. No target environment, source code, credentials, or new run artifacts
 were inspected for this plan.
 
-PRE-D is the evaluator. VINI is one application used to test PRE-D. Module
-names below belong in a customer evaluation plan; they are not built-in PRE-D
-categories or assumptions about other applications.
+PRE-D is the evaluator. The application under test is external to PRE-D.
+Module names below belong in a customer evaluation plan; they are not built-in
+PRE-D categories or assumptions about other applications.
 
 ## Inventory and scope
 
@@ -63,8 +63,8 @@ must not create an execution requirement or inflate coverage.
 The current checkout provides authenticated browser sessions, recording,
 reviewed workflow packs, explicit case assertions, isolated persona profiles,
 local decision endpoints/command adapters, and local metric computation.
-These are reusable mechanisms; VINI still supplies its actual routes, expected
-behavior, test data, and callable decision interfaces.
+These are reusable mechanisms; the application under test still supplies its
+actual routes, expected behavior, test data, and callable decision interfaces.
 
 The source also exposes these limits relevant to broader coverage:
 
@@ -84,11 +84,11 @@ Implementation references: [coverage model](../esx_eval_runner/assurance.py),
 
 ## Persona plan
 
-Start with the four enforced VINI roles reported by the tester. Treat the nine
+Start with the four enforced roles reported by the tester. Treat the nine
 design personas as business descriptions until their intended permissions have
 been mapped to actual accounts and independently stated expected behavior.
 
-| Actual VINI role | Proposed test purpose | PRE-D representation today |
+| Actual application role | Proposed test purpose | PRE-D representation today |
 | --- | --- | --- |
 | `read_only` | Check permitted views and expected denial of writes/restricted records | Separate persona and session using role `read_only` |
 | `analyst` | Core queue, investigation, DLP, and hunt workflows | Separate persona and session using role `analyst` |

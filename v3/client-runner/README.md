@@ -19,11 +19,11 @@ synthetic starter dataset is available at
 [`examples/decision-evaluation.sample.json`](examples/decision-evaluation.sample.json).
 
 For planning coverage across a larger application, see the
-[VINI module coverage example](examples/vini-module-coverage.md). It maps a
-tester-supplied 15-module inventory to browser and decision evaluation paths,
-persona requirements, exclusions, and current reporting gaps. VINI is an
-example target application; the plan is not a completed run or a built-in
-product-specific integration.
+[application module coverage example](examples/application-module-coverage.md).
+It maps a tester-supplied 15-module inventory to browser and decision
+evaluation paths, persona requirements, exclusions, and current reporting
+gaps. The plan is not a completed run or a built-in product-specific
+integration.
 
 Use the optional shared workflow only when a team wants ExposureScopeX to retain
 a governed release decision and formal report.

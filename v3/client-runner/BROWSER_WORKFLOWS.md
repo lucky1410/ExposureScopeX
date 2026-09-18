@@ -112,8 +112,8 @@ To reuse a reviewed pack across local plans, export it and apply it to another
 browser plan that has the matching approved personas:
 
 ```text
-esx-eval workflow-pack save --config ./esx-eval.json --name "VINI analyst journeys" --out ./vini-analyst-pack.json
-esx-eval workflow-pack apply --config ./another-plan/esx-eval.json --pack-file ./vini-analyst-pack.json
+esx-eval workflow-pack save --config ./esx-eval.json --name "Analyst journeys" --out ./analyst-journeys-pack.json
+esx-eval workflow-pack apply --config ./another-plan/esx-eval.json --pack-file ./analyst-journeys-pack.json
 ```
 
 Each applied case must still be reviewed for the recipient's paths, expected

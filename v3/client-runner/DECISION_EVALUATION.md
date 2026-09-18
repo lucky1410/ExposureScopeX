@@ -7,7 +7,7 @@ require an ExposureScopeX account or a platform connection.
 ## 1. Start the local setup
 
 ```text
-esx-eval setup --directory ./pred-vini-evaluation
+esx-eval setup --directory ./pred-decision-evaluation
 ```
 
 Choose **Decision evaluation**, enter the loopback endpoint that runs the real
@@ -89,7 +89,7 @@ valid citations, and evidence-integrity metadata.
 ## 4. Run and read the report
 
 ```text
-cd ./pred-vini-evaluation
+cd ./pred-decision-evaluation
 esx-eval run --config ./esx-eval.json --out ./out/evaluation.json
 esx-eval view --report ./out/evaluation.local-report.html
 ```

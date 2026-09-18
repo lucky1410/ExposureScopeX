@@ -48,7 +48,7 @@ class SemanticGroundingTests(unittest.TestCase):
         material = read_grounding_material(FIXTURES / "semantic-grounding-mixed.json", case_ids={"case-1"})
         metric = evaluate_semantic_grounding(
             material, judge_config(), target_command=[sys.executable, "target.py"],
-            subject_id="vini",
+            subject_id="sample-app",
         )
         self.assertEqual(metric["verification_basis"], "independent_local_semantic_judge")
         self.assertEqual(metric["claim_count"], 3)
@@ -67,7 +67,7 @@ class SemanticGroundingTests(unittest.TestCase):
 
     def test_semantic_result_is_verified_and_rendered_without_raw_content(self) -> None:
         material = read_grounding_material(FIXTURES / "semantic-grounding-mixed.json")
-        grounding = evaluate_semantic_grounding(material, judge_config(), subject_id="vini")
+        grounding = evaluate_semantic_grounding(material, judge_config(), subject_id="sample-app")
         package = {
             "evaluation": {
                 "required_dimensions": ["classification", "confidence", "groundedness"],
@@ -79,7 +79,7 @@ class SemanticGroundingTests(unittest.TestCase):
         metrics = calculate_local_metrics(package, semantic_grounding=grounding)
         self.assertEqual(metrics["groundedness"]["trust_status"], "verified")
         page = render_local_report({
-            "subject": {"agent_id": "vini"},
+            "subject": {"agent_id": "sample-app"},
             "evaluation": {"required_dimensions": ["groundedness"]},
             "metrics": metrics,
         })
@@ -134,7 +134,7 @@ class SemanticGroundingTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RunnerError, "omitted extracted claims"):
             evaluate_semantic_grounding(
-                material, judge_config([sys.executable, "-c", incomplete_code]), subject_id="vini",
+                material, judge_config([sys.executable, "-c", incomplete_code]), subject_id="sample-app",
             )
         unknown_code = (
             "import json,sys; r=json.load(sys.stdin); op=r['operation']; "
@@ -144,14 +144,14 @@ class SemanticGroundingTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RunnerError, "unknown source chunks"):
             evaluate_semantic_grounding(
-                material, judge_config([sys.executable, "-c", unknown_code]), subject_id="vini",
+                material, judge_config([sys.executable, "-c", unknown_code]), subject_id="sample-app",
             )
 
     def test_http_grounding_capture_requires_both_response_paths(self) -> None:
         config = {
             "schema_version": "esx-client-runner-config-1.0",
             "evaluation": {
-                "name": "grounding", "agent_id": "vini", "subject_version": "1.0",
+                "name": "grounding", "agent_id": "sample-app", "subject_version": "1.0",
                 "project_key": "demo", "dataset_version": "g-1",
                 "required_dimensions": ["classification", "confidence", "groundedness", "hallucination"],
             },
@@ -183,7 +183,7 @@ class SemanticGroundingTests(unittest.TestCase):
         config = {
             "schema_version": "esx-client-runner-config-1.0",
             "evaluation": {
-                "name": "grounding", "agent_id": "vini", "subject_version": "1.0",
+                "name": "grounding", "agent_id": "sample-app", "subject_version": "1.0",
                 "project_key": "demo", "dataset_version": "g-1",
                 "required_dimensions": ["classification", "confidence", "groundedness"],
             },
@@ -212,7 +212,7 @@ class SemanticGroundingTests(unittest.TestCase):
         config = {
             "schema_version": "esx-client-runner-config-1.0",
             "evaluation": {
-                "name": "grounding", "agent_id": "vini", "subject_version": "1.0",
+                "name": "grounding", "agent_id": "sample-app", "subject_version": "1.0",
                 "project_key": "demo", "dataset_version": "g-1",
                 "required_dimensions": ["classification", "confidence", "groundedness", "hallucination"],
             },

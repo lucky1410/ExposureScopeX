@@ -385,12 +385,12 @@ class LocalRunTests(unittest.TestCase):
                 "adapter_type": "command_json_v2", "case_count": 20,
                 "scored_case_count": 20, "blocked_case_count": 0,
             },
-            "evaluation": {"agent_id": "vini", "required_dimensions": required},
+            "evaluation": {"agent_id": "sample-app", "required_dimensions": required},
         }
         graph = build_assurance_graph(package, metrics)
         coverage = build_coverage_model(package, metrics)
         report = {
-            "subject": {"agent_id": "vini"}, "evaluation": package["evaluation"],
+            "subject": {"agent_id": "sample-app"}, "evaluation": package["evaluation"],
             "execution": package["execution"], "metrics": metrics,
             "metric_trust_summary": summarize_metric_trust(metrics, required),
             "assurance_graph": graph, "coverage": coverage,
@@ -913,7 +913,7 @@ class LocalRunTests(unittest.TestCase):
             config = {
                 "schema_version": "esx-client-runner-config-1.0",
                 "evaluation": {
-                    "name": "Decision target", "agent_id": "vini", "subject_version": "1.0.0",
+                    "name": "Decision target", "agent_id": "sample-app", "subject_version": "1.0.0",
                     "project_key": "demo", "dataset_version": "triage-1.0",
                     "scorecard_type": "decision_evaluation", "decision_task": "investigation-triage",
                     "required_dimensions": ["classification", "confidence"],
@@ -1059,7 +1059,7 @@ class LocalRunTests(unittest.TestCase):
     def test_guided_decision_plan_uses_local_labels_and_metadata_only_evidence(self) -> None:
         with TemporaryDirectory() as directory:
             path, config = create_guided_plan({
-                "directory": str(Path(directory) / "decision"), "agent_id": "vini", "subject_version": "2.1.0",
+                "directory": str(Path(directory) / "decision"), "agent_id": "sample-app", "subject_version": "2.1.0",
                 "project_key": "demo", "url": "http://127.0.0.1:8000/eval", "profile": "custom",
                 "connection_type": "decision", "decision_task": "investigation-triage",
                 "response_label_path": "label", "response_confidence_path": "confidence",
@@ -1080,7 +1080,7 @@ class LocalRunTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             path, config = create_guided_plan({
                 "directory": str(Path(directory) / "decision-grounded"),
-                "agent_id": "vini",
+                "agent_id": "sample-app",
                 "subject_version": "2.1.0",
                 "project_key": "demo",
                 "url": "http://127.0.0.1:8000/eval",
@@ -1114,7 +1114,7 @@ class LocalRunTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             _, config = create_guided_plan({
                 "directory": str(Path(directory) / "decision-grounded"),
-                "agent_id": "vini",
+                "agent_id": "sample-app",
                 "subject_version": "2.1.0",
                 "project_key": "demo",
                 "url": "http://127.0.0.1:8000/eval",
@@ -1160,7 +1160,7 @@ class LocalRunTests(unittest.TestCase):
         config = {
             "schema_version": "esx-client-runner-config-1.0",
             "evaluation": {
-                "name": "VINI decision evaluation", "agent_id": "vini", "subject_version": "2.1.0",
+                "name": "Decision evaluation", "agent_id": "sample-app", "subject_version": "2.1.0",
                 "project_key": "demo", "dataset_version": "triage-1.0",
                 "required_dimensions": ["classification", "confidence"], "scorecard_type": "decision_evaluation",
                 "decision_task": "investigation-triage",
