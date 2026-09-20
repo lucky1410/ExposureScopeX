@@ -1,34 +1,40 @@
-# PRE-D Local 0.14.0
+# PRE-D Local 0.15.0
 
-This release makes gaps in application evaluation more visible and hardens
-coverage reporting, population context, and history comparisons. It builds on
-0.13.0's guided setup and reviewed all-module execution. The existing local AI
-metrics, including semantic groundedness and hallucination, remain available.
+This release expands PRE-D Local from selected AI/browser scorecards into a
+reviewed local system-evaluation workflow. It adds protected reusable profiles,
+whole-system behavior contracts, business-rule planning, source/change
+traceability, role/tenant/code/reliability layers, and local regression context.
+The existing local AI metrics, including classification, confidence,
+decision-evidence, semantic groundedness and hallucination, remain available.
 
 No ExposureScopeX account, hosted database, or Docker service is required. This
 is a controlled acceptance-testing release, not whole-production certification.
 
 ## What changed
 
-- Setup, preflight, and HTML/JSON reports now surface coverage advisories for
-  omitted baseline decision dimensions, missing population context, and weak
-  browser assertions. Advisories do not manufacture scores or alter release gates.
-- Every suite has a metric-dimension inventory, including blocked suites.
-  Gated, required-only, measured-only, unrequested, and unknown-request states
-  remain distinct from verified, declared, or missing measurement evidence.
-- Optional suite population metadata shows executed-pack versus declared
-  labelled-population coverage, including per-class context. Inconsistent counts
-  suppress percentages instead of producing values above 100%. This is descriptive
-  context, not a guarantee of representativeness or unique application records.
-- Repeated `--history` inputs on `release check` and `release run` provide
-  conservative multi-run context. Timestamps are ordered chronologically across
-  timezone offsets; regenerated reports of the same execution do not add another
-  observation. Use `--baseline` for the existing matched-pack regression gate.
-- Module review scope distinguishes evaluated, inspected, blocked, and untouched.
-  Every attached suite and required executable kind needs complete usable evidence
-  for evaluated status. Manual review notes never stand in for PRE-D execution.
-- Guided setup previews the review-scope matrix and generated manifest, including
-  optional inspection notes, before creating the reviewed release folder.
+- Added `esx-eval system bootstrap`, `refresh`, `assist`, `accept`, `setup`,
+  `scope`, `roles`, `bind`, `approve`, `preflight`, `run`, `monitor`, `trend`,
+  `sample`, and `compare` for local system evaluation without an ExposureScopeX
+  account, Docker, or hosted database.
+- Added read-only protected application profiles. PRE-D stores artifacts outside
+  the application repository, fingerprints source before/after execution, stops
+  on observed source changes, and records audit hashes.
+- Added whole-system behavior contracts with reviewed inventory totals,
+  per-module/per-layer/per-role objectives, explicit check bindings and visible
+  coverage gaps. Missing objectives stay in the denominator.
+- Added a bounded local planning agent and business-logic planner. Owner-supplied
+  business rules can draft unreviewed behavior objectives with `business_rule_id`,
+  intended behavior and evidence-needed metadata. The planner cannot call the app,
+  read source bodies, edit code, approve execution, invent labels or score results.
+- Added source/OpenAPI inventory, native HTTP assertions, role and tenant check
+  templates, JUnit command-result ingestion, bounded load probes, approved
+  recovery scenarios, optional local history, rolling-median alerts and baseline
+  comparison reports.
+- Added confidence-provenance handling so native returned-label probability,
+  adapter-mapped categories and unknown confidence are not treated the same.
+- Setup, preflight and HTML/JSON reports surface coverage advisories for omitted
+  baseline dimensions, weak browser assertions, population context, missing
+  bindings, source changes and declared versus verified evidence.
 
 ## Browser evidence and regression fixes
 
@@ -50,7 +56,7 @@ Download the wheel, `SHA256SUMS`, README, and guides from this release. Verify
 checksums as described in the README, then install in the evaluator environment:
 
 ```text
-python -m pip install --upgrade ./exposurescopex_eval_runner-0.14.0-py3-none-any.whl
+python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.0-py3-none-any.whl
 python -c "from esx_eval_runner import __version__; print(__version__)"
 esx-eval setup --application
 ```
@@ -58,6 +64,13 @@ esx-eval setup --application
 Use `py` or `python3` where appropriate. Browser testing additionally requires
 Playwright and Chromium. Existing plans remain supported; upgrading does not
 execute the target application or rewrite previous reports.
+
+For reusable system setup, start with:
+
+```text
+esx-eval system bootstrap --project sample-app --version candidate-1 --repo ../application --out ./application-profile.json
+esx-eval system setup --plan ./application-profile.json
+```
 
 For groundedness and hallucination, use the new acceptance checklist in
 `PRE-D_EVIDENCE_GUIDE.md`: real response/source material, a configured independent
@@ -67,17 +80,21 @@ mean unsupported by the supplied sources, not necessarily false in the real worl
 
 ## Validation and limits
 
-- 302 local regression tests cover runner behavior, including 20 hardening tests
-  for coverage, report reuse, population validation, and historical comparisons.
-- The release workflow reruns the full suite before building and publishing the
-  versioned wheel and documentation with SHA-256 checksums.
+- Local validation for this source passed 84 system tests with 1 Windows symlink
+  skip, compiled all runner modules, built a local wheel, verified that
+  `system_business.py` is packaged, and ran an installed-wheel business-context
+  CLI smoke test.
+- The GitHub release workflow reruns the full suite plus retained system and
+  whole-system acceptance scripts before building and publishing the versioned
+  wheel and documentation with SHA-256 checksums.
 - Deterministic fixtures do not establish real-model judge accuracy. Independent
   semantic-judge validation and representative application acceptance remain needed.
-- History is manually supplied and descriptive. Automatic scheduling, rolling
-  drift alerts, and advanced semantic/telemetry history comparisons are not added.
-- Integrated arbitrary code-test execution, comprehensive adversarial role/tenant
-  testing, chaos/load/recovery testing, and automatic source-level diagnosis remain
-  outside this release. Not all proposed evaluation layers are complete.
+- `system monitor` is a foreground opt-in loop, not an installed scheduler or
+  background service. Alerts are local files and exit codes, not outbound
+  notifications.
+- Protected profiles block unrestricted command/recovery execution unless a
+  separately isolated environment is approved. Built-in HTTP/browser checks can
+  still affect application data if the target endpoint has side effects.
 - Inventory, population metadata, and manual review notes are reviewer declarations.
   PRE-D cannot infer every business module, generate every test oracle, or prove
   whole-application correctness from a sampled pack.

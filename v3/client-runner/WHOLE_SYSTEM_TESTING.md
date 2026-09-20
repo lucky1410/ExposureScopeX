@@ -1,7 +1,7 @@
 # Whole-System Testing Contract
 
-Unpublished source additions after 0.14.0. No platform account or Docker is
-required by PRE-D. The application itself may have its own dependencies.
+Available in PRE-D Local 0.15.0. No platform account or Docker is required by
+PRE-D. The application itself may have its own dependencies.
 
 PRE-D coordinates its existing AI/browser, HTTP, code, security, load, recovery
 and history engines. The new contract prevents an attached module, suite-level
@@ -15,7 +15,7 @@ test identities, tenant fixtures, a reset procedure and owner-approved budgets.
 Keep credentials and raw customer data on the tester's machine. Approval flags
 record permission; they do not isolate your application.
 
-Install this source version, then:
+Install the published wheel or this source version, then:
 
 ```text
 esx-eval system discover --project my-app --version candidate --repo ../my-app --openapi ./openapi.json --base-url http://127.0.0.1:8000 --out ./system-plan.json

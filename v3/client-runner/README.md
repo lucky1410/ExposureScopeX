@@ -1,6 +1,6 @@
 # ExposureScopeX Local AI Evaluation Runner
 
-**PRE-D Local 0.14.0: coverage advisories, reviewed module scope, historical context, and local AI evaluation.**
+**PRE-D Local 0.15.0: coverage advisories, reviewed module scope, historical context, and local AI evaluation.**
 
 `esx-eval` is a **local-first pre-release evaluator** for a model, RAG
 application, agent, or multi-agent system. It runs next to the AI system being
@@ -14,7 +14,7 @@ code, traces, environment variables, stderr, credentials, or results.
 | --- | --- |
 | Install or upgrade the standalone runner | [Local-only quick start](#local-only-quick-start) |
 | Reuse setup, protect application source, review local agent suggestions and trace changes | [Reusable local onboarding](LOCAL_ONBOARDING.md) |
-| Try the unpublished system inventory/execution, code/security/reliability and scheduled regression additions | [System evaluation guide](SYSTEM_EVALUATION.md) |
+| Try system inventory/execution, code/security/reliability checks and scheduled regression context | [System evaluation guide](SYSTEM_EVALUATION.md) |
 | Verify the six local stages with seeded defects and retained evidence | [System acceptance matrix](SYSTEM_ACCEPTANCE.md) |
 | Require behavior coverage, reconcile inventory and verify the running candidate | [Whole-system testing contract](WHOLE_SYSTEM_TESTING.md) |
 | Score application decisions, labels, and confidence | [Decision evaluation](DECISION_EVALUATION.md) |
@@ -24,7 +24,7 @@ code, traces, environment variables, stderr, credentials, or results.
 | Review required modules and decide what blocks a release | [Application release review](RELEASE_REVIEW.md) |
 | Compare two versions without hiding coverage changes | [Baseline comparison](RELEASE_REVIEW.md#compare-a-candidate-against-a-baseline) |
 | Connect groundedness, hallucination, or other metric evidence | [Evidence guide](PRE-D_EVIDENCE_GUIDE.md) |
-| See what changed and what remains unsupported | [0.14.0 release notes](RELEASE_NOTES.md) |
+| See what changed and what remains unsupported | [0.15.0 release notes](RELEASE_NOTES.md) |
 
 Python 3.11+ is required. Browser testing additionally needs Playwright and its
 Chromium runtime; semantic evaluation needs the configured independent local
@@ -32,20 +32,19 @@ judge. Installing packages may require network access. Local evaluation is not
 automatically offline: the application or its configured providers can still
 make external requests.
 
-## Working Tree: System Evaluation
+## System Evaluation
 
-The latest source additions provide profile bootstrap/refresh, bounded planning
+PRE-D Local 0.15.0 provides profile bootstrap/refresh, bounded planning
 assistance, suggestion review and baseline comparisons. Protected profiles keep
 PRE-D artifacts outside application source and stop when observed source
 changes invalidate a run. Optional local models draft behavior objectives
 under a bounded tool interface. See [setup, limits and reuse](LOCAL_ONBOARDING.md).
 
-The source tree now includes an unpublished `esx-eval system` workflow: bounded
+The release includes the `esx-eval system` workflow: bounded
 repository/OpenAPI discovery, guided review, native HTTP/role/tenant checks,
 existing AI/browser plan execution, JUnit test commands, bounded load/recovery,
 stratified labelled sampling, and opt-in local history with rolling alerts.
-The published 0.14.0 wheel does not include these additions. Install this source
-checkout to test them; see [the complete guide](SYSTEM_EVALUATION.md).
+See [the complete guide](SYSTEM_EVALUATION.md).
 
 The `decision_evidence` adapter crash is fixed. Classification no longer
 requires confidence, and semantic/evidence-only runs do not require unrelated
@@ -54,7 +53,7 @@ The guided decision setup permits an empty confidence mapping rather than
 inventing values. Tests and external application acceptance remain separate:
 implemented evaluation layers are not proof that every app module was tested.
 
-The unpublished release-path fixes also allow explicit decision gates without
+The release-path fixes also allow explicit decision gates without
 mandatory classification or confidence. Guided setup and new attached plans
 select baseline gates only for requested dimensions. Existing explicit policies
 are never silently weakened. Confidence now records native, adapter-mapped or
@@ -68,7 +67,7 @@ behavior evidence cannot be hidden behind a suite-level pass. Start with
 `--require-whole-system`. See [the testing guide](WHOLE_SYSTEM_TESTING.md) for
 the ten-module reference acceptance and real-application prerequisites.
 
-## What is new in 0.14.0
+## What is new in 0.15.0
 
 - Application setup previews review scope and the generated manifest, including
   optional manual inspection notes. Notes cannot substitute for executed tests.
@@ -133,7 +132,7 @@ Automated fixtures validate runner behavior, not the accuracy of your chosen jud
 
 ## Application release quick start
 
-**Available since 0.13.0, with coverage guidance expanded in 0.14.0.**
+**Available since 0.13.0, with coverage guidance expanded in 0.15.0.**
 Run `esx-eval setup --application` for the local multi-module setup page. Reuse
 real browser/decision plans, review scenario and persona objectives, and bind
 them to actual case IDs without hand-editing a release manifest. See the
@@ -152,7 +151,7 @@ Use `release attach` to
 bind approved plans without hand-editing the manifest, `release preflight` to
 check the entire inventory without target calls, and `release run` to execute
 all declared modules. Missing plans, exclusions, report reuse, and unapproved
-execution block this mode before any suite starts. Upgrade to 0.14.0 to use
+execution block this mode before any suite starts. Upgrade to 0.15.0 to use
 these commands. See the
 [all-module guide](RELEASE_REVIEW.md#execute-the-entire-declared-inventory).
 
@@ -262,7 +261,7 @@ esx-eval release check --help
 ```
 
 Use `py` on Windows or `python3` on macOS/Linux if that is the interpreter for
-your evaluation environment. The version should be `0.14.0`. If the import
+your evaluation environment. The version should be `0.15.0`. If the import
 shows the new version but `esx-eval setup --help` has no `--application` option, the executable on
 PATH belongs to another environment; use the matching environment's executable.
 
@@ -724,7 +723,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.14.0"
+   $version = "0.15.0"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -738,7 +737,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 
    ```bash
    shasum -a 256 -c SHA256SUMS
-   python3 -m pip install --upgrade ./exposurescopex_eval_runner-0.14.0-py3-none-any.whl
+   python3 -m pip install --upgrade ./exposurescopex_eval_runner-0.15.0-py3-none-any.whl
    python3 -c "from esx_eval_runner import __version__; print(__version__)"
    ```
 

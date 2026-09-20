@@ -1,7 +1,7 @@
 # Reusable Local Setup and Change Review
 
-Working-tree feature after 0.14.0. Install this checkout to test it; it is not
-part of the published 0.14.0 wheel.
+Available in PRE-D Local 0.15.0. Install the published wheel or this checkout
+to test protected reusable profiles, bounded local planning and change review.
 
 PRE-D keeps a local application profile containing discovered components,
 reviewed checks, role references and behavior objectives. On the next build,

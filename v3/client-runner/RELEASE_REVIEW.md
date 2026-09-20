@@ -15,7 +15,7 @@ or new runtime dependency is required.
 ## Execute the entire declared inventory
 
 The `scope`, `bind`, `attach`, `preflight`, and `run` commands below require
-PRE-D Local 0.14.0 or later for all coverage and history features below. The existing `release check` workflow
+PRE-D Local 0.15.0 or later for all coverage and history features below. The existing `release check` workflow
 remains supported for explicitly partial runs and report review.
 
 PRE-D can run all modules using their approved browser and decision plans in

@@ -1,6 +1,6 @@
-# System Evaluation Working-Tree Changes
+# PRE-D Local 0.15.0 Release Working Notes
 
-Not published. The package version remains 0.14.0 until a release is requested.
+Published scope for the 0.15.0 release.
 
 - Added reusable protected application profiles, conservative discovery refresh,
   retained check/evidence bindings and explicit source/contract change review.

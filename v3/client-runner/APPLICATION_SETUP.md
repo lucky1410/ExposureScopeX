@@ -1,6 +1,6 @@
 # PRE-D guided application evaluation
 
-This guide requires **PRE-D Local 0.14.0 or later** for all coverage previews below. Verify the installed version
+This guide requires **PRE-D Local 0.15.0 or later** for all coverage previews below. Verify the installed version
 with `python -c "from esx_eval_runner import __version__; print(__version__)"`.
 
 ## One local starting point

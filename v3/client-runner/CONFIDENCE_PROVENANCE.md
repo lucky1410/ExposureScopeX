@@ -1,6 +1,6 @@
 # Confidence Provenance and Independent Decision Metrics
 
-These working-tree changes are unpublished. Installing the published 0.14.0
+These working-tree changes are unpublished. Installing the published 0.15.0
 wheel does not install them.
 
 ## Choose the Measurement, Not a Mandatory Bundle
