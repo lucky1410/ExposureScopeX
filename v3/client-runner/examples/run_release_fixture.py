@@ -37,7 +37,9 @@ def fixture(out_dir: Path, *, compare: bool = False) -> int:
             "schema_version": "esx-client-runner-config-1.0",
             "evaluation": {"name": f"Synthetic {name} fixture", "agent_id": name,
                            "project_key": "synthetic-release-demo", "subject_version": "fixture-1",
-                           "dataset_version": "synthetic-20", "required_dimensions": ["classification", "confidence"]},
+                           "dataset_version": "synthetic-20", "required_dimensions": ["classification", "confidence"],
+                           # Simulates a native probability contract, not real model evidence.
+                           "confidence_provenance": {"kind": "native_probability", "meaning": "predicted_label_correctness"}},
             "dataset": {"version": "synthetic-20", "cases": [
                 {"case_id": f"synthetic-{index:03}", "input": {"flagged": bool(index % 2), "example_index": index},
                  "expected_label": "review" if index % 2 else "allow"} for index in range(20)

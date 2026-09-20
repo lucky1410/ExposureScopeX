@@ -32,11 +32,23 @@ jobs:
           test "$expected_version" = "$package_version"
           python -m pip install .
           python -m unittest discover -s tests -v
+          python tests/run_system_acceptance.py --out acceptance-evidence --real-schedule
+          python tests/run_whole_system_acceptance.py --out whole-system-evidence
           python -m compileall -q esx_eval_runner
           python -m build --wheel --outdir dist
-          cp README.md APPLICATION_SETUP.md RELEASE_REVIEW.md RELEASE_NOTES.md PRE-D_EVIDENCE_GUIDE.md DECISION_EVALUATION.md BROWSER_WORKFLOWS.md ADAPTER_V2.md CONNECTORS.md SECURITY.md dist/
+          cp README.md APPLICATION_SETUP.md RELEASE_REVIEW.md RELEASE_NOTES.md PRE-D_EVIDENCE_GUIDE.md DECISION_EVALUATION.md CONFIDENCE_PROVENANCE.md WHOLE_SYSTEM_TESTING.md BROWSER_WORKFLOWS.md ADAPTER_V2.md CONNECTORS.md SECURITY.md SYSTEM_EVALUATION.md SYSTEM_ACCEPTANCE.md dist/
           cd dist
           sha256sum *.whl *.md > SHA256SUMS
+
+      - name: Retain six-stage acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-runner-acceptance
+          path: |
+            v3/client-runner/acceptance-evidence/
+            v3/client-runner/whole-system-evidence/
+          if-no-files-found: ignore
 
       - name: Attest build provenance
         if: ${{ vars.ESX_ENABLE_GITHUB_ATTESTATIONS == 'true' }}

@@ -164,6 +164,7 @@ class LocalRunTests(unittest.TestCase):
                 "expected_labels": ["safe", "unsafe"],
                 "predicted_labels": ["safe", "safe"],
                 "confidences": [1.0, 1.0],
+                "confidence_provenance": {"kind": "native_probability", "meaning": "predicted_label_correctness"},
                 "decision_observations": [],
                 "claims": [{
                     "claim_id": "claim-a", "evidence_ids": ["evidence-a"],
@@ -217,7 +218,7 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("DATASET HEALTH", page)
         self.assertIn("DECISION DETAILS", page)
         self.assertIn("Confusion matrix", page)
-        self.assertIn("Confidence calibration bins", page)
+        self.assertIn("Confidence diagnostics by numeric range", page)
 
     def test_opaque_gold_supports_controls_but_not_semantic_groundedness(self) -> None:
         fixture = read_json(METRIC_FIXTURES / "groundedness-good.json")
@@ -372,6 +373,8 @@ class LocalRunTests(unittest.TestCase):
             "confidence": {
                 "measurement_status": "measured", "trust_status": "verified",
                 "expected_calibration_error": 0.502,
+                "confidence_provenance": {"kind": "native_probability", "meaning": "predicted_label_correctness"},
+                "calibration_eligible": True,
             },
             "groundedness": {"measurement_status": "measured", "trust_status": "declared"},
             "trajectory": {"measurement_status": "measured", "trust_status": "declared"},
@@ -1987,8 +1990,9 @@ class LocalRunTests(unittest.TestCase):
             report = read_json(output_path.with_name("evaluation.local-report.json"))
             self.assertEqual(report["schema_version"], "esx-local-evaluation-report-1.2")
             self.assertEqual(report["metrics"]["security"]["detection_rate"], 1.0)
-            self.assertEqual(report["metric_trust_summary"]["verified"], 2)
-            self.assertEqual(report["metric_trust_summary"]["declared"], 9)
+            self.assertEqual(report["metric_trust_summary"]["verified"], 1)
+            self.assertEqual(report["metric_trust_summary"]["declared"], 10)
+            self.assertFalse(report["metrics"]["confidence"]["calibration_eligible"])
             readiness = {item["metric"]: item for item in report["measurement_readiness"]}
             self.assertEqual(readiness["rag"]["status"], "measured")
             self.assertIn("Retrieved IDs", readiness["rag"]["application_emits"])

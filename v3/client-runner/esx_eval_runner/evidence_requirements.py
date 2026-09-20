@@ -30,10 +30,10 @@ METRIC_REQUIREMENTS: dict[str, dict[str, str]] = {
     },
     "confidence": {
         "title": "Confidence calibration",
-        "user_supplies": "The same labelled cases used for classification.",
+        "user_supplies": "Labelled cases plus evaluation.confidence_provenance identifying the numeric source and its meaning. Confidence is optional for classification.",
         "application_emits": "A genuine numeric confidence from 0 to 1 for every decision, not a browser pass/fail value.",
         "minimum": "At least two expected classes. PRE-D can calculate a small local set, but use 20 or more cases and varied confidence values before interpreting calibration as release-quality evidence.",
-        "source": "Local decision endpoint or adapter response metadata.",
+        "source": "Returned numeric values plus an evaluator-reviewed native_probability declaration with meaning=predicted_label_correctness. Adapter-mapped or unknown values yield diagnostics, not native calibration evidence.",
     },
     "decision_evidence": {
         "title": "Decision evidence alignment and abstention",
@@ -296,8 +296,15 @@ def inspect_evidence_preflight(
                 entries.append(_metric_entry(metric, "not_applicable", ["A browser plan observes workflow signals, not model labels or genuine confidence."], source="browser", case_coverage="0/%d decision cases" % len(cases)))
             elif len(labels) < 2:
                 entries.append(_metric_entry(metric, "evidence_incomplete", ["Add labelled cases with at least two distinct expected_label values."], source="local decision adapter or endpoint", case_coverage=f"{len(cases)} cases / {len(labels)} expected classes"))
+            elif metric == "confidence":
+                from .confidence import calibration_eligible
+                native = calibration_eligible({"confidence_provenance": evaluation.get("confidence_provenance")})
+                entries.append(_metric_entry(metric, "ready_to_collect" if native else "evidence_incomplete", [
+                    "Collect native probabilities of the returned label being correct; the configured origin is an evaluator declaration, not independent inspection."
+                    if native else "Numeric diagnostics can run, but native calibration is not established. Review confidence_provenance; do not invent probabilities from categories."
+                ], source="local decision adapter or endpoint", case_coverage=f"{len(cases)} cases / {len(labels)} expected classes"))
             else:
-                entries.append(_metric_entry(metric, "ready_to_collect", ["Run the decision adapter or endpoint so it returns one label and genuine 0-1 confidence for every case."], source="local decision adapter or endpoint", case_coverage=f"{len(cases)} cases / {len(labels)} expected classes"))
+                entries.append(_metric_entry(metric, "ready_to_collect", ["Return one label for every labelled case. Confidence is not required for classification."], source="local decision adapter or endpoint", case_coverage=f"{len(cases)} cases / {len(labels)} expected classes"))
             continue
         if metric == "decision_evidence":
             evidence_cases = [case for case in cases if "expected_evidence_ids" in case]

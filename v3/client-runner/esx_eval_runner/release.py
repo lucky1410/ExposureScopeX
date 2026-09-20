@@ -18,6 +18,7 @@ from .release_coverage import coverage_totals, evaluate_requirements, validate_r
 from .release_observations import decision_observation, policy_disclosure
 from .runner import RunnerError, sha256
 from .workflow_signals import read_signal_summary, workflow_signal_advisories
+from .confidence import calibration_eligible
 
 
 MANIFEST_SCHEMA = "pre-d-release-manifest-1.0"
@@ -74,7 +75,7 @@ RECOMMENDATIONS = {
 }
 
 
-def default_gates(kind: str) -> list[dict[str, Any]]:
+def default_gates(kind: str, dimensions: list[str] | None = None) -> list[dict[str, Any]]:
     fields = (
         [("workflow_coverage.workflow_execution_rate", "gte", 1.0),
          ("workflow_coverage.workflow_signal_match_rate", "gte", 1.0)]
@@ -83,7 +84,8 @@ def default_gates(kind: str) -> list[dict[str, Any]]:
          ("classification.macro_f1", "gte", 0.9),
          ("confidence.expected_calibration_error", "lte", 0.15)]
     )
-    return [{"signal": signal, "operator": op, "threshold": value, "severity": "blocker"} for signal, op, value in fields]
+    return [{"signal": signal, "operator": op, "threshold": value, "severity": "blocker"}
+            for signal, op, value in fields if dimensions is None or signal.split(".")[0] in dimensions]
 
 
 def _text(value: object, label: str) -> str:
@@ -498,9 +500,11 @@ def validate_manifest(raw: dict[str, Any]) -> dict[str, Any]:
                 if not _number(threshold) or threshold < 0 or (not unbounded and threshold > 1):
                     raise RunnerError(f"Suite {suite_id}: gate threshold must be a finite {'non-negative value' if unbounded else 'value from 0 to 1'}")
                 checked.append({"signal": signal, "operator": op, "threshold": threshold, "severity": severity})
-            baseline = {"classification", "confidence"} if kind == "decision" else {"workflow_coverage"}
+            baseline = set() if kind == "decision" else {"workflow_coverage"}
             if not baseline <= {gate["signal"].split(".")[0] for gate in checked}:
                 raise RunnerError(f"Suite {suite_id}: gates must cover {', '.join(sorted(baseline))}")
+            if kind == "decision" and any(gate["signal"].startswith("workflow_coverage.") for gate in checked):
+                raise RunnerError(f"Suite {suite_id}: decision gates cannot substitute workflow coverage for decision evidence")
             if kind == "workflow" and not {"workflow_coverage.workflow_execution_rate", "workflow_coverage.workflow_signal_match_rate"} <= seen:
                 raise RunnerError(f"Suite {suite_id}: workflow gates must check both execution and signal matching")
             execution_policy = suite.get("execution_policy")
@@ -761,7 +765,7 @@ def build_release_report(
                 if (not isinstance(health, dict) or health.get("sample_size") != scored
                         or health.get("unique_case_id_count") != scored):
                     add("dataset_health_missing", "Dataset health is absent or inconsistent with the executed decisions.",
-                        "Regenerate the report with the original labelled pack so sample size and distinct case IDs can be checked.",
+                        "Regenerate the report with the original pack so sample size and distinct case IDs can be checked, including tasks without classification labels.",
                         module=module, suite=suite, pointer="evaluation.dataset_health", category="evaluation_quality")
                 else:
                     duplicates = health.get("duplicate_input_count")
@@ -796,11 +800,14 @@ def build_release_report(
                 trust = metric.get("trust_status", "missing")
                 meaningful = _number(observed) and observed >= 0 and (dimension == "cost_efficiency" and field != "timeout_rate" or observed <= 1)
                 usable = metric.get("measurement_status") == "measured" and trust == "verified" and metric.get("representativeness") != "non_representative" and meaningful
+                if dimension == "confidence" and not calibration_eligible(metric):
+                    usable = False
                 entry = {**gate, "observed": observed if meaningful else None, "trust": trust, "status": "missing"}
                 gates.append(entry)
                 category, action = RECOMMENDATIONS[dimension]
                 if not usable:
-                    why = ("Target-declared evidence cannot satisfy this release check." if trust == "declared" else
+                    why = ("Native probability semantics are not established; mapped or unspecified confidence cannot satisfy a calibration gate." if dimension == "confidence" and not calibration_eligible(metric) else
+                           "Target-declared evidence cannot satisfy this release check." if trust == "declared" else
                            "This release check has no complete, representative, locally verified numeric evidence.")
                     add("metric_evidence_gap", f"{gate['signal']}: {why}",
                         "Inspect this metric's evidence requirements in the individual report and collect the missing independent observations.",
@@ -832,10 +839,10 @@ def build_release_report(
                         action, module=module, suite=suite, severity=gate["severity"], category=category,
                         pointer=f"metrics.{dimension}.{field}", cases=list(dict.fromkeys(cases)))
             conf = metrics.get("confidence", {})
-            if isinstance(conf, dict) and conf.get("measurement_status") == "measured":
-                if scored < 20:
-                    add("small_decision_pack", "Fewer than 20 decisions were evaluated; this is a small local pack even though the configured minimum may be met.",
-                        "Use a larger representative held-out pack and inspect class balance before accepting the recommendation.", module=module, suite=suite, severity="warning", category="evaluation_quality")
+            if suite["kind"] == "decision" and 0 < scored < 20:
+                add("small_decision_pack", "Fewer than 20 cases were evaluated; this is a small local pack even though the configured minimum may be met.",
+                    "Use a larger representative held-out pack before generalizing the recommendation.", module=module, suite=suite, severity="warning", category="evaluation_quality")
+            if isinstance(conf, dict) and conf.get("measurement_status") == "measured" and calibration_eligible(conf):
                 if conf.get("confidence_diversity_warning") is True:
                     add("confidence_diversity", f"Only {conf.get('unique_confidence_count', 'few')} distinct confidence values were observed.",
                         RECOMMENDATIONS["confidence"][1], module=module, suite=suite, severity="warning", category="confidence_calibration", pointer="metrics.confidence")

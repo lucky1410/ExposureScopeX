@@ -29,6 +29,7 @@ from .workflow_signals import workflow_signal_strength
 from .local_metrics import METRIC_CALCULATION_VERSION
 from .metric_registry import (
     DECISION_BASELINE_DIMENSIONS as BASE_DIMENSIONS,
+    DECISION_SUPPORT_DIMENSIONS,
     SUPPORTED_DIMENSIONS,
     WORKFLOW_DIMENSIONS,
 )
@@ -156,6 +157,10 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
     cases = dataset.get("cases")
     if not isinstance(cases, list) or not cases or len(cases) > 10_000:
         raise RunnerError("dataset.cases must contain between 1 and 10,000 cases")
+    requested = evaluation.get("required_dimensions", ["classification", "confidence"])
+    needs_labels = adapter_type == "browser_journey" or (
+        isinstance(requested, list) and bool(BASE_DIMENSIONS.intersection(str(x) for x in requested))
+    )
     case_ids: set[str] = set()
     for item in cases:
         if not isinstance(item, dict) or not isinstance(item.get("case_id"), str) or not item["case_id"]:
@@ -164,9 +169,12 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
             raise RunnerError("dataset case_id values must be unique")
         case_ids.add(item["case_id"])
         _safe_reference(item["case_id"], "dataset case_id")
-        if not isinstance(item.get("input"), dict) or not isinstance(item.get("expected_label"), str) or not item["expected_label"]:
-            raise RunnerError("Every dataset case needs object input and expected_label")
-        _safe_reference(item["expected_label"], "dataset expected_label")
+        if not isinstance(item.get("input"), dict):
+            raise RunnerError("Every dataset case needs object input")
+        if needs_labels or "expected_label" in item:
+            if not isinstance(item.get("expected_label"), str) or not item["expected_label"]:
+                raise RunnerError("Label-based evaluations require expected_label for every case")
+            _safe_reference(item["expected_label"], "dataset expected_label")
         if "task" in item:
             _safe_reference(item["task"], "dataset task")
         if "expected_evidence_ids" in item:
@@ -186,6 +194,11 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
         isinstance(value, str) for value in required_dimensions
     ):
         raise RunnerError("evaluation.required_dimensions must be a non-empty string array")
+    from .confidence import confidence_provenance
+    try:
+        confidence_provenance(evaluation.get("confidence_provenance"))
+    except ValueError as exc:
+        raise RunnerError(str(exc)) from exc
     dimensions = set(required_dimensions)
     if len(dimensions) != len(required_dimensions):
         raise RunnerError("evaluation.required_dimensions must contain unique values")
@@ -195,14 +208,17 @@ def _validate_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
         # normalize them to workflow coverage in the local result package.
         if "workflow_coverage" not in dimensions and not BASE_DIMENSIONS.issubset(dimensions):
             raise RunnerError("browser_journey evaluations must include workflow_coverage (or both legacy classification and confidence dimensions)")
-    elif not BASE_DIMENSIONS.issubset(dimensions):
-        raise RunnerError("evaluation.required_dimensions must include unique classification and confidence values")
+    elif adapter_type == "http_json_target":
+        if dimensions & BASE_DIMENSIONS and not adapter.get("response_label_path"):
+            raise RunnerError("Label-based evaluation requires response_label_path")
+        if "confidence" in dimensions and not adapter.get("response_confidence_path"):
+            raise RunnerError("Confidence evaluation requires response_confidence_path")
     unsupported = sorted(dimensions - SUPPORTED_DIMENSIONS)
     if unsupported:
         raise RunnerError("Unsupported evaluation dimensions: " + ", ".join(unsupported))
     telemetry = config.get("telemetry")
     telemetry_enabled = isinstance(telemetry, dict) and telemetry.get("enabled") is True
-    advanced_dimensions = dimensions - BASE_DIMENSIONS - WORKFLOW_DIMENSIONS
+    advanced_dimensions = dimensions - BASE_DIMENSIONS - WORKFLOW_DIMENSIONS - DECISION_SUPPORT_DIMENSIONS
     if (
         adapter_type == "http_json_target"
         and adapter.get("response_text_path")
@@ -236,7 +252,7 @@ def _validate_http_target(adapter: dict[str, Any]) -> None:
         raise RunnerError("http_json_target.request_mode must be message, input, or decision")
     for name in ("response_label_path", "response_confidence_path"):
         value = adapter.get(name)
-        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", value):
+        if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", value)):
             raise RunnerError(f"http_json_target.{name} must be a dotted JSON object path")
     for name in (
         "response_evidence_ids_path", "response_abstained_path",
@@ -553,9 +569,10 @@ def _invoke_http_json_target(
             payload = json.loads(response_bytes.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RunnerError("HTTP target did not return a JSON object") from exc
-        label = _read_json_path(payload, adapter["response_label_path"])
-        confidence = _read_json_path(payload, adapter["response_confidence_path"])
-        result: dict[str, Any] = {"case_id": case["case_id"], "predicted_label": label, "confidence": confidence}
+        result: dict[str, Any] = {"case_id": case["case_id"]}
+        for mapping, field in (("response_label_path", "predicted_label"), ("response_confidence_path", "confidence")):
+            if adapter.get(mapping):
+                result[field] = _read_json_path(payload, adapter[mapping])
         evidence_path = adapter.get("response_evidence_ids_path")
         if evidence_path:
             result["evidence_ids"] = _safe_references(
@@ -588,6 +605,7 @@ def _invoke_http_json_target(
 
 def _normalise_results(
     cases: list[dict[str, Any]], response: dict[str, Any], *, require_confidence: bool = True,
+    require_labels: bool = True,
 ) -> tuple[list[str], list[float]]:
     results = response.get("results")
     if not isinstance(results, list) or len(results) != len(cases):
@@ -598,11 +616,12 @@ def _normalise_results(
             raise RunnerError("Every adapter result needs case_id and predicted_label")
         if item["case_id"] in by_case:
             raise RunnerError("Local adapter returned duplicate case_id values")
-        if not isinstance(item.get("predicted_label"), str) or not item["predicted_label"]:
-            raise RunnerError("Every adapter result needs a non-empty predicted_label")
-        _safe_reference(item["predicted_label"], "adapter predicted_label")
+        if require_labels or "predicted_label" in item:
+            if not isinstance(item.get("predicted_label"), str) or not item["predicted_label"]:
+                raise RunnerError("Every labelled adapter result needs a non-empty predicted_label")
+            _safe_reference(item["predicted_label"], "adapter predicted_label")
         confidence = item.get("confidence")
-        if require_confidence and (
+        if (require_confidence or "confidence" in item) and (
             not isinstance(confidence, (int, float)) or isinstance(confidence, bool)
             or not math.isfinite(float(confidence)) or confidence < 0 or confidence > 1
         ):
@@ -611,8 +630,12 @@ def _normalise_results(
     expected_ids = {item["case_id"] for item in cases}
     if set(by_case) != expected_ids:
         raise RunnerError("Local adapter result case_id values do not match the submitted dataset")
-    labels = [by_case[item["case_id"]]["predicted_label"] for item in cases]
-    confidences = [float(by_case[item["case_id"]]["confidence"]) for item in cases] if require_confidence else []
+    labels = [by_case[item["case_id"]]["predicted_label"] for item in cases] if all(
+        "predicted_label" in by_case[item["case_id"]] and "expected_label" in item for item in cases
+    ) else []
+    confidences = [float(by_case[item["case_id"]]["confidence"]) for item in cases] if all(
+        "confidence" in by_case[item["case_id"]] for item in cases
+    ) else []
     return labels, confidences
 
 
@@ -1075,7 +1098,7 @@ def _normalise_measurements(
         },
     }
     output: dict[str, Any] = {}
-    for dimension in set(required_dimensions) - BASE_DIMENSIONS - WORKFLOW_DIMENSIONS:
+    for dimension in set(required_dimensions) - BASE_DIMENSIONS - WORKFLOW_DIMENSIONS - DECISION_SUPPORT_DIMENSIONS:
         field = field_by_dimension[dimension]
         if field not in raw:
             if dimension in {"groundedness", "hallucination"} and "grounding_material" in response:
@@ -1157,26 +1180,29 @@ def _dataset_health(cases: list[dict[str, Any]]) -> dict[str, Any]:
     labels: dict[str, int] = {}
     fingerprints: list[str] = []
     for case in cases:
-        label = str(case["expected_label"])
-        labels[label] = labels.get(label, 0) + 1
+        if "expected_label" in case:
+            label = str(case["expected_label"])
+            labels[label] = labels.get(label, 0) + 1
         fingerprints.append(sha256(case["input"]))
     sample_size = len(cases)
+    labelled_count = sum(labels.values())
     duplicate_input_count = sample_size - len(set(fingerprints))
-    majority_rate = max(labels.values()) / sample_size if sample_size else 0.0
+    majority_rate = max(labels.values()) / labelled_count if labelled_count else None
     warnings: list[str] = []
     if sample_size < 20:
-        warnings.append("Fewer than 20 labelled cases; treat aggregate metrics as an early local signal, not a stable release estimate.")
-    if len(labels) < 2:
+        warnings.append("Fewer than 20 cases; treat aggregate metrics as an early local signal, not a stable release estimate.")
+    if len(labels) == 1:
         warnings.append("Only one expected class is represented; classification and calibration quality cannot be validated.")
-    if majority_rate > 0.8:
+    if majority_rate is not None and majority_rate > 0.8:
         warnings.append("More than 80% of cases share one expected class; macro metrics and per-class results require careful review.")
     if duplicate_input_count:
         warnings.append(f"{duplicate_input_count} case input(s) duplicate another case and may inflate apparent coverage.")
     return {
         "sample_size": sample_size,
+        "labelled_case_count": labelled_count,
         "class_count": len(labels),
         "class_distribution": labels,
-        "majority_class_rate": round(majority_rate, 6),
+        "majority_class_rate": round(majority_rate, 6) if majority_rate is not None else None,
         "duplicate_input_count": duplicate_input_count,
         "unique_case_id_count": len({str(case["case_id"]) for case in cases}),
         "warnings": warnings,
@@ -1189,6 +1215,8 @@ def build_package(
 ) -> dict[str, Any]:
     evaluation, cases, adapter = _validate_config(config)
     evaluation = dict(evaluation)
+    from .confidence import confidence_provenance
+    confidence_origin = confidence_provenance(evaluation.get("confidence_provenance"))
     if adapter["type"] == "browser_journey":
         # Browser outcomes are declared workflow assertions. Replace the old
         # classification/confidence baseline with the truthful coverage metric.
@@ -1219,8 +1247,16 @@ def build_package(
         if local_artifacts is not None:
             local_artifacts["grounding_material"] = material
     predicted_labels, confidences = _normalise_results(
-        scored_cases, scored_response, require_confidence=adapter["type"] != "browser_journey",
+        scored_cases, scored_response,
+        require_confidence="confidence" in evaluation.get("required_dimensions", BASE_DIMENSIONS),
+        require_labels=adapter["type"] == "browser_journey" or bool(
+            BASE_DIMENSIONS & set(evaluation.get("required_dimensions", BASE_DIMENSIONS))
+        ),
     )
+    if confidence_origin["kind"] == "adapter_mapped" and any(
+        value not in confidence_origin["mapping"].values() for value in confidences
+    ):
+        raise RunnerError("Returned confidence does not match the reviewed adapter mapping")
     decision_observations = (
         _decision_observations(scored_cases, scored_response)
         if adapter["type"] != "browser_journey" else []
@@ -1276,6 +1312,7 @@ def build_package(
                 "metric_calculation_version": METRIC_CALCULATION_VERSION,
                 "adapter_type": adapter["type"],
                 "decision_task": evaluation.get("decision_task"),
+                "confidence_provenance": confidence_origin,
                 "scorecard_type": evaluation.get("scorecard_type", "decision_evaluation"),
                 "browser_plan": adapter if adapter["type"] == "browser_journey" else None,
             }),
@@ -1285,9 +1322,10 @@ def build_package(
             "decision_task": evaluation.get("decision_task"),
             # Only cases that reached the application workflow feed quality metrics.
             "case_ids": [item["case_id"] for item in scored_cases],
-            "expected_labels": [item["expected_label"] for item in scored_cases],
+            "expected_labels": [item["expected_label"] for item in scored_cases] if predicted_labels else [],
             "predicted_labels": predicted_labels,
             "confidences": confidences,
+            "confidence_provenance": confidence_origin,
             "dataset_health": _dataset_health(scored_cases),
             "decision_observations": decision_observations,
             **measurements,

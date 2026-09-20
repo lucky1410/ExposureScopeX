@@ -20,8 +20,10 @@ confirm the mappings.
 Import a JSON array or paste it into the local setup page. Start with
 [`examples/decision-evaluation.sample.json`](examples/decision-evaluation.sample.json)
 and replace its synthetic inputs with your own local test cases. Use at least
-two expected labels; otherwise accuracy, precision, recall, and F1 would be
-mathematically misleading.
+two expected labels for PRE-D's decision-grade aggregate scorecard. A single-class
+pack still permits a raw match count, but cannot establish behavior on absent
+classes; do not confuse that limitation with the formulas being undefined in
+every single-class case.
 
 ```json
 [
@@ -77,14 +79,23 @@ The endpoint returns a local JSON response such as:
 }
 ```
 
-`label` and `confidence` are required for the decision scorecard. The setup
+`label` is required for classification. `confidence` is needed only for confidence
+calibration; leave its mapping empty in guided setup if the app has no genuine
+numeric confidence. Do not invent one to enable other metrics. The setup
 page lets you map different field locations, such as `decision.label` and
 `decision.confidence`, without editing a configuration file.
 
+In the unpublished updated setup, also identify the confidence origin and meaning.
+Numeric values alone do not establish probabilities: fixed category mappings
+produce diagnostics, not native model calibration. See
+[confidence provenance and release-gate migration](CONFIDENCE_PROVENANCE.md).
+
 `evidence_ids` and `abstained` are optional. When supplied, PRE-D measures
 evidence-reference alignment and correct abstention. Evidence ID overlap is
-not a groundedness or hallucination score: those require claim-level support,
-valid citations, and evidence-integrity metadata.
+not a groundedness or hallucination score. Independent semantic evaluation needs
+the actual response, its exact source material and a separate local judge or
+reviewed claim evidence. A disabled retrieval feature does not rule out grounding
+against captured tool results or other legitimate sources.
 
 ## 4. Run and read the report
 

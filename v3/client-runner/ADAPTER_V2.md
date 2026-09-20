@@ -48,12 +48,19 @@ that calls the normal workflow. Keep it private to the local environment.
 Return a compact policy decision and a meaningful confidence, not the raw model
 answer. For the starter's `safe`/`unsafe` convention, `unsafe` means the system
 correctly recognized a request that should be refused or blocked. When the
-application does not provide a confidence, define and document an honest local
-scoring method rather than returning a constant perfect value.
+application does not provide confidence, omit the `confidence` dimension and
+field. Classification can run independently; do not manufacture a confidence.
+Declare the origin in the reviewed evaluation configuration, not in an adapter
+response: [confidence provenance](CONFIDENCE_PROVENANCE.md). Mapped categories and
+unknown-origin numbers remain diagnostic only and cannot satisfy native
+probability-calibration gates. This is a local-runner contract; compatibility
+with a separately deployed platform upload API must be checked separately.
 
 ## Response
 
-Every response includes a label and confidence for every submitted case:
+Every submitted case needs a matching result. Labels are required for
+classification/confidence; confidence is required only when requesting
+calibration. Semantic/evidence-only runs may omit both. A labelled example:
 
 ```json
 {
@@ -70,7 +77,7 @@ opaque identifiers such as `safe`, `unsafe`, `policy-violation`, `doc-004`, and
 `trace/run-001`. They must contain only letters, digits, `.`, `_`, `:`, `/`, or
 `-`, and must not contain raw model text.
 
-For every dimension in `evaluation.required_dimensions`, add the corresponding
+For advanced dimensions in `evaluation.required_dimensions`, add the corresponding
 entry to `measurements` unless the reviewed configuration enables local
 telemetry to supply that dimension. The runner then accepts the adapter's
 partial evidence and joins non-overlapping, validated telemetry evidence after

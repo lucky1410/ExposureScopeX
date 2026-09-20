@@ -12,6 +12,7 @@ import math
 from typing import Any
 
 from .metric_registry import BASELINE_VERIFIED_DIMENSIONS, TRACE_VERIFIED_DIMENSIONS
+from .confidence import annotate_confidence, calibration_eligible
 
 
 METRIC_CALCULATION_VERSION = "pred-local-metrics-1.0"
@@ -504,7 +505,7 @@ def confidence_metrics(
                 if len(expected) < 20 else []
             ),
             *(
-                [f"Only {unique_confidence_count} unique confidence value(s) were observed; at least 5 are needed to assess confidence behavior across useful levels."]
+                [f"Only {unique_confidence_count} unique confidence value(s) were observed. The fewer-than-5 warning is a review heuristic, not a mathematical requirement; do not manufacture variation."]
                 if confidence_diversity_warning else []
             ),
         ],
@@ -821,7 +822,10 @@ def _annotate_metric_trust(
             name in {"groundedness", "hallucination"}
             and metric.get("verification_basis") == "independent_local_semantic_judge"
         )
-        if name in BASELINE_VERIFIED_DIMENSIONS:
+        if name == "confidence":
+            trust_status = "verified" if calibration_eligible(metric) else "declared"
+            evidence_source = metric["interpretation"]
+        elif name in BASELINE_VERIFIED_DIMENSIONS:
             trust_status = "verified"
             evidence_source = {
                 "workflow_coverage": "Observed directly by the local PRE-D browser runner.",
@@ -904,11 +908,15 @@ def calculate_local_metrics(
         "workflow_coverage": workflow_coverage_metrics(execution),
         "classification": (
             _not_applicable("Browser pass/fail assertions are workflow evidence, not model-classification predictions.")
-            if is_browser_journey else classification_metrics(expected, predicted, case_ids)
+            if is_browser_journey else classification_metrics(expected, predicted, case_ids if expected else None)
         ),
         "confidence": (
             _not_applicable("The browser runner does not observe model confidence and never infers it from an assertion result.")
-            if is_browser_journey else confidence_metrics(expected, predicted, confidences, case_ids)
+            if is_browser_journey else (
+                confidence_metrics(expected, predicted, confidences, case_ids)
+                if expected and len(confidences) == len(expected)
+                else _unavailable("Calibration requires real numeric confidences and labelled outcomes for every case; other metrics remain independent.")
+            )
         ),
         "decision_evidence": decision_evidence_metrics(measurements.get("decision_observations")),
         "groundedness": semantic_grounding or claims_metrics(
@@ -926,4 +934,5 @@ def calculate_local_metrics(
         "reproducibility": _agreement(measurements.get("reproducibility"), "run_id", "run_count", "Repeated-run agreement measures stability, not correctness."),
         "cost_efficiency": cost_efficiency_metrics(measurements.get("cost_efficiency"), expected, predicted),
     }
+    metrics["confidence"] = annotate_confidence(metrics["confidence"], evaluation.get("confidence_provenance"))
     return _annotate_metric_trust(package, metrics)

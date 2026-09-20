@@ -291,6 +291,9 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     else:
         cases = build_cases(profile_name, additions)
         adapter = {"type": "http_json_target", "url": values["url"], "request_mode": values.get("request_mode", "message"), "response_label_path": values.get("response_label_path", "decision.label"), "response_confidence_path": values.get("response_confidence_path", "decision.confidence"), "timeout_seconds": 60, "allow_remote": bool(values.get("allow_remote")), "target_environment": target_environment, "max_cases": 500, "minimum_delay_ms": 100}
+    if adapter["type"] == "http_json_target" and not adapter.get("response_confidence_path"):
+        adapter.pop("response_confidence_path", None)
+        evaluation_dimensions = [d for d in evaluation_dimensions if d != "confidence"]
     if include_groundedness:
         response_text_path = values.get("response_text_path")
         response_grounding_evidence_path = values.get("response_grounding_evidence_path")
@@ -343,6 +346,9 @@ def create_guided_plan(values: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
         "assurance": {"discovery_file": "discovery.json", "scope_file": "assurance-scope.json", "plan_file": "risk-plan.json", "workflow_packs_file": "workflow-packs.json", "telemetry_file": "out/telemetry.jsonl", "planned_dimensions": plan["required_dimensions"]},
         "environment": {"host_os": host_os},
     }
+    if "confidence" in evaluation_dimensions:
+        from .confidence import confidence_provenance
+        config["evaluation"]["confidence_provenance"] = confidence_provenance(values.get("confidence_provenance"))
     if include_groundedness:
         config["assurance"]["grounding_judge"] = _default_grounding_judge(
             host_os, values.get("grounding_judge_model", "your-local-ollama-model"),
@@ -458,9 +464,8 @@ This plan calls `{adapter['url']}` once per labelled case with:
 ```
 
 The endpoint must return the configured decision label at
-`{adapter['response_label_path']}` and a numeric 0-to-1 confidence at
-`{adapter['response_confidence_path']}`. That produces local accuracy,
-precision, recall, F1, and confidence-calibration metrics. When configured,
+`{adapter['response_label_path']}`. This produces local accuracy,
+precision, recall and F1. {"Confidence diagnostics read `" + adapter['response_confidence_path'] + "`; native calibration gates also require reviewed `evaluation.confidence_provenance`. Mapped categories and unknown origins remain diagnostic only." if adapter.get('response_confidence_path') else "Confidence is not requested because no confidence mapping was selected; do not invent confidence values."} When configured,
 opaque evidence IDs and an `abstained` boolean produce evidence-reference and
 abstention checks. They do not, by themselves, prove groundedness.
 
@@ -501,7 +506,7 @@ This folder was generated locally by `esx-eval setup` on {host_os}. It evaluates
 1. Start the application locally, or use an approved staging URL.
 2. Read `PRE-D_EVIDENCE_REQUIREMENTS.md`. It states, for every metric in this plan, what your team must define and what the application must emit locally before PRE-D can calculate a real score.
 3. Open `esx-eval.json` and review every labelled test case. Replace, remove, or add cases to match the product's real requirements.
-4. The runner uses the approved {connection} at `{adapter.get('url', adapter.get('base_url'))}`.{" It reads the decision label from `" + adapter['response_label_path'] + "` and a numeric confidence from `" + adapter['response_confidence_path'] + "`." if adapter['type'] == 'http_json_target' else " It measures declared workflow coverage from the configured browser assertion; it does not infer model labels or confidence from a UI pass/fail result."}
+4. The runner uses the approved {connection} at `{adapter.get('url', adapter.get('base_url'))}`.{" It reads the decision label from `" + adapter['response_label_path'] + "`; confidence mapping: `" + adapter.get('response_confidence_path', 'not requested') + "`." if adapter['type'] == 'http_json_target' else " It measures declared workflow coverage from the configured browser assertion; it does not infer model labels or confidence from a UI pass/fail result."}
 5. Run:
 
 ```text
@@ -793,8 +798,8 @@ def serve_setup(default_directory: str | None = None, *, application: bool = Fal
                         confidence_path = values.get("response_confidence_path")
                         labels = {item["path"] for item in probe["label_candidates"]}
                         confidences = {item["path"] for item in probe["confidence_candidates"]}
-                        if label_path not in labels or confidence_path not in confidences:
-                            raise ValueError("Choose the label and confidence fields from the tested local API response")
+                        if label_path not in labels or confidence_path and confidence_path not in confidences:
+                            raise ValueError("Choose the label and any optional confidence field from the tested local API response")
                         optional_fields = (
                             ("response_evidence_ids_path", "evidence_id_candidates"),
                             ("response_abstained_path", "abstained_candidates"),
@@ -911,7 +916,7 @@ summary{cursor:pointer;font-weight:bold}
 <div id="decision_fields">
 <label>DECISION TASK</label>
 <input id="decision_task" value="investigation-triage" placeholder="For example: investigation-triage">
-<p class="note">Your endpoint receives <code>{"case_id":"case-001","input":{...}}</code> and returns a label and 0-to-1 confidence. Evidence IDs and an abstained flag are optional. Groundedness is available only when the endpoint also returns the generated response text and the exact retrieved source chunks for that case.</p>
+<p class="note">Your endpoint receives <code>{"case_id":"case-001","input":{...}}</code> and returns a label. Confidence is optional. Evidence IDs and an abstained flag are optional. Groundedness needs the generated response and exact source material available to that response, including tool results where applicable.</p>
 <label>LABELLED CASES</label>
 <input id="decision_file" type="file" accept="application/json">
 <textarea id="decision_cases" spellcheck="false">[{"case_id":"triage-001","input":{"title":"replace with a synthetic local test case"},"expected":{"label":"escalate","allowed_evidence_ids":["sig-001"],"must_abstain":false}},{"case_id":"triage-002","input":{"title":"replace with a second synthetic local test case"},"expected":{"label":"do-not-escalate","must_abstain":false}}]</textarea>
@@ -955,6 +960,11 @@ summary{cursor:pointer;font-weight:bold}
 <div id="connection_probe_result">Test the local endpoint before creating this plan. PRE-D retains only field names and types during the connection check.</div>
 <input id="label_path" type="hidden" value="label">
 <input id="confidence_path" type="hidden" value="confidence">
+<label for="confidence_origin">CONFIDENCE ORIGIN (ONLY IF SUPPLIED)</label>
+<select id="confidence_origin"><option value="unknown">Unknown: numeric diagnostics only</option><option value="native_probability">Native probability that the returned label is correct</option><option value="adapter_mapped">Adapter-mapped categories: not native calibration</option></select>
+<label for="confidence_mapping">CATEGORY MAPPING (JSON, ONLY FOR ADAPTER-MAPPED VALUES)</label>
+<textarea id="confidence_mapping" placeholder='{"high":0.9,"medium":0.7,"low":0.4}'></textarea>
+<p class="small">This is your reviewed declaration, not something PRE-D can infer from a number. A positive-class probability is not the same as confidence in the returned label. Do not invent confidence to enable evaluation.</p>
 <input id="evidence_ids_path" type="hidden">
 <input id="abstained_path" type="hidden">
 </div>
@@ -1045,7 +1055,7 @@ function renderProbe(){
   success.textContent='Connection confirmed. Select response mappings.';
   target.append(success);
   renderMapping(target,'DECISION LABEL','label_path',latestProbe.label_candidates,false,'No compatible label field was found.');
-  renderMapping(target,'DECISION CONFIDENCE','confidence_path',latestProbe.confidence_candidates,false,'No numeric 0-to-1 confidence field was found.');
+  renderMapping(target,'CONFIDENCE (OPTIONAL)','confidence_path',latestProbe.confidence_candidates,true,'No genuine numeric confidence found. Classification can run without calibration; do not invent a confidence score.');
   if(mode==='decision'){
     renderMapping(target,'EVIDENCE IDS (OPTIONAL)','evidence_ids_path',latestProbe.evidence_id_candidates,true,'Evidence IDs are optional for this plan.');
     renderMapping(target,'ABSTAINED FLAG (OPTIONAL)','abstained_path',latestProbe.abstained_candidates,true,'An abstained flag is optional for this plan.');
@@ -1195,6 +1205,11 @@ async function createPlan(){
       grounding_judge_model:byId('grounding_judge_model').value,
       response_label_path:byId('label_path').value,
       response_confidence_path:byId('confidence_path').value,
+      confidence_provenance:byId('confidence_origin').value==='native_probability'
+        ? {kind:'native_probability',meaning:'predicted_label_correctness'}
+        : byId('confidence_origin').value==='adapter_mapped'
+          ? {kind:'adapter_mapped',mapping:JSON.parse(byId('confidence_mapping').value)}
+          : {kind:'unknown'},
       response_evidence_ids_path:byId('evidence_ids_path').value,
       response_abstained_path:byId('abstained_path').value,
       response_text_path:byId('response_text_path').value,

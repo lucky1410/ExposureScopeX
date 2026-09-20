@@ -70,6 +70,7 @@ def _metric_score(name: str, metric: dict[str, Any], trust: str) -> str:
         )
     if name == "confidence":
         return (
+            ("DIAGNOSTIC ONLY: " if trust != "verified" else "") +
             f"ECE {float(metric.get('expected_calibration_error', 0)):.3f} | "
             f"Brier {float(metric.get('correctness_brier_score', 0)):.3f} | "
             f"{int(metric.get('unique_confidence_count', 0))} confidence levels"
@@ -100,7 +101,7 @@ def _metric_why(name: str, metric: dict[str, Any], trust: str) -> str:
     if name == "classification":
         return f"PRE-D compared {metric.get('sample_size', 0)} labelled dataset outcomes with decisions returned by the local target."
     if name == "confidence":
-        return "PRE-D compared returned confidence values with correctness across the labelled decision pack."
+        return str(metric.get("interpretation", "PRE-D compared supplied numeric scores with correctness; probability provenance was not retained."))
     if name == "groundedness" and trust == "verified":
         return "PRE-D compared extracted claims with source chunks after a separate model review of extraction completeness. Both passes may still miss claims; completeness is not a proven percentage."
     if name == "hallucination" and trust == "verified":
@@ -134,11 +135,13 @@ def _metric_action(name: str, metric: dict[str, Any], trust: str) -> str:
             "Retain this labelled pack and rerun it after product or model changes to detect regressions."
         )
     if name == "confidence":
+        if not metric.get("calibration_eligible"):
+            return "Review confidence origin and meaning. Do not invent probabilities from categories; classification can run without calibration."
         actions = []
         if metric.get("calibration_warning"):
             actions.append("review confidence generation or calibration")
         if metric.get("confidence_diversity_warning"):
-            actions.append("return at least 5 meaningful confidence levels")
+            actions.append("inspect limited confidence variation; do not manufacture additional levels")
         return ("; ".join(actions).capitalize() + ", then rerun.") if actions else "Retain the calibration baseline and rerun after decision-model changes."
     if name == "groundedness" and trust == "verified":
         contradicted = int(metric.get("contradicted_claim_count", 0))
@@ -237,13 +240,15 @@ def _metric_cards(metrics: dict[str, Any], names: list[str]) -> str:
         title = _title(name)
         if trust == "declared":
             title = {
+                "confidence": "Confidence diagnostics",
                 "groundedness": "Declared evidence support",
                 "trajectory": "Declared trajectory milestones",
             }.get(name, title)
         representative = metric.get("representativeness") == "non_representative"
         representative_badge = "<span class='representativeness'>NON-REPRESENTATIVE</span>" if representative else ""
         declared_warning = (
-            "<p class='trust-warning'>Accepted from target-declared local evidence, not independently verified.</p>"
+            ("<p class='trust-warning'>Verified arithmetic; native probability semantics not established.</p>" if name == "confidence" else
+             "<p class='trust-warning'>Accepted from target-declared local evidence, not independently verified.</p>")
             if trust == "declared" else ""
         )
         cards.append(
@@ -276,7 +281,7 @@ def _trust_summary(report: dict[str, Any], metrics: dict[str, Any], names: list[
         if flagged else ""
     )
     return """<section class='panel trust-summary'><div class='heading'><div><p class='eyebrow'>METRIC TRUST</p><h2>What PRE-D verified</h2></div><p>PRE-D Local measured some metrics directly and accepted some metrics as target-declared evidence. These are not equally trustworthy.""" + _escape(flag) + """</p></div>
-    <div class='quick-grid'><div class='verified'><strong>""" + _escape(verified) + """</strong><span>Verified</span></div><div class='declared'><strong>""" + _escape(declared) + """</strong><span>Declared</span></div><div class='missing'><strong>""" + _escape(missing) + """</strong><span>Missing</span></div></div></section>"""
+    <div class='quick-grid'><div class='verified'><strong>""" + _escape(verified) + """</strong><span>Verified</span></div><div class='declared'><strong>""" + _escape(declared) + """</strong><span>Declared / semantics unverified</span></div><div class='missing'><strong>""" + _escape(missing) + """</strong><span>Missing</span></div></div></section>"""
 
 
 def _decision_summary(report: dict[str, Any]) -> str:
@@ -286,21 +291,35 @@ def _decision_summary(report: dict[str, Any]) -> str:
         return ""
     classification = metrics.get("classification", {})
     confidence = metrics.get("confidence", {})
-    if _trust_status(classification) != "verified" or _trust_status(confidence) != "verified":
+    if "confidence" not in report.get("evaluation", {}).get("required_dimensions", ["confidence"]):
+        confidence = {}
+    if _trust_status(classification) != "verified":
         return ""
     sample_size = int(classification.get("sample_size", 0))
     correct = sum(
         1 for item in classification.get("case_results", [])
         if isinstance(item, dict) and item.get("correct") is True
     )
-    return """<section class='panel decision-summary'><div class='heading'><div><p class='eyebrow'>VERIFIED DECISION BASELINE</p><h2>Classification and confidence</h2></div><p>These headline results come from labelled expectations compared with decisions and confidence returned by the local target.</p></div>
-    <div class='quick-grid'><div class='verified'><strong>""" + _escape(f"{correct}/{sample_size}") + """</strong><span>Correct decisions</span></div><div class='verified'><strong>""" + _escape(f"{float(classification.get('macro_f1', 0)) * 100:.1f}%") + """</strong><span>Macro F1</span></div><div class='verified' style='border-top-color:var(--gold);background:#211f18'><strong style='color:var(--gold)'>""" + _escape(f"{float(confidence.get('expected_calibration_error', 0)):.3f}") + """</strong><span>Verified ECE / review warning</span></div></div></section>"""
+    confidence_card = (
+        "<div class='verified'><strong>" + _escape(f"{float(confidence.get('expected_calibration_error', 0)):.3f}") + "</strong><span>ECE / review calibration details</span></div>"
+        if _trust_status(confidence) == "verified" else
+        "<div><strong>Separate evidence</strong><span>Confidence calibration is optional; see its provenance below when supplied.</span></div>"
+    )
+    return """<section class='panel decision-summary'><div class='heading'><div><p class='eyebrow'>VERIFIED DECISION BASELINE</p><h2>Decision correctness</h2></div><p>Labelled expectations are compared with returned decisions. These results do not depend on confidence or establish whole-system coverage.</p></div>
+    <div class='quick-grid'><div class='verified'><strong>""" + _escape(f"{correct}/{sample_size}") + """</strong><span>Correct decisions</span></div><div class='verified'><strong>""" + _escape(f"{float(classification.get('macro_f1', 0)) * 100:.1f}%") + "</strong><span>Macro F1</span></div>" + confidence_card + "</div></section>"
 
 
 def _confidence_warning(metrics: dict[str, Any]) -> str:
     metric = metrics.get("confidence", {})
     if not isinstance(metric, dict) or metric.get("measurement_status") != "measured":
         return ""
+    if not metric.get("calibration_eligible"):
+        return (
+            "<section class='panel confidence-warning'><span class='state'>CONFIDENCE PROVENANCE WARNING</span>"
+            "<h2>Numeric scores are not established native probabilities</h2><p>"
+            + _escape(metric.get("interpretation", "The report does not retain reviewed confidence provenance."))
+            + " Verified arithmetic does not establish probability semantics. These diagnostics cannot satisfy a native calibration gate.</p></section>"
+        )
     ece = metric.get("expected_calibration_error")
     brier = metric.get("correctness_brier_score")
     if not isinstance(ece, (int, float)):
@@ -350,20 +369,23 @@ def _evaluation_layers(report: dict[str, Any]) -> str:
             "Decision evaluation", "NOT RUN",
             "This browser plan checked visible workflow signals. It did not call a decision endpoint or observe model labels, confidence, evidence IDs, or abstention.",
         )
-    elif _metric_status(classification) == "measured" and _metric_status(confidence) == "measured":
+    elif _metric_status(classification) == "measured":
         sample_size = classification.get("sample_size", 0) if isinstance(classification, dict) else 0
         evidence_note = " Decision evidence and abstention were also measured." if _metric_status(decision_evidence) == "measured" else ""
         decision_state = (
             "VERIFIED"
-            if _trust_status(classification) == "verified" and _trust_status(confidence) == "verified"
+            if _trust_status(classification) == "verified"
             else "MEASURED / REVIEW"
         )
         decision = _layer_card(
             "Decision evaluation", decision_state,
             f"{sample_size} labelled local decisions were evaluated. {_primary_signal('classification', classification)}.{evidence_note}",
         )
+    elif any(_metric_status(metrics.get(item)) == "measured" for item in required):
+        decision = _layer_card("Task-specific evaluation", "MEASURED / REVIEW",
+                               "This run evaluates " + ", ".join(_title(item) for item in required) + ". Classification labels and confidence are not prerequisites for these task-specific results.")
     else:
-        reason = "The local endpoint must return a label and a 0-1 confidence for each labelled case."
+        reason = "Classification requires returned labels and labelled expectations. Confidence is optional; semantic and evidence-only evaluations use their own inputs."
         if isinstance(classification, dict) and classification.get("reason"):
             reason = str(classification["reason"])
         decision = _layer_card("Decision evaluation", "EVIDENCE NEEDED", reason)
@@ -383,8 +405,7 @@ def _evaluation_layers(report: dict[str, Any]) -> str:
         ),
     )
 
-    advanced = [item for item in required if item not in {"classification", "confidence", "workflow_coverage"}]
-    pending = [item for item in advanced if _metric_status(metrics.get(item)) != "measured"]
+    pending = [item for item in required if _metric_status(metrics.get(item)) != "measured"]
     trust_review = [
         item for item in required
         if _metric_status(metrics.get(item)) == "measured"
@@ -394,17 +415,17 @@ def _evaluation_layers(report: dict[str, Any]) -> str:
         )
     ]
     calibration_error = confidence.get("expected_calibration_error") if isinstance(confidence, dict) else None
-    calibration_review = isinstance(calibration_error, (int, float)) and calibration_error > 0.15
+    calibration_review = "confidence" in required and confidence.get("calibration_eligible") is True and isinstance(calibration_error, (int, float)) and calibration_error > 0.15
     if is_browser:
         readiness = _layer_card(
             "This run's evidence readiness", "WORKFLOW EVIDENCE ONLY",
             "Workflow reachability is available for review. Decision-quality readiness was not evaluated because this run did not use a decision endpoint or local adapter.",
         )
-    elif _metric_status(classification) == "measured" and _metric_status(confidence) == "measured":
+    elif required and any(_metric_status(metrics.get(item)) == "measured" for item in required):
         readiness = _layer_card(
             "This run's evidence readiness", "DEEP EVIDENCE PENDING" if pending else ("REVIEW REQUIRED" if trust_review or calibration_review else "EVIDENCE READY"),
             (
-                "Decision baseline is measured locally. Add telemetry or adapter evidence before making claims about " + ", ".join(_title(item).lower() for item in pending) + "."
+                "Some requested metrics remain incomplete: " + ", ".join(_title(item).lower() for item in pending) + ". Follow each metric's evidence requirements; confidence is not a universal prerequisite."
                 if pending else
                 (
                     "Every requested metric is structurally measured, but target-declared or non-representative results still require review: " + ", ".join(_title(item).lower() for item in trust_review) + "."
@@ -419,7 +440,7 @@ def _evaluation_layers(report: dict[str, Any]) -> str:
     else:
         readiness = _layer_card(
             "This run's evidence readiness", "DECISION EVIDENCE INCOMPLETE",
-            "This run cannot support a decision-quality release review until labelled outcomes and observed confidence are measured locally.",
+            "The requested metrics need their own compatible evidence. Do not add confidence or labels to a task that does not use them.",
         )
     return """<section class='panel'>
     <div class='heading'><div><p class='eyebrow'>PRE-D LOCAL RESULT</p><h2>What this run actually evaluated</h2></div>
@@ -465,7 +486,7 @@ def _dataset_health(report: dict[str, Any]) -> str:
         if warnings else "<p class='health-ok'>No dataset-structure warning was detected.</p>"
     )
     return """<section class='detail-section'><p class='eyebrow'>DATASET HEALTH</p><h2>Is this score pack credible?</h2>
-    <div class='quick-grid'><div><strong>""" + _escape(health.get("sample_size", 0)) + """</strong><span>Labelled cases</span></div><div><strong>""" + _escape(health.get("class_count", 0)) + """</strong><span>Expected classes</span></div><div><strong>""" + _escape(health.get("duplicate_input_count", 0)) + """</strong><span>Duplicate inputs</span></div></div><p><b>Class distribution:</b> """ + _escape(classes) + "</p>" + warning_html + "</section>"
+    <div class='quick-grid'><div><strong>""" + _escape(health.get("sample_size", 0)) + """</strong><span>Executed cases</span></div><div><strong>""" + _escape(health.get("class_count", 0)) + """</strong><span>Expected classes</span></div><div><strong>""" + _escape(health.get("duplicate_input_count", 0)) + """</strong><span>Duplicate inputs</span></div></div><p><b>Class distribution:</b> """ + _escape(classes) + "</p>" + warning_html + "</section>"
 
 
 def _decision_metric_details(metrics: dict[str, Any]) -> str:
@@ -484,7 +505,7 @@ def _decision_metric_details(metrics: dict[str, Any]) -> str:
             continue
         confidence_item = confidence_cases.get(item.get("case_id"), {})
         result = "Correct" if item.get("correct") else "Incorrect"
-        if confidence_item.get("overconfident_failure"):
+        if confidence_item.get("overconfident_failure") and confidence.get("calibration_eligible"):
             result = "Overconfident failure"
         confidence_value = confidence_item.get("confidence")
         confidence_text = f"{float(confidence_value):.3f}" if isinstance(confidence_value, (int, float)) else "Not available"
@@ -527,7 +548,7 @@ def _decision_metric_details(metrics: dict[str, Any]) -> str:
     <table><thead><tr><th>Case</th><th>Expected</th><th>Observed</th><th>Confidence</th><th>Result</th></tr></thead><tbody>""" + "".join(case_rows) + """</tbody></table>
     <h3>Confusion matrix</h3><table><thead><tr>""" + matrix_head + "</tr></thead><tbody>" + matrix_rows + """</tbody></table>
     <h3>Per-class quality</h3><table><thead><tr><th>Class</th><th>Support</th><th>Precision</th><th>Recall</th><th>F1</th></tr></thead><tbody>""" + class_rows + """</tbody></table>
-    <h3>Confidence calibration bins</h3><table><thead><tr><th>Confidence range</th><th>Cases</th><th>Average confidence</th><th>Accuracy</th></tr></thead><tbody>""" + bin_rows + "</tbody></table></section>"
+    <h3>Confidence diagnostics by numeric range</h3><p>""" + _escape(confidence.get("interpretation", "No probability interpretation was established for this run.")) + """</p><table><thead><tr><th>Numeric range</th><th>Cases</th><th>Average score</th><th>Accuracy</th></tr></thead><tbody>""" + bin_rows + "</tbody></table></section>"
 
 
 def _measurement_readiness(readiness: object) -> str:
@@ -833,6 +854,7 @@ def render_local_report(report: dict[str, Any]) -> str:
     metrics = metrics if isinstance(metrics, dict) else {}
     required_dimensions = evaluation.get("required_dimensions", [])
     names = metric_names(metrics, required_dimensions)
+    metrics = {name: metrics[name] for name in names if name in metrics}
     readiness = report.get("measurement_readiness")
     if not isinstance(readiness, list):
         readiness = build_measurement_readiness(metrics, required_dimensions)

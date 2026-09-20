@@ -36,6 +36,11 @@ Start with the [detailed PRE-D README](v3/client-runner/README.md), or download 
 runner wheel, checksums, and guides from
 [the 0.14.0 release](https://github.com/lucky1410/ExposureScopeX/releases/tag/esx-eval-runner-v0.14.0).
 
+The source checkout also includes unpublished
+[reusable local onboarding and change review](v3/client-runner/LOCAL_ONBOARDING.md):
+protected application profiles, bounded local planning assistance and
+source/scope/result comparisons with audit references.
+
 - Run labelled decision evaluations and approved authenticated browser journeys.
 - Calculate evidence-supported local AI metrics without treating browser smoke
   results or target-declared scores as independent AI-quality verification.
@@ -56,6 +61,13 @@ Recommendations apply only to the declared inventory and executed tests; PRE-D
 does not automatically certify every production behavior or roll back live writes.
 This release does not add automatic scheduling, rolling drift alerts, integrated
 code-test execution, comprehensive adversarial testing, or chaos/load testing.
+
+**Unpublished source update:** the working tree now adds reviewed system
+inventory and execution, JUnit test integration, role/tenant check templates,
+bounded load/recovery, and opt-in foreground scheduling with local rolling
+history. These are not yet in the 0.14.0 release download. See the
+[system evaluation guide](v3/client-runner/SYSTEM_EVALUATION.md) for setup,
+layer coverage, evidence requirements, and remaining boundaries.
 
 ## Start the Platform
 

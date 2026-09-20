@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from esx_eval_runner.audit import verify_audit_log
+from esx_eval_runner.confidence import NATIVE_CONFIDENCE, annotate_confidence
 from esx_eval_runner.cli import main
 from esx_eval_runner.local_metrics import classification_metrics, confidence_metrics
 from esx_eval_runner.release_execution import workflow_signal_strength
@@ -42,7 +43,7 @@ def local_report(*, version: str = "release-4", confidence: float | None = None)
     confidence_values = [confidence if confidence is not None else 0.90 + (i % 5) * 0.02 for i in range(20)]
     metrics = {
         "classification": classification_metrics(expected, expected, ids),
-        "confidence": confidence_metrics(expected, expected, confidence_values, ids),
+        "confidence": annotate_confidence(confidence_metrics(expected, expected, confidence_values, ids), NATIVE_CONFIDENCE),
     }
     for value in metrics.values():
         value.update(trust_status="verified", representativeness="representative")
@@ -525,7 +526,7 @@ class ReleaseCliTests(unittest.TestCase):
 def adapter_config(confidence: float | None) -> dict:
     return {
         "schema_version": "esx-client-runner-config-1.0",
-        "evaluation": {"name": "Synthetic release regression", "agent_id": "decision-engine", "subject_version": "release-4", "project_key": "sample-app", "dataset_version": "fixture-v1", "required_dimensions": ["classification", "confidence"]},
+        "evaluation": {"name": "Synthetic release regression", "agent_id": "decision-engine", "subject_version": "release-4", "project_key": "sample-app", "dataset_version": "fixture-v1", "required_dimensions": ["classification", "confidence"], "confidence_provenance": dict(NATIVE_CONFIDENCE)},
         "dataset": {"version": "fixture-v1", "cases": [
             {"case_id": f"case-{i:03}", "input": {"flagged": bool(i % 2), "example_index": i}, "expected_label": "review" if i % 2 else "allow"} for i in range(20)
         ]},

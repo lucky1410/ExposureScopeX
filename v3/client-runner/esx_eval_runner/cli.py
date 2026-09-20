@@ -25,6 +25,7 @@ from .discovery import discover_repository
 from .metric_registry import ADVANCED_CLI_DISPLAY, NEVER_UPLOAD_DIMENSIONS, metric_title
 from .report_html import render_local_report
 from .release_cli import register_release_commands, release_command
+from .system_cli import register_system_commands, system_command
 from .runner import (
     AdapterExecutionError,
     RunnerError,
@@ -676,18 +677,19 @@ def _print_local_results(
             ],
         )
     elif classification["measurement_status"] == "measured":
-        print("Scorecard: MODEL QUALITY (labelled adapter outcomes and observed confidence)")
+        print("Scorecard: DECISION QUALITY (labelled adapter outcomes; confidence is separate and optional)")
         print(f"Cases: {classification['sample_size']} | Correct: {correct_count} | Accuracy: {classification['accuracy']:.3f}")
         print(f"Macro precision: {classification['macro_precision']:.3f} | Macro recall: {classification['macro_recall']:.3f} | Macro F1: {classification['macro_f1']:.3f}")
     else:
         print(f"Classification: NOT MEASURABLE - {classification['reason']}")
-    if not is_browser_workflow and confidence["measurement_status"] == "measured":
+    if not is_browser_workflow and "confidence" in evaluation["required_dimensions"] and confidence["measurement_status"] == "measured":
+        print("Confidence origin: " + confidence["confidence_provenance"]["kind"] + ". " + confidence["interpretation"])
         print(f"Brier score: {confidence['correctness_brier_score']:.6f} | Expected calibration error: {confidence['expected_calibration_error']:.6f}")
-        if confidence["expected_calibration_error"] > 0.15:
+        if confidence["calibration_eligible"] and confidence["expected_calibration_error"] > 0.15:
             print("Confidence warning: calibration error requires review before release, even when classification accuracy is high.")
         if confidence.get("confidence_diversity_warning"):
-            print(f"Confidence warning: only {confidence['unique_confidence_count']} unique confidence value(s) were observed; at least 5 are needed.")
-    elif not is_browser_workflow:
+            print(f"Confidence range note: {confidence['unique_confidence_count']} distinct value(s); inspect limited variation, do not manufacture additional levels.")
+    elif not is_browser_workflow and "confidence" in evaluation["required_dimensions"]:
         print(f"Confidence: NOT MEASURABLE - {confidence['reason']}")
     print(f"Duration: {execution['duration_ms']} ms | Required metrics: {', '.join(evaluation['required_dimensions'])}")
     if classification.get("sample_size", 0) and classification["sample_size"] < 20:
@@ -922,6 +924,7 @@ def run_command(args: argparse.Namespace) -> int:
         "evaluation": {
             "scorecard_type": package["evaluation"].get("scorecard_type", "decision_evaluation"),
             "decision_task": package["evaluation"].get("decision_task"),
+            "confidence_provenance": package["evaluation"].get("confidence_provenance"),
             "required_dimensions": package["evaluation"].get("required_dimensions", []),
             "dataset_health": package["evaluation"].get("dataset_health", {}),
             "comparison_basis": {
@@ -1456,6 +1459,7 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="esx-eval", description="Run a local AI pre-release evaluation")
     commands = root.add_subparsers(dest="command", required=True)
     register_release_commands(commands)
+    register_system_commands(commands)
     keygen = commands.add_parser("keygen", help="Create a local Ed25519 keypair")
     keygen.add_argument("--private-key", required=True, help="New private-key file; never upload this file")
     init = commands.add_parser("init", help="Create an editable colleague-ready evaluation starter")
@@ -1580,6 +1584,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "release":
             return release_command(args)
+        if args.command == "system":
+            return system_command(args)
         if args.command == "keygen":
             print(json.dumps(generate_keypair(args.private_key), indent=2))
             return 0

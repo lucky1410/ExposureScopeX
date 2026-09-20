@@ -13,7 +13,12 @@ code, traces, environment variables, stderr, credentials, or results.
 | What you want to do | Start with |
 | --- | --- |
 | Install or upgrade the standalone runner | [Local-only quick start](#local-only-quick-start) |
+| Reuse setup, protect application source, review local agent suggestions and trace changes | [Reusable local onboarding](LOCAL_ONBOARDING.md) |
+| Try the unpublished system inventory/execution, code/security/reliability and scheduled regression additions | [System evaluation guide](SYSTEM_EVALUATION.md) |
+| Verify the six local stages with seeded defects and retained evidence | [System acceptance matrix](SYSTEM_ACCEPTANCE.md) |
+| Require behavior coverage, reconcile inventory and verify the running candidate | [Whole-system testing contract](WHOLE_SYSTEM_TESTING.md) |
 | Score application decisions, labels, and confidence | [Decision evaluation](DECISION_EVALUATION.md) |
+| Distinguish native probability calibration from adapter-mapped scores | [Confidence provenance](CONFIDENCE_PROVENANCE.md) |
 | Test approved login and multi-step browser workflows | [Browser workflow guide](BROWSER_WORKFLOWS.md) |
 | Set up reviewed multi-module coverage without editing the release manifest | [Guided application setup](APPLICATION_SETUP.md) |
 | Review required modules and decide what blocks a release | [Application release review](RELEASE_REVIEW.md) |
@@ -26,6 +31,42 @@ Chromium runtime; semantic evaluation needs the configured independent local
 judge. Installing packages may require network access. Local evaluation is not
 automatically offline: the application or its configured providers can still
 make external requests.
+
+## Working Tree: System Evaluation
+
+The latest source additions provide profile bootstrap/refresh, bounded planning
+assistance, suggestion review and baseline comparisons. Protected profiles keep
+PRE-D artifacts outside application source and stop when observed source
+changes invalidate a run. Optional local models draft behavior objectives
+under a bounded tool interface. See [setup, limits and reuse](LOCAL_ONBOARDING.md).
+
+The source tree now includes an unpublished `esx-eval system` workflow: bounded
+repository/OpenAPI discovery, guided review, native HTTP/role/tenant checks,
+existing AI/browser plan execution, JUnit test commands, bounded load/recovery,
+stratified labelled sampling, and opt-in local history with rolling alerts.
+The published 0.14.0 wheel does not include these additions. Install this source
+checkout to test them; see [the complete guide](SYSTEM_EVALUATION.md).
+
+The `decision_evidence` adapter crash is fixed. Classification no longer
+requires confidence, and semantic/evidence-only runs do not require unrelated
+classification labels. Existing formulas and provenance distinctions remain.
+The guided decision setup permits an empty confidence mapping rather than
+inventing values. Tests and external application acceptance remain separate:
+implemented evaluation layers are not proof that every app module was tested.
+
+The unpublished release-path fixes also allow explicit decision gates without
+mandatory classification or confidence. Guided setup and new attached plans
+select baseline gates only for requested dimensions. Existing explicit policies
+are never silently weakened. Confidence now records native, adapter-mapped or
+unknown provenance: arithmetic on mapped/unknown values remains visible, but it
+cannot satisfy native calibration gates. See [migration and examples](CONFIDENCE_PROVENANCE.md).
+
+Whole-system mode adds explicit behavior/case bindings, inventory reconciliation,
+role obligations and before/after running-candidate checks. Missing or excluded
+behavior evidence cannot be hidden behind a suite-level pass. Start with
+`system scope --init`, review in setup and run preflight with
+`--require-whole-system`. See [the testing guide](WHOLE_SYSTEM_TESTING.md) for
+the ten-module reference acceptance and real-application prerequisites.
 
 ## What is new in 0.14.0
 

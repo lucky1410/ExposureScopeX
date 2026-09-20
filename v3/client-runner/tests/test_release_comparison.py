@@ -13,6 +13,7 @@ from unittest.mock import patch
 from urllib.parse import unquote
 
 from esx_eval_runner.cli import main
+from esx_eval_runner.confidence import NATIVE_CONFIDENCE, annotate_confidence
 from esx_eval_runner.local_metrics import classification_metrics, confidence_metrics
 from esx_eval_runner.release import build_release_report, default_gates, validate_manifest
 from esx_eval_runner.release_html import render_release_report
@@ -180,7 +181,7 @@ class ReleaseComparisonTests(unittest.TestCase):
             predicted = expected.copy()
             predicted[index] = "review"
             source["metrics"]["classification"] = classification_metrics(expected, predicted, [r["case_id"] for r in rows])
-            source["metrics"]["confidence"] = confidence_metrics(expected, predicted, [0.9 + (i % 5) * 0.02 for i in range(20)], [r["case_id"] for r in rows])
+            source["metrics"]["confidence"] = annotate_confidence(confidence_metrics(expected, predicted, [0.9 + (i % 5) * 0.02 for i in range(20)], [r["case_id"] for r in rows]), NATIVE_CONFIDENCE)
             for m in source["metrics"].values():
                 m["trust_status"] = "verified"
             return source

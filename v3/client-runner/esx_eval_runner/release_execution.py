@@ -118,6 +118,16 @@ def preflight_all_modules(
                 issue("execution_not_approved", "Review the current plan and reattach it with --read-only or --isolated-writes plus an isolation note. Approval must match this exact config.", module_id, suite_id)
             if suite["kind"] == "decision":
                 required = set(metadata[suite_id]["required_dimensions"])
+                gated = {gate["signal"].split(".")[0] for gate in suite["gates"]}
+                if "confidence" in required or "confidence" in gated:
+                    from .confidence import calibration_eligible
+                    if not calibration_eligible({"confidence_provenance": evaluation.get("confidence_provenance")}):
+                        advisory("confidence_semantics_unconfirmed",
+                                 "Confidence values are mapped or have unspecified probability semantics.",
+                                 "Retain numerical diagnostics, but do not use them as native probability calibration. Review confidence_provenance or explicitly scope this suite to other metrics.",
+                                 module_id, suite_id)
+                if gated - required:
+                    issue("gate_dimension_not_requested", "Release gates request dimensions absent from this plan: " + ", ".join(sorted(gated - required)) + ". Review both the plan and policy; do not invent confidence.", module_id, suite_id)
                 if "decision_evidence" not in required:
                     advisory(
                         "baseline_dimension_unexercised",

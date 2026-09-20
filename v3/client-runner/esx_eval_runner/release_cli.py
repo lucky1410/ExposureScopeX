@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from .audit import append_audit_event
 from .release_authoring import authoring_command, register_authoring_commands
-from .release import MANIFEST_SCHEMA, build_release_report, validate_manifest
+from .release import MANIFEST_SCHEMA, build_release_report, default_gates, validate_manifest
 from .release_comparison import validate_baseline
 from .release_execution import execution_summary, load_plan, plan_metadata, preflight_all_modules
 from .release_html import render_release_report
@@ -59,7 +59,7 @@ def register_release_commands(commands: Any) -> None:
     preflight = actions.add_parser("preflight", help="Check every declared module's plans and approvals without calling the app")
     preflight.add_argument("--manifest", required=True)
     preflight.add_argument("--out", required=True)
-    run = actions.add_parser("run", help="Execute all declared modules; reject exclusions, report reuse, and missing or unapproved plans before any target calls")
+    run = actions.add_parser("run", help="Execute all declared modules; reject exclusions, report reuse, and missing or unapproved plans before any target calls", description="Strict all-module execution: no exclusions, report reuse, missing plans, or unapproved execution. For explicitly partial scope use release check --run; excluded modules never count as evaluated.")
     run.add_argument("--manifest", required=True)
     run.add_argument("--out", required=True)
     run.add_argument("--baseline", help="Previous release-review JSON for an actual matched-pack comparison")
@@ -269,6 +269,15 @@ def _attach_plan(args: argparse.Namespace) -> int:
              "subject_id": evaluation["agent_id"], "config": config_reference,
              "execution_policy": {"mode": "isolated_write" if args.isolated_writes else "read_only", "config_sha256": digest}}
     entry.pop("report", None)
+    if existing is None:
+        entry["gates"] = default_gates(kind, evaluation.get("required_dimensions", ["classification", "confidence"]))
+        if not entry["gates"]:
+            raise RunnerError("This plan has no baseline classification/workflow gates. Add a suite with explicit reviewed gates for its requested dimensions to release.json; confidence is not required.")
+    population = read_json(config_path).get("dataset", {}).get("population")
+    if population is not None:
+        if existing and existing.get("population") not in (None, population):
+            raise RunnerError("Plan and manifest population differ; reconcile them explicitly before replacing this suite")
+        entry["population"] = population
     if args.isolation_note is not None:
         entry["execution_policy"]["isolation_note"] = args.isolation_note
     if args.minimum_cases is not None:

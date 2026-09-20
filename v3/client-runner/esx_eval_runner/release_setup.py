@@ -16,7 +16,7 @@ from pathlib import Path
 import shlex
 from threading import RLock
 
-from .release import MANIFEST_SCHEMA, REVIEW_STATUSES, build_release_report, validate_manifest
+from .release import MANIFEST_SCHEMA, REVIEW_STATUSES, build_release_report, default_gates, validate_manifest
 from .release_coverage import draft_requirements, plan_requirement_issues
 from .release_execution import load_plan, plan_metadata, preflight_all_modules
 from .runner import RunnerError, sha256
@@ -28,7 +28,7 @@ _PROFILES = {"workflow": ["workflow"], "decision": ["decision"],
              "mixed": ["workflow", "decision"]}
 _METRIC_PRESETS = [
     {"use_case": "UI workflow", "guidance": "Execution and visible assertion outcomes. Browser plans do not measure AI decision quality."},
-    {"use_case": "Decision", "guidance": "Classification and confidence from real labelled cases and the configured decision connector."},
+    {"use_case": "Decision", "guidance": "Classification from labelled cases; confidence is optional and requires reviewed probability semantics for calibration gates."},
     {"use_case": "RAG / agent", "guidance": "Retrieval, grounding, tool use and trajectory need their configured evidence and evaluators. Judge-based metrics require a configured judge; if missing, review and configure one in the source plan. Setup adds no judge or metrics."},
 ]
 _NOTICE = (
@@ -294,7 +294,7 @@ def _prepare(values: dict) -> dict:
         plan_rows[module["id"]] = rows
         plan_cases[module["id"]] = cases_by_suite
         for index, plan in enumerate(plans, 1):
-            _fields(plan, {"path", "mode", "isolation_note"}, "Plan")
+            _fields(plan, {"path", "mode", "isolation_note", "gates"}, "Plan")
             mode = plan.get("mode")
             if mode not in ("read_only", "isolated_write"):
                 raise RunnerError("Review each plan and select read_only or isolated_write mode")
@@ -315,8 +315,11 @@ def _prepare(values: dict) -> dict:
             metadata = plan_metadata(evaluation, cases, kind=kind)
             suite_id = _suite_id(module["id"], kind, index)
             policy["config_sha256"] = digest
+            gates = plan.get("gates", default_gates(kind, metadata["required_dimensions"]))
+            if not gates:
+                raise RunnerError("Supply explicit reviewed gates for this plan's requested dimensions. Labels and confidence are not prerequisites for semantic-only evaluation.")
             module["suites"].append({"id": suite_id, "kind": kind, "config": str(path),
-                                     "subject_id": evaluation["agent_id"], "execution_policy": policy})
+                                     "subject_id": evaluation["agent_id"], "execution_policy": policy, "gates": gates})
             cases_by_suite[suite_id] = cases
             rows.append({"suite_id": suite_id, "path": str(path), "kind": kind, "mode": mode,
                          "required_dimensions": deepcopy(metadata["required_dimensions"]),
@@ -324,7 +327,7 @@ def _prepare(values: dict) -> dict:
                             if "workflow_signal_strength" in metadata else {}),
                          "cases": [{"case_id": case["case_id"],
                                     "persona": case.get("persona", "default" if kind == "workflow" else None),
-                                    "expected_label": case["expected_label"]} for case in cases]})
+                                    "expected_label": case.get("expected_label")} for case in cases]})
         bindings = raw.get("requirement_bindings", {})
         if not isinstance(bindings, dict):
             raise RunnerError("requirement_bindings must map objective IDs to reviewed bindings")
