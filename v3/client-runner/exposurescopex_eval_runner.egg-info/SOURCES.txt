@@ -30,6 +30,7 @@ esx_eval_runner/runner.py
 esx_eval_runner/semantic_grounding.py
 esx_eval_runner/setup.py
 esx_eval_runner/telemetry.py
+esx_eval_runner/workflow_signals.py
 esx_eval_runner/workflows.py
 exposurescopex_eval_runner.egg-info/PKG-INFO
 exposurescopex_eval_runner.egg-info/SOURCES.txt
@@ -45,6 +46,7 @@ tests/test_release_comparison.py
 tests/test_release_coverage.py
 tests/test_release_execution.py
 tests/test_release_observations.py
+tests/test_release_regressions.py
 tests/test_release_setup.py
 tests/test_semantic_grounding.py
 tests/test_semantic_hallucination.py

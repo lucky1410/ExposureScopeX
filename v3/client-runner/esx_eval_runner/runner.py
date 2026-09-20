@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from . import __version__
 from .http_utils import build_no_redirect_opener
+from .workflow_signals import workflow_signal_strength
 from .local_metrics import METRIC_CALCULATION_VERSION
 from .metric_registry import (
     DECISION_BASELINE_DIMENSIONS as BASE_DIMENSIONS,
@@ -1351,7 +1352,8 @@ def _browser_execution_summary(response: dict[str, Any], cases: list[dict[str, A
     session_status = response.get("browser_session_status", "not_requested")
     if not isinstance(session_status, str):
         raise RunnerError("Browser journey returned an invalid session status")
-    return {"browser_session_status": session_status, "browser_case_diagnostics": safe_cases}
+    return {"browser_session_status": session_status, "browser_case_diagnostics": safe_cases,
+            "workflow_signal_strength": workflow_signal_strength(cases)}
 
 
 def _browser_scored_inputs(

@@ -12,7 +12,7 @@ GitHub Actions provenance attestation is optional, as described below.
    runner suite and an installed-wheel CLI smoke check. Run backend evaluator
    tests when changing the shared backend contract.
 3. Commit the release changes and push the commit.
-4. Create and push an exact tag such as `esx-eval-runner-v0.13.0`.
+4. Create and push an exact tag such as `esx-eval-runner-v0.14.0`.
 5. Review the `Release ESX Eval Runner` GitHub Actions run and the published assets.
 6. Verify the downloaded assets with `SHA256SUMS` before announcing them. Use
    `gh attestation verify` too when the attestation step is enabled and succeeds.

@@ -7,10 +7,17 @@ import math
 import re
 from typing import Any
 
-from .metric_registry import metric_title
+from .metric_registry import (
+    DECISION_BASELINE_DIMENSIONS,
+    DECISION_SUPPORT_DIMENSIONS,
+    METRIC_ORDER,
+    WORKFLOW_DIMENSIONS,
+    metric_title,
+)
 from .release_coverage import coverage_totals, evaluate_requirements, validate_requirements
 from .release_observations import decision_observation, policy_disclosure
 from .runner import RunnerError, sha256
+from .workflow_signals import read_signal_summary, workflow_signal_advisories
 
 
 MANIFEST_SCHEMA = "pre-d-release-manifest-1.0"
@@ -21,6 +28,14 @@ VERDICTS = {
     "do_not_ship": "Do not ship",
     "insufficient_evidence": "Insufficient evidence",
 }
+REVIEW_STATUS_ORDER = ("evaluated", "inspected", "blocked", "untouched")
+REVIEW_STATUSES = {"evaluated", "inspected", "blocked", "untouched"}
+BASELINE_TIER_DIMENSIONS = frozenset(
+    WORKFLOW_DIMENSIONS | DECISION_BASELINE_DIMENSIONS | DECISION_SUPPORT_DIMENSIONS
+)
+DECISION_RELEVANT_DIMENSIONS = tuple(
+    name for name in METRIC_ORDER if name not in WORKFLOW_DIMENSIONS
+)
 
 # Explicit numeric fields prevent a typo or a boolean metadata field from
 # accidentally becoming a passing release check.
@@ -96,6 +111,298 @@ def _fields(value: dict, allowed: set[str], label: str) -> None:
         raise RunnerError(f"{label}: unknown fields {', '.join(sorted(unknown))}")
 
 
+def _review_methods(raw: object) -> list[dict[str, str]]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > 100:
+        raise RunnerError("review_methods must be a list of at most 100 entries")
+    methods = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise RunnerError("Each review method must be an object")
+        _fields(item, {"id", "label", "status", "summary", "evidence_pointer"}, "Review method")
+        key = _identifier(item.get("id"), "review_method.id")
+        if key in seen:
+            raise RunnerError(f"Duplicate review method: {key}")
+        seen.add(key)
+        status = item.get("status")
+        if status not in REVIEW_STATUSES:
+            raise RunnerError("review_method.status must be evaluated, inspected, blocked, or untouched")
+        method = {"id": key, "label": _text(item.get("label"), "review_method.label"),
+                  "status": status, "summary": _text(item.get("summary"), "review_method.summary")}
+        if "evidence_pointer" in item:
+            method["evidence_pointer"] = _text(item.get("evidence_pointer"), "review_method.evidence_pointer")
+        methods.append(method)
+    return methods
+
+
+def _population(raw: object, suite_id: str, kind: str) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RunnerError(f"Suite {suite_id}: population must be an object")
+    _fields(raw, {"available_case_count", "class_counts", "source", "sampling_notes"}, "population")
+    available = raw.get("available_case_count")
+    if type(available) is not int or not 1 <= available <= 1_000_000_000:
+        raise RunnerError(f"Suite {suite_id}: population.available_case_count must be between 1 and 1000000000")
+    result: dict[str, Any] = {"available_case_count": available}
+    if "source" in raw:
+        result["source"] = _text(raw.get("source"), "population.source")
+    if "sampling_notes" in raw:
+        result["sampling_notes"] = _text(raw.get("sampling_notes"), "population.sampling_notes")
+    class_counts = raw.get("class_counts")
+    if class_counts is not None:
+        if kind != "decision":
+            raise RunnerError(f"Suite {suite_id}: population.class_counts is supported only for decision suites")
+        if not isinstance(class_counts, dict) or not class_counts:
+            raise RunnerError(f"Suite {suite_id}: population.class_counts must be a non-empty object")
+        normalized: dict[str, int] = {}
+        total = 0
+        for key, value in class_counts.items():
+            label = _text(key, f"Suite {suite_id} population.class_counts label")
+            if type(value) is not int or value < 0:
+                raise RunnerError(f"Suite {suite_id}: population.class_counts values must be non-negative integers")
+            if label in normalized:
+                raise RunnerError(f"Suite {suite_id}: duplicate population.class_counts label {label}")
+            normalized[label] = value
+            total += value
+        if total <= 0 or total > available:
+            raise RunnerError(
+                f"Suite {suite_id}: population.class_counts must total between 1 and available_case_count"
+            )
+        result["class_counts"] = normalized
+    return result
+
+
+def _derived_review_methods(
+    module: dict[str, Any], suites: list[dict[str, Any]], module_findings: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    rows = []
+    kinds = sorted(set(module.get("required_kinds", [])) | {suite["kind"] for suite in suites})
+    for kind in kinds:
+        suite_rows = [suite for suite in suites if suite["kind"] == kind]
+        suite_ids = {suite["id"] for suite in suite_rows}
+        label = "Workflow execution" if kind == "workflow" else "Decision evaluation"
+        if suite_rows and all(
+            suite["executed_cases"] > 0 and suite["executed_cases"] == suite["requested_cases"]
+            and suite["evidence_complete"] for suite in suite_rows
+        ):
+            status = "evaluated"
+            summary = (
+                f"{len(suite_rows)} {kind} suite(s) produced "
+                "usable executed evidence for this module."
+            )
+        elif suite_rows:
+            status = "blocked"
+            summary = (
+                f"At least one attached {kind} suite has incomplete execution or release evidence. "
+                "Inspect suite-level blockers and evidence gaps."
+            )
+        else:
+            status = "untouched"
+            summary = f"No {kind} suite is attached for this module."
+        rows.append({
+            "id": f"pre-d-{kind}",
+            "label": label,
+            "status": status,
+            "summary": summary,
+            "source": "pre_d_executable_evidence",
+            "kind": kind,
+            "suite_ids": sorted(suite_ids),
+            "finding_ids": sorted(
+                finding["id"] for finding in module_findings if finding.get("suite_id") in suite_ids
+            ),
+        })
+    for item in module.get("review_methods", []):
+        rows.append({**item, "source": "reviewer_declared"})
+    return rows
+
+
+def _module_review_status(methods: list[dict[str, Any]]) -> str:
+    derived = [item for item in methods if item.get("source") == "pre_d_executable_evidence"]
+    if any(item["status"] == "blocked" for item in derived):
+        return "blocked"
+    if any(item["status"] == "untouched" for item in derived):
+        touched = any(item["status"] != "untouched" for item in methods)
+        return "blocked" if touched else "untouched"
+    if any(item["status"] == "evaluated" for item in derived):
+        return "evaluated"
+    if any(item["status"] in {"inspected", "evaluated"} for item in methods):
+        return "inspected"
+    if any(item["status"] == "blocked" for item in methods):
+        return "blocked"
+    return "untouched"
+
+
+def _suite_dimensions(kind: str) -> tuple[str, ...]:
+    return ("workflow_coverage",) if kind == "workflow" else DECISION_RELEVANT_DIMENSIONS
+
+
+def _dimension_tier(dimension: str) -> str:
+    return "baseline" if dimension in BASELINE_TIER_DIMENSIONS else "advanced"
+
+
+def _suite_dimension_coverage(
+    kind: str, gated: set[str], required: list[str] | None, metrics: dict[str, Any],
+) -> list[dict[str, Any]]:
+    required_set = {value for value in (required or []) if isinstance(value, str)}
+    rows = []
+    for dimension in _suite_dimensions(kind):
+        metric = metrics.get(dimension)
+        metric = metric if isinstance(metric, dict) else {}
+        measurement_status = str(metric.get("measurement_status", "not_measured"))
+        policy_status = (
+            "gated" if dimension in gated else
+            "required_only" if dimension in required_set else
+            "measured_only" if measurement_status == "measured" else
+            "request_unknown" if required is None else
+            "not_requested"
+        )
+        entry = {
+            "dimension": dimension,
+            "title": metric_title(dimension),
+            "tier": _dimension_tier(dimension),
+            "policy_status": policy_status,
+            "measurement_status": measurement_status,
+            "trust_status": str(metric.get("trust_status", "missing")),
+            "representativeness": metric.get("representativeness", "unknown"),
+            "reason": metric.get("reason"),
+        }
+        if isinstance(metric.get("evidence_source"), str):
+            entry["evidence_source"] = metric["evidence_source"]
+        rows.append(entry)
+    return rows
+
+
+def _dimension_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = {
+        "gated": 0,
+        "required_only": 0,
+        "measured_only": 0,
+        "not_requested": 0,
+        "request_unknown": 0,
+        "baseline_unexercised": 0,
+        "advanced_measured": 0,
+    }
+    suites = [
+        suite
+        for item in items
+        for suite in (item.get("suites", []) if isinstance(item.get("suites"), list) else [item])
+        if isinstance(suite, dict)
+    ]
+    for suite in suites:
+        for entry in suite.get("dimension_coverage", []):
+            status = entry.get("policy_status")
+            if status in counts:
+                counts[status] += 1
+            if entry.get("tier") == "baseline" and status == "not_requested":
+                counts["baseline_unexercised"] += 1
+            if entry.get("tier") == "advanced" and entry.get("measurement_status") == "measured":
+                counts["advanced_measured"] += 1
+    counts["notice"] = (
+        "Baseline-tier dimensions are the first release-ready signals for a suite kind. "
+        "Unexercised means PRE-D did not include them in this suite's requested release checks."
+        " Requested and gated dimensions may still be unmeasured. Request unknown means the plan or report could not establish what was requested."
+    )
+    return counts
+
+
+def _executed_expected_label_counts(metrics: dict[str, Any]) -> dict[str, int]:
+    classification = metrics.get("classification")
+    if not isinstance(classification, dict):
+        return {}
+    rows = classification.get("case_results")
+    if not isinstance(rows, list):
+        return {}
+    counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("expected_label"), str):
+            continue
+        counts[row["expected_label"]] = counts.get(row["expected_label"], 0) + 1
+    return counts
+
+
+def _population_coverage(
+    suite: dict[str, Any], metrics: dict[str, Any], scored: int,
+) -> dict[str, Any] | None:
+    if suite["kind"] != "decision":
+        return None
+    declared = suite.get("population")
+    executed_labels = _executed_expected_label_counts(metrics)
+    if not declared:
+        return {
+            "status": "not_declared",
+            "executed_case_count": scored,
+            "executed_expected_class_counts": executed_labels,
+            "notice": (
+                "No available labelled population was declared. PRE-D can score the executed pack, "
+                "but cannot state what share of the larger labelled population it represents."
+            ),
+        }
+    available = declared["available_case_count"]
+    class_counts = declared.get("class_counts", {})
+    inconsistent = scored > available or any(executed_labels.get(label, 0) > count for label, count in class_counts.items())
+    class_rows = []
+    for label, count in class_counts.items():
+        executed = executed_labels.get(label, 0)
+        class_rows.append({
+            "label": label,
+            "available_case_count": count,
+            "executed_case_count": executed,
+            "sample_fraction": round(executed / count, 6) if count and not inconsistent else None,
+        })
+    return {
+        "status": "inconsistent_population" if inconsistent else "declared_population",
+        "available_case_count": available,
+        "executed_case_count": scored,
+        "sample_fraction": round(scored / available, 6) if not inconsistent else None,
+        "source": declared.get("source"),
+        "sampling_notes": declared.get("sampling_notes"),
+        "declared_class_counts": class_counts,
+        "executed_expected_class_counts": executed_labels,
+        "unrepresented_labels": sorted(
+            label for label, count in class_counts.items() if count > 0 and executed_labels.get(label, 0) == 0
+        ),
+        "undeclared_executed_labels": sorted(set(executed_labels) - set(class_counts)) if class_counts else [],
+        "class_coverage": class_rows,
+        "notice": (
+            "Declared population counts are inconsistent with this executed pack. Correct the population or sampling scope before interpreting a coverage fraction."
+            if inconsistent else
+            "Population coverage describes only the declared available labelled population. "
+            "It does not prove statistical representativeness or production-wide prevalence."
+        ),
+        **({"unclassified_case_count": available - sum(class_counts.values())} if class_counts else {}),
+    }
+
+
+def _population_summary(modules: list[dict[str, Any]]) -> dict[str, Any]:
+    suites = [
+        suite for module in modules for suite in module["suites"]
+        if suite["kind"] == "decision"
+    ]
+    declared = [suite["population_coverage"] for suite in suites if suite.get("population_coverage", {}).get("status") in {"declared_population", "inconsistent_population"}]
+    inconsistent_count = sum(item["status"] == "inconsistent_population" for item in declared)
+    total_available = sum(item["available_case_count"] for item in declared)
+    total_executed = sum(item["executed_case_count"] for item in declared)
+    return {
+        "decision_suite_count": len(suites),
+        "declared_population_suite_count": len(declared),
+        "inconsistent_population_suite_count": inconsistent_count,
+        "missing_population_suite_count": sum(
+            suite.get("population_coverage", {}).get("status") == "not_declared" for suite in suites
+        ),
+        "declared_available_case_count": total_available,
+        "executed_case_count_against_declared_populations": total_executed,
+        "sample_fraction": round(total_executed / total_available, 6) if total_available and not inconsistent_count else None,
+        "notice": (
+            "Population coverage is optional descriptive context for decision suites. "
+            "Totals sum the declared suite populations, which may overlap; they do not count unique application records. "
+            "Without population context, PRE-D reports only the executed pack."
+        ),
+    }
+
+
 def validate_manifest(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize policy before any evaluation plan can execute."""
     if raw.get("schema_version") != MANIFEST_SCHEMA:
@@ -129,7 +436,7 @@ def validate_manifest(raw: dict[str, Any]) -> dict[str, Any]:
     for module in modules:
         if not isinstance(module, dict):
             raise RunnerError("Each release module must be an object")
-        _fields(module, {"id", "name", "owner", "required", "exclusion_reason", "suites", "required_kinds", "depends_on", "test_requirements"}, "Module")
+        _fields(module, {"id", "name", "owner", "required", "exclusion_reason", "suites", "required_kinds", "depends_on", "test_requirements", "review_methods"}, "Module")
         module_id = _identifier(module.get("id"), "module.id")
         if module_id in module_ids:
             raise RunnerError(f"Duplicate release module: {module_id}")
@@ -151,7 +458,7 @@ def validate_manifest(raw: dict[str, Any]) -> dict[str, Any]:
         for suite in suites:
             if not isinstance(suite, dict):
                 raise RunnerError("Each release suite must be an object")
-            _fields(suite, {"id", "kind", "config", "report", "subject_id", "minimum_cases", "gates", "execution_policy"}, "Suite")
+            _fields(suite, {"id", "kind", "config", "report", "subject_id", "minimum_cases", "gates", "execution_policy", "population"}, "Suite")
             suite_id = _identifier(suite.get("id"), "suite.id")
             if suite_id in suite_ids:
                 raise RunnerError(f"Duplicate release suite: {suite_id}")
@@ -207,8 +514,10 @@ def validate_manifest(raw: dict[str, Any]) -> dict[str, Any]:
                     raise RunnerError(f"Suite {suite_id}: execution approval requires a mode and config_sha256")
                 if execution_policy["mode"] == "isolated_write" or "isolation_note" in execution_policy:
                     _text(execution_policy.get("isolation_note"), "execution_policy.isolation_note")
+            population = _population(suite.get("population"), suite_id, kind)
             entries.append({"id": suite_id, "kind": kind, source: source_path, "subject_id": subject,
                             "minimum_cases": min_cases, "gates": checked,
+                            **({"population": population} if population is not None else {}),
                             **({"execution_policy": dict(execution_policy)} if execution_policy is not None else {})})
         kinds = module.get("required_kinds")
         if kinds is not None and (not isinstance(kinds, list) or not kinds or any(k not in ("decision", "workflow") for k in kinds)
@@ -224,11 +533,13 @@ def validate_manifest(raw: dict[str, Any]) -> dict[str, Any]:
             requirements = validate_requirements(module["test_requirements"], entries, dependencies)
             if not set(r["kind"] for r in requirements) <= set(kinds or []):
                 raise RunnerError("Every requirement kind must be listed in module.required_kinds")
+        review_methods = _review_methods(module.get("review_methods"))
         normalized.append({"id": module_id, "name": _text(module.get("name", module_id), "module.name"),
                            "owner": _text(module.get("owner", "Unassigned"), "module.owner"),
                            "required": required, "exclusion_reason": reason, "suites": entries,
                            **({"required_kinds": sorted(kinds)} if kinds is not None else {}),
                            **({"test_requirements": requirements} if requirements is not None else {}),
+                           **({"review_methods": review_methods} if review_methods else {}),
                            "depends_on": dependencies})
     if not any(module["required"] for module in normalized):
         raise RunnerError("A release manifest must include at least one required module")
@@ -269,7 +580,8 @@ def _verdict(findings: list[dict[str, Any]]) -> str:
 
 def build_release_report(
     manifest: dict[str, Any], evidence: dict[str, dict[str, Any]], *, now: datetime | None = None,
-    baseline: dict[str, Any] | None = None,
+    baseline: dict[str, Any] | None = None, history: list[dict[str, Any]] | None = None,
+    plan_metadata: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Produce a bounded recommendation without changing the underlying metrics."""
     manifest = validate_manifest(manifest)
@@ -277,9 +589,18 @@ def build_release_report(
     if baseline is not None:
         from .release_comparison import validate_baseline
         validate_baseline(baseline, manifest["application"]["id"], now)
+    if history is not None:
+        from .release_comparison import validate_baseline
+
+        if not isinstance(history, list) or any(not isinstance(item, dict) for item in history):
+            raise RunnerError("History must be a list of PRE-D release-review JSON reports")
+        for item in history:
+            validate_baseline(item, manifest["application"]["id"], now)
     findings: list[dict[str, Any]] = []
+    advisories: list[dict[str, Any]] = []
     modules: list[dict[str, Any]] = []
     packages: dict[str, str] = {}
+    plan_metadata = plan_metadata or {}
 
     def add(code: str, why: str, action: str, *, module: dict | None = None,
             suite: dict | None = None, severity: str = "gap", category: str = "coverage",
@@ -293,6 +614,22 @@ def build_release_report(
                          "owner": module["owner"] if module else "Release owner",
                          "why": why, "recommendation": action, "evidence_pointer": pointer,
                          "case_ids": cases or [], "root_cause_status": "not_established"})
+
+    def advise(code: str, why: str, action: str, *, module: dict | None = None,
+               suite: dict | None = None, category: str = "coverage_detail",
+               pointer: str | None = None, cases: list[str] | None = None) -> None:
+        advisories.append({
+            "id": f"release-advisory-{len(advisories) + 1:04d}",
+            "code": code,
+            "category": category,
+            "module_id": module["id"] if module else None,
+            "suite_id": suite["id"] if suite else None,
+            "owner": module["owner"] if module else "Release owner",
+            "why": why,
+            "recommendation": action,
+            "evidence_pointer": pointer,
+            "case_ids": cases or [],
+        })
 
     if not manifest["application"]["inventory_complete"]:
         add("inventory_unconfirmed", "The application module inventory has not been confirmed complete.",
@@ -312,15 +649,25 @@ def build_release_report(
         for suite in module["suites"]:
             start = len(findings)
             item = evidence.get(suite["id"], {})
+            metadata = plan_metadata.get(suite["id"], {})
             report = item.get("report")
             gates = []
+            gated = {gate["signal"].split(".")[0] for gate in suite["gates"]}
+            planned_dimensions = metadata.get("required_dimensions")
+            if not isinstance(planned_dimensions, list):
+                planned_dimensions = None
             result = {"id": suite["id"], "kind": suite["kind"], "gates": gates,
                       "policy_disclosure": policy_disclosure(suite["kind"], suite["gates"]),
                       "subject_id": suite["subject_id"], "minimum_cases": suite["minimum_cases"],
                       "comparison_basis": {}, "case_outcomes": [], "evidence_complete": False,
                       "artifact": item.get("artifact"), "report_sha256": item.get("report_sha256"),
                       "html_artifact": item.get("html_artifact"),
+                      "dimension_coverage": _suite_dimension_coverage(suite["kind"], gated, planned_dimensions, {}),
+                      "population_coverage": _population_coverage(suite, {}, 0),
                       "requested_cases": 0, "executed_cases": 0}
+            strength = read_signal_summary(metadata.get("workflow_signal_strength"))
+            if strength is not None:
+                result["workflow_signal_strength"] = strength
             suite_results.append(result)
             if not isinstance(report, dict):
                 add(item.get("error_code", "run_missing"), item.get("error", "No completed report is available for this plan."),
@@ -396,6 +743,12 @@ def build_release_report(
                     for r in rows if isinstance(r, dict) and isinstance(r.get("case_id"), str)
                     and (r.get("outcome") in {"passed", "failed", "blocked"} if expected_browser else type(r.get("correct")) is bool)
                 ]
+            if expected_browser:
+                strength = read_signal_summary(execution.get("workflow_signal_strength"))
+                if (strength is not None and strength["case_count"] == requested
+                        and {row["case_id"] for row in strength["cases"]}
+                        == {row["case_id"] for row in result["case_outcomes"]}):
+                    result["workflow_signal_strength"] = strength
             if blocked:
                 add("execution_blocked", f"{blocked} of {requested} cases could not execute.",
                     "Review session/setup diagnostics, refresh the approved session or adapter, and rerun blocked cases.",
@@ -418,10 +771,11 @@ def build_release_report(
                             "Review duplicate inputs, class balance, and per-class errors. Use representative independent cases before accepting the release estimate.",
                             module=module, suite=suite, severity="warning", category="evaluation_quality", pointer="evaluation.dataset_health")
             required = evaluation.get("required_dimensions")
-            gated = {gate["signal"].split(".")[0] for gate in suite["gates"]}
             if not isinstance(required, list) or not required or not all(isinstance(v, str) for v in required):
                 add("required_dimensions_missing", "The run does not list its required metric dimensions.", "Regenerate the report with its evaluation requirements.", module=module, suite=suite)
                 required = []
+            result["dimension_coverage"] = _suite_dimension_coverage(suite["kind"], gated, required, metrics)
+            result["population_coverage"] = _population_coverage(suite, metrics, scored)
             for dimension in sorted(set(required) - gated):
                 add("metric_policy_missing", f"{metric_title(dimension)} is required by this run but has no release threshold.",
                     "Add an explicit metric gate for this required dimension before making a release recommendation.", module=module, suite=suite, pointer=f"metrics.{dimension}")
@@ -495,6 +849,36 @@ def build_release_report(
                         module=module, suite=suite, severity="warning", category="evaluation_quality", pointer=f"metrics.{dimension}")
             result["verdict"] = _verdict(findings[start:])
             result["evidence_complete"] = not any(f["severity"] == "gap" for f in findings[start:])
+        # Include scope cautions even when a suite could not produce a report.
+        for suite in suite_results:
+            if suite["kind"] == "decision":
+                unexercised = [row["title"] for row in suite["dimension_coverage"]
+                               if row["tier"] == "baseline" and row["policy_status"] == "not_requested"]
+                if unexercised:
+                    advise("baseline_dimension_unexercised",
+                           "Baseline-tier decision dimensions were left unexercised: " + ", ".join(unexercised) + ".",
+                           "Add these dimensions to evaluation.required_dimensions and add at least one explicit release gate to exercise the baseline decision evidence.",
+                           module=module, suite=suite, category="decision_quality", pointer="evaluation.required_dimensions")
+                population = suite["population_coverage"]
+                if population["status"] == "not_declared":
+                    advise("population_context_missing",
+                           "This decision suite has no declared labelled population context. Its execution counts describe only the supplied pack.",
+                           "Declare suite.population.available_case_count and optional class_counts to compare this pack with the available labelled population.",
+                           module=module, suite=suite, category="evaluation_quality", pointer="suite.population")
+                elif population["status"] == "inconsistent_population":
+                    advise("population_context_inconsistent", population["notice"],
+                           "Check the total and per-class population counts, repeated cases, and sampling scope. Coverage fractions are withheld until the counts agree.",
+                           module=module, suite=suite, category="evaluation_quality", pointer="suite.population")
+            else:
+                strength = suite.get("workflow_signal_strength")
+                if strength is None:
+                    advise("workflow_signal_unknown", "The available evidence does not record the workflow assertion strength.",
+                           "Rerun the workflow plan with this runner to include a content-free assertion summary. Review the source plan before interpreting PASS as rendered-content coverage.",
+                           module=module, suite=suite, category="workflow", pointer="execution.workflow_signal_strength")
+                else:
+                    for caution in workflow_signal_advisories(strength):
+                        advise(caution["code"], caution["summary"], caution["action"], module=module, suite=suite,
+                               category="workflow", pointer="workflow_signal_strength", cases=caution["case_ids"])
         requirements = evaluate_requirements(module, suite_results)
         for requirement in requirements:
             if requirement["status"] != "passed":
@@ -518,6 +902,7 @@ def build_release_report(
                     "Add an integration requirement with an observable cross-module assertion. Passing each module separately does not establish their integration.",
                     module=module, category="dependency_coverage")
         module_findings = findings[module_start:]
+        review_methods = _derived_review_methods(module, suite_results, module_findings)
         modules.append({"id": module["id"], "name": module["name"], "owner": module["owner"],
                         "required": module["required"], "exclusion_reason": module["exclusion_reason"],
                         "verdict": _verdict(module_findings), "suites": suite_results,
@@ -525,6 +910,10 @@ def build_release_report(
                         "dependency_coverage": dependency_coverage,
                         "test_requirements": requirements,
                         "test_requirements_sha256": sha256(module.get("test_requirements", [])),
+                        "review_methods": review_methods,
+                        "review_status": _module_review_status(review_methods),
+                        "dimension_summary": _dimension_summary(suite_results),
+                        "advisory_ids": [a["id"] for a in advisories if a["module_id"] == module["id"]],
                         "coverage_basis": "declared_requirements" if "required_kinds" in module else "attached_plans_only",
                         "coverage": [{
                             "kind": kind,
@@ -537,6 +926,7 @@ def build_release_report(
                         "finding_ids": [f["id"] for f in module_findings]})
     by_id = {m["id"]: m for m in modules}
     comparison = None
+    history_summary = None
     if baseline is not None:
         from .release_comparison import compare_releases
         comparison, changes = compare_releases(manifest, modules, baseline)
@@ -544,6 +934,10 @@ def build_release_report(
             module = by_id.get(change.pop("module_id", None))
             suite_id = change.pop("suite_id", None)
             add(module=module, suite={"id": suite_id} if suite_id else None, **change)
+    if history:
+        from .release_comparison import summarize_history
+
+        history_summary = summarize_history(manifest, modules, history)
     unavailable = {m["id"] for m in modules if not m["required"] or _verdict([f for f in findings if f["module_id"] == m["id"]]) in {"do_not_ship", "insufficient_evidence"}}
     while True:
         expanded = unavailable | {m["id"] for m in modules if set(m["depends_on"]) & unavailable}
@@ -560,6 +954,16 @@ def build_release_report(
         module_findings = [f for f in findings if f["module_id"] == module["id"]]
         module["verdict"] = _verdict(module_findings)
         module["finding_ids"] = [f["id"] for f in module_findings]
+    review_scope = {
+        **{status: sum(module["review_status"] == status for module in modules) for status in REVIEW_STATUS_ORDER},
+        "method_count": sum(len(module.get("review_methods", [])) for module in modules),
+        "notice": (
+            "Evaluated means all attached executable suites completed with usable evidence for the declared test kinds; their checks may still fail. "
+            "Inspected means only reviewer-declared activity is recorded, including external evaluations. "
+            "Blocked means planned executable review did not complete cleanly or a required executable method remains untouched. "
+            "Untouched means no executable evidence or review method is recorded."
+        ),
+    }
     verdict = _verdict(findings)
     return {"schema_version": REPORT_SCHEMA, "generated_at": now.isoformat(),
             "application": manifest["application"], "manifest_sha256": sha256(manifest),
@@ -569,10 +973,16 @@ def build_release_report(
                         "suite_count": sum(len(m["suites"]) for m in modules),
                         "blockers": sum(f["severity"] == "blocker" for f in findings),
                         "evidence_gaps": sum(f["severity"] == "gap" for f in findings),
-                        "conditions": sum(f["severity"] == "warning" for f in findings)},
+                        "conditions": sum(f["severity"] == "warning" for f in findings),
+                        "advisories": len(advisories)},
             "modules": modules, "findings": sorted(findings, key=lambda f: {"blocker": 0, "gap": 1, "warning": 2}[f["severity"]]),
+            "advisories": advisories,
+            "review_scope": review_scope,
+            "dimension_coverage": _dimension_summary(modules),
+            "population_coverage": _population_summary(modules),
             "test_coverage": coverage_totals(modules),
             "comparison": comparison,
+            "history": history_summary,
             "limitations": ["A passing pack establishes results on its cases; it does not establish correctness for every production input.",
                             "Recommendations identify areas to investigate. Exact code-level root causes require additional evidence.",
                             "Report hashes identify local artifacts; they do not certify the target's implementation or dataset independence."],

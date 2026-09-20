@@ -15,7 +15,7 @@ or new runtime dependency is required.
 ## Execute the entire declared inventory
 
 The `scope`, `bind`, `attach`, `preflight`, and `run` commands below require
-PRE-D Local 0.13.0 or later. The existing `release check` workflow
+PRE-D Local 0.14.0 or later for all coverage and history features below. The existing `release check` workflow
 remains supported for explicitly partial runs and report review.
 
 PRE-D can run all modules using their approved browser and decision plans in
@@ -93,6 +93,31 @@ every declared suite/case completed, not that every possible behavior was tested
 or that the quality gates passed. `all_modules_executed` is independent of the
 release recommendation.
 
+The report now also shows:
+
+- **Metric dimension coverage** for every suite, separating gated,
+  measured-only, and not-requested dimensions.
+- **Population coverage** for decision suites when the manifest declares the
+  larger labelled population available to that suite.
+- **Historical trend context** when you supply one or more `--history` release
+  reports in addition to or instead of a direct `--baseline`.
+
+**Coverage advisories** appear in setup, preflight JSON, and release HTML/JSON.
+They explain unrequested baseline dimensions, absent population context, and
+weak workflow assertions without changing the numeric scores or release verdict.
+Missing or blocked reports remain listed in dimension coverage. If the requested
+dimensions cannot be established, their request status is explicitly unknown.
+
+Workflow signal strength describes the **planned checks after the final
+navigation or interaction**, not a pass result. Visible text and visible-element
+assertions are distinguished from title-only, route-only, and non-visible
+element-state checks. A case with no final assertion is also flagged. Deliberate
+absence checks can be appropriate for negative paths; review the intended outcome.
+Text and selector waits are accepted consistently by plan and objective validation.
+New local reports retain only case IDs and signal categories for reuse, without
+page text or selectors. Older reports lacking this metadata disclose unknown
+assertion strength.
+
 The **test objective** summary is separate from execution completeness. Each
 objective names its test kind, category, optional browser persona or module
 dependency, actual suite/case IDs, and a reviewer-written assertion description.
@@ -118,6 +143,17 @@ or incomplete, and `1` means a command or manifest error. With `--require-ship`,
 `run` also returns `2` for a non-Ship recommendation. Use a fresh full execution
 with `--baseline out/previous-release.json` to test regressions, not just prepare
 a hypothetical baseline.
+
+Use repeated `--history` flags when you want conservative trend context across
+more than one prior release review:
+
+```text
+esx-eval release run --manifest release.json --history out/release-2.json --history out/release-3.json --out out/release-4.json
+```
+
+History is sorted by actual timestamps, including timezone offsets. Regenerated
+artifacts from the same source run do not add another comparable observation.
+History remains descriptive; use `--baseline` for the existing regression gate.
 
 Application-specific routes, expected outcomes, labelled data, approved sessions,
 and safe execution interfaces still need to exist. For a module without those,
@@ -167,6 +203,11 @@ personas, decision datasets, and multi-page or integration journeys.
           "subject_id": "decision-engine",
           "config": "decisions/esx-eval.json",
           "minimum_cases": 20,
+          "population": {
+            "available_case_count": 13133,
+            "class_counts": {"allow": 12976, "review": 157},
+            "source": "Held-out labelled archive"
+          },
           "gates": [
             {"signal": "classification.accuracy", "operator": "gte", "threshold": 0.95},
             {"signal": "classification.macro_f1", "operator": "gte", "threshold": 0.90},
@@ -204,6 +245,16 @@ personas, decision datasets, and multi-page or integration journeys.
 `application.version` must match `evaluation.subject_version`.
 Each suite's `subject_id` must match `evaluation.agent_id`.
 
+Optional suite `population` metadata is descriptive context, not an implicit
+gate. It lets PRE-D say what share of a declared labelled universe was sampled
+by the executed decision pack. Without it, PRE-D truthfully reports only the
+executed pack size and class mix.
+Class counts may cover only part of the available population; the report derives
+the remaining unclassified count. If executed totals or per-class counts exceed
+the declared population, coverage fractions are withheld and an inconsistency
+advisory is shown. Suite populations may overlap, so their summed totals are not
+a count of unique application records.
+
 Manifest paths are relative to the manifest. Each plan runs from its own
 directory, so its adapter scripts, session files, and other relative paths keep
 their original meaning. Existing target, authentication, and sandbox restrictions
@@ -227,6 +278,39 @@ The coverage table separates planned and executed suites for each test kind.
 **Complete coverage does not mean passing behavior.** A fully executed suite can
 have complete evidence and still fail its release gates. Blocked sessions,
 missing metrics, and inadequate samples remain incomplete evidence.
+
+Each module also carries a separate review-scope state in the release report:
+`evaluated`, `inspected`, `blocked`, or `untouched`. This does not replace the
+release verdict. It answers a narrower question: how far the review actually
+got for that module. `evaluated` requires complete, usable executed evidence from
+every attached suite and every required executable kind. `inspected` means only manual review metadata
+was recorded. `blocked` means an executable review was planned but did not
+complete, or a required executable path remains missing beside other review
+activity. `untouched` means no executable evidence or manual review note is
+recorded.
+
+Optional `review_methods` let the reviewer record non-executable review work
+without pretending it was tested. For example:
+
+```json
+{
+  "id": "integrations",
+  "required": true,
+  "review_methods": [
+    {
+      "id": "runbook-review",
+      "label": "Runbook review",
+      "status": "inspected",
+      "summary": "Reviewed rollback runbook and dependency owners.",
+      "evidence_pointer": "notes/release-review.md"
+    }
+  ],
+  "suites": []
+}
+```
+
+That module still remains an evidence gap until real suites exist, but the
+report can now show that the team inspected it instead of leaving it invisible.
 
 Without explicit `gates`, a decision suite uses accuracy >= 0.95, macro F1 >=
 0.90, and ECE <= 0.15. A workflow suite uses execution rate = 1 and signal match
@@ -256,9 +340,9 @@ evidence gap while other valid plans continue. No failed plan is automatically
 retried, which avoids replaying application actions unexpectedly.
 
 The report includes the release recommendation, module results, threshold
-comparisons, findings with their module/plan/case references, suggested actions,
-and source report links. Recommendations identify investigation areas; they do
-not invent exact source-file root causes.
+comparisons, the review-scope matrix, findings with their module/plan/case
+references, suggested actions, and source report links. Recommendations
+identify investigation areas; they do not invent exact source-file root causes.
 
 Each invocation retains its artifacts for review. PRE-D does not start a daemon
 or perform background runs. Teams can remove obsolete review folders according

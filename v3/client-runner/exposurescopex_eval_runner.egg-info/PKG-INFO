@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: exposurescopex-eval-runner
-Version: 0.13.0
+Version: 0.14.0
 Summary: Run local-first ExposureScopeX AI pre-release evaluations in a customer environment.
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
@@ -10,7 +10,7 @@ Requires-Dist: playwright<2,>=1.49; extra == "browser"
 
 # ExposureScopeX Local AI Evaluation Runner
 
-**PRE-D Local 0.13.0: guided setup, reviewed module coverage, and local AI evaluation.**
+**PRE-D Local 0.14.0: coverage advisories, reviewed module scope, historical context, and local AI evaluation.**
 
 `esx-eval` is a **local-first pre-release evaluator** for a model, RAG
 application, agent, or multi-agent system. It runs next to the AI system being
@@ -29,7 +29,7 @@ code, traces, environment variables, stderr, credentials, or results.
 | Review required modules and decide what blocks a release | [Application release review](RELEASE_REVIEW.md) |
 | Compare two versions without hiding coverage changes | [Baseline comparison](RELEASE_REVIEW.md#compare-a-candidate-against-a-baseline) |
 | Connect groundedness, hallucination, or other metric evidence | [Evidence guide](PRE-D_EVIDENCE_GUIDE.md) |
-| See what changed and what remains unsupported | [0.13.0 release notes](RELEASE_NOTES.md) |
+| See what changed and what remains unsupported | [0.14.0 release notes](RELEASE_NOTES.md) |
 
 Python 3.11+ is required. Browser testing additionally needs Playwright and its
 Chromium runtime; semantic evaluation needs the configured independent local
@@ -37,30 +37,36 @@ judge. Installing packages may require network access. Local evaluation is not
 automatically offline: the application or its configured providers can still
 make external requests.
 
-## What is new in 0.13.0
+## What is new in 0.14.0
 
-- `esx-eval setup --application` provides local forms for module inventory,
-  existing evaluation plans, personas, dependencies, and reviewed case bindings.
-- `release scope`, `bind`, `attach`, `preflight`, and `run` prepare and execute
-  the entire declared inventory. Missing plans or objectives block execution
-  before a target is called; a completed report is not a fresh execution.
-- Reusable objectives cover positive, negative, boundary, recovery,
-  authorization, and integration scenarios. They are review templates, not
-  generated tests or expected labels.
-- Reports distinguish actual execution, objective outcomes, dependency gaps,
-  observed decision errors, and selected release thresholds.
-- Plan approval is tied to its configuration; guided creation requires the
-  reviewed preview to match current plans and bindings. Local setup requests
-  are serialized to avoid cross-request path resolution errors.
+- Application setup previews review scope and the generated manifest, including
+  optional manual inspection notes. Notes cannot substitute for executed tests.
+- Every attached suite must complete with usable evidence for its module to be
+  marked evaluated. Partial execution remains blocked, even if another suite passed.
+- Release reports now show which suite dimensions were gated, merely measured,
+  or left unrequested, so a missing baseline-tier signal is visible instead of
+  hiding behind a simpler scorecard.
+- Decision suites can optionally declare the larger labelled population they
+  sampled from, letting reports show pack-versus-population context without
+  pretending it is a statistical guarantee.
+- `release check` and `release run` now accept repeated `--history` artifacts
+  for conservative multi-run trend context across more than one prior release.
+- Setup, preflight, and reports flag weaker route/title/element-state browser
+  checks and missing final assertions. Their planned strength stays distinct
+  from the actual execution outcome, including when reports are reused.
+- Invalid population counts cannot produce coverage over 100%. History handles
+  timezone offsets and deduplicates regenerated reports of the same source run.
 
 See [Application setup](APPLICATION_SETUP.md) for the guided path, and
 [release notes](RELEASE_NOTES.md) for validation and limits.
 
-### Retained from 0.12.0
+### Retained capabilities
 
-The new `release` commands build on the existing metric engines, rather than
+The `release` commands build on the existing metric engines, rather than
 replacing them. They combine existing plans into a scoped application review:
 
+- Guided application setup and `release scope`, `bind`, `attach`, `preflight`,
+  and `run` for reviewed objectives, personas, approvals, and all-module execution.
 - Explicit required workflow/decision coverage, module owners, exclusions, and
   dependency readiness. A passing decision pack cannot cover a missing workflow.
 - Four recommendations: **Ship**, **Ship with conditions**, **Do not ship**, and
@@ -81,7 +87,7 @@ readiness**, to avoid confusing one evaluation with an application release revie
 | --- | --- | --- |
 | Decision/API/adapter | Accuracy, precision, recall, F1, Brier score, calibration, and configured evidence-reference checks | Representative labelled cases, the real decision endpoint/adapter, returned labels and genuine confidence values |
 | Browser workflow | Approved login, navigation, executed workflows, and visible expected signals | A test identity/session and reviewed journeys with stable assertions |
-| Semantic groundedness/hallucination | Claim-level judgments against supplied sources, plus supported abstention checks | Actual response text, exact source material, an independent local judge, and configured review/gold expectations |
+| Semantic groundedness/hallucination | Claim-level judgments against supplied sources, plus supported abstention checks | Actual response text, exact source material, an independent local judge, and abstention expectations where applicable; no separate gold claim file is required for the semantic path |
 | Telemetry-backed metrics | Supported retrieval, tools, trajectory, security, robustness, agreement, repeatability, or usage measures | The dimension-specific observations and expectations described in the evidence guide |
 | Application release review | Whether the declared modules and suites satisfy an explicit release policy | Module inventory, owners, existing plans/reports, exclusions, dependencies, and thresholds |
 
@@ -90,14 +96,21 @@ Evidence-ID overlap is not proof that a claim is true. Model-judge verdicts
 remain fallible even when obtained independently. Missing observations are
 reported as missing, not replaced with fabricated scores.
 
+Before a real semantic test, follow the [groundedness and hallucination acceptance
+checklist](PRE-D_EVIDENCE_GUIDE.md#before-your-first-semantic-acceptance-test).
+Automated fixtures validate runner behavior, not the accuracy of your chosen judge.
+
 ## Application release quick start
 
-**Available in 0.13.0: guided application setup and all-module execution.**
+**Available since 0.13.0, with coverage guidance expanded in 0.14.0.**
 Run `esx-eval setup --application` for the local multi-module setup page. Reuse
 real browser/decision plans, review scenario and persona objectives, and bind
 them to actual case IDs without hand-editing a release manifest. See the
 [guided application setup](APPLICATION_SETUP.md). No target is called by this
-setup; unbound objectives remain visible and block all-module execution.
+setup; unbound objectives remain visible and block all-module execution. The
+page also previews the resulting review-scope matrix and generated manifest, so
+manual inspection notes stay distinct from executable PRE-D evidence before any
+files are written.
 
 Use `release scope` and `release bind` for the same objective authoring from the
 CLI. Release browser plans now require explicit assertions, not navigation alone.
@@ -108,9 +121,39 @@ Use `release attach` to
 bind approved plans without hand-editing the manifest, `release preflight` to
 check the entire inventory without target calls, and `release run` to execute
 all declared modules. Missing plans, exclusions, report reuse, and unapproved
-execution block this mode before any suite starts. Upgrade to 0.13.0 to use
+execution block this mode before any suite starts. Upgrade to 0.14.0 to use
 these commands. See the
 [all-module guide](RELEASE_REVIEW.md#execute-the-entire-declared-inventory).
+
+Release reports now separate review scope from verdicts. Each module is marked
+`evaluated`, `inspected`, `blocked`, or `untouched` so teams can tell the
+difference between executable PRE-D evidence and manual review notes.
+`evaluated` requires complete, usable evidence from every attached suite for
+the declared test kinds. A partial run remains `blocked`. An external review
+recorded as evaluated remains reviewer-declared and contributes to `inspected`.
+
+Release reports also separate three additional review layers:
+
+- **Metric dimension coverage** shows which suite dimensions were gated,
+  measured-only, or left unrequested.
+- **Population coverage** shows executed-pack versus declared labelled-population
+  context for decision suites when that metadata is supplied.
+- **Historical trend context** compares the current run against one or more
+  supplied prior release reports using the same matched-pack conservatism as
+  the baseline comparison logic.
+
+Setup, preflight, and release reports also show non-blocking **coverage
+advisories** for omitted baseline decision evidence, missing population context,
+and weak browser checks. Workflow signal strength describes planned assertions
+after the last navigation or interaction. A route, title, or hidden-element check
+does not prove visible page content. Failed and blocked cases keep their actual
+execution outcomes. New reports preserve this content-free summary when reused;
+older reports explicitly show unknown assertion strength.
+
+Blocked suites remain in the dimension inventory as unmeasured. Inconsistent
+population counts suppress coverage percentages and explain what to correct.
+History orders timezone-aware timestamps chronologically and counts each source
+execution once per signal, even if its report was regenerated.
 
 Each module still needs real workflows or decision cases and expected behavior;
 this is not automatic full-application test generation. The partial/report-only
@@ -144,6 +187,13 @@ Preserve a previous release-review JSON to compare versions:
 
 ```text
 esx-eval release check --manifest candidate-release.json --baseline out/previous-release.json --run --out out/candidate-release.json --require-ship
+```
+
+Supply more than one prior report when you want conservative multi-run trend
+context across a short release history:
+
+```text
+esx-eval release run --manifest candidate-release.json --history out/release-2.json --history out/release-3.json --out out/release-4.json
 ```
 
 The baseline is never rerun or overwritten. Matching suite IDs, subjects,
@@ -181,7 +231,7 @@ esx-eval release check --help
 ```
 
 Use `py` on Windows or `python3` on macOS/Linux if that is the interpreter for
-your evaluation environment. The version should be `0.13.0`. If the import
+your evaluation environment. The version should be `0.14.0`. If the import
 shows the new version but `esx-eval setup --help` has no `--application` option, the executable on
 PATH belongs to another environment; use the matching environment's executable.
 
@@ -192,11 +242,14 @@ the PRE-D version also changes the protocol fingerprint; rerun both application
 versions under the same evaluator version when making that comparison.
 
 **Current limits:** advanced semantic/telemetry metrics can still be used in
-current-release gates, but their regression comparisons are not yet supported.
-Declared inventory is not automatic discovery of every business journey. The
-release layer does not add load tests, arbitrary permissions probes, automatic
-root-cause localization, or production-wide correctness guarantees. Local test
-fixtures validate runner behavior, not independent real-application acceptance.
+current-release gates, but their history/regression comparisons are not yet
+supported. History artifacts are supplied manually; PRE-D Local does not yet
+schedule recurring evaluation jobs by itself. Declared inventory is not
+automatic discovery of every business journey. The release layer does not add
+integrated code-test execution, chaos/load tests, comprehensive adversarial
+security testing, arbitrary permissions probes, automatic root-cause localization, or
+production-wide correctness guarantees. Local test fixtures validate runner
+behavior, not independent real-application acceptance.
 
 ## Detailed metric and workflow guides
 
@@ -640,7 +693,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.13.0"
+   $version = "0.14.0"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -654,7 +707,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 
    ```bash
    shasum -a 256 -c SHA256SUMS
-   python3 -m pip install --upgrade ./exposurescopex_eval_runner-0.13.0-py3-none-any.whl
+   python3 -m pip install --upgrade ./exposurescopex_eval_runner-0.14.0-py3-none-any.whl
    python3 -c "from esx_eval_runner import __version__; print(__version__)"
    ```
 

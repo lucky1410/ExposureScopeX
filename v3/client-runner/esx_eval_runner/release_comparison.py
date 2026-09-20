@@ -87,8 +87,12 @@ def _basis_reason(before: dict, after: dict) -> str | None:
             return "Both runs must fully execute the same pack and meet their sample minimum."
     if before["requested_cases"] != after["requested_cases"]:
         return "Executed sample sizes differ."
-    if not before.get("run_id") or not after.get("run_id") or before["run_id"] == after["run_id"]:
+    if (any(not isinstance(suite.get("run_id"), str) or not suite["run_id"] for suite in (before, after))
+            or before["run_id"] == after["run_id"]):
         return "Distinct source executions are required; regenerating or reusing a report is not a new run."
+    if any(suite.get("report_sha256") is not None and not isinstance(suite["report_sha256"], str)
+           for suite in (before, after)):
+        return "Source report fingerprints are malformed."
     if before.get("report_sha256") and before["report_sha256"] == after.get("report_sha256"):
         return "The same source report was reused; this is not a new execution."
     return None
@@ -119,6 +123,49 @@ def _required_kinds(module: dict) -> list[str]:
     if not isinstance(coverage, list):
         return []
     return sorted(str(r.get("kind", "")) for r in coverage if isinstance(r, dict) and r.get("required", True))
+
+
+def _comparison_row(
+    manifest: dict, module_id: str, suite_id: str, signal: str,
+    before_suite: dict, after_suite: dict,
+    before_gate: dict | None, after_gate: dict | None,
+) -> dict[str, Any]:
+    reason = _basis_reason(before_suite, after_suite)
+    if before_gate is None or after_gate is None:
+        reason = "This check was added or removed."
+    elif any(before_gate.get(key) != after_gate.get(key) for key in ("operator", "threshold", "severity")):
+        reason = "The metric threshold, direction, or severity changed."
+    elif signal.split(".")[0] not in COMPARABLE_DIMENSIONS:
+        reason = "This metric needs an independently matched evidence/judge protocol before regression comparison is supported."
+    elif any(
+        gate.get("trust") != "verified" or gate.get("status") not in {"passed", "failed"}
+        or not _finite(gate.get("observed")) or not 0 <= gate["observed"] <= 1
+        for gate in (before_gate, after_gate)
+    ):
+        reason = "Both measurements must be complete, representative, verified, and numeric."
+    row = {
+        "module_id": module_id,
+        "suite_id": suite_id,
+        "signal": signal,
+        "baseline": before_gate.get("observed") if before_gate else None,
+        "candidate": after_gate.get("observed") if after_gate else None,
+        "delta": None,
+        "status": "not_comparable",
+        "reason": reason,
+    }
+    if reason is None:
+        delta = after_gate["observed"] - before_gate["observed"]
+        change = -delta if signal in LOWER_IS_BETTER else delta
+        tolerance = manifest["policy"]["regression_tolerance"]
+        row.update(
+            delta=round(delta, 10),
+            status=(
+                "unchanged" if abs(change) <= tolerance + 1e-10 else
+                "regressed" if change < 0 else
+                "improved"
+            ),
+        )
+    return row
 
 
 def compare_releases(manifest: dict, modules: list[dict], baseline: dict) -> tuple[dict, list[dict]]:
@@ -171,24 +218,7 @@ def compare_releases(manifest: dict, modules: list[dict], baseline: dict) -> tup
             suite_rows = []
             for signal in sorted(old_gates.keys() | new_gates.keys()):
                 a, b = old_gates.get(signal), new_gates.get(signal)
-                why = reason
-                if a is None or b is None:
-                    why = "This check was added or removed."
-                elif any(a.get(k) != b.get(k) for k in ("operator", "threshold", "severity")):
-                    why = "The metric threshold, direction, or severity changed."
-                elif signal.split(".")[0] not in COMPARABLE_DIMENSIONS:
-                    why = "This metric needs an independently matched evidence/judge protocol before regression comparison is supported."
-                elif any(g.get("trust") != "verified" or g.get("status") not in {"passed", "failed"}
-                         or not _finite(g.get("observed")) or not 0 <= g["observed"] <= 1 for g in (a, b)):
-                    why = "Both measurements must be complete, representative, verified, and numeric."
-                row = {"module_id": module_id, "suite_id": suite_id, "signal": signal,
-                       "baseline": a.get("observed") if a else None, "candidate": b.get("observed") if b else None,
-                       "delta": None, "status": "not_comparable", "reason": why}
-                if why is None:
-                    delta = b["observed"] - a["observed"]
-                    change = -delta if signal in LOWER_IS_BETTER else delta
-                    tolerance = manifest["policy"]["regression_tolerance"]
-                    row.update(delta=round(delta, 10), status=("unchanged" if abs(change) <= tolerance + 1e-10 else "regressed" if change < 0 else "improved"))
+                row = _comparison_row(manifest, module_id, suite_id, signal, previous, suite, a, b)
                 rows.append(row)
                 suite_rows.append(row)
             comparable_outcomes = reason is None and any(r["status"] != "not_comparable" and r["signal"].split(".")[0] in {"classification", "workflow_coverage"} for r in suite_rows)
@@ -216,3 +246,147 @@ def compare_releases(manifest: dict, modules: list[dict], baseline: dict) -> tup
             "baseline_generated_at": baseline["generated_at"], "summary": summary, "metrics": rows,
             "case_changes": case_changes, "scope_changes": scope_changes,
             "notice": "Deltas describe the matched local pack, not statistical significance or production-wide improvement. Advanced semantic/telemetry metrics remain in current release gates, but are not yet regression-compared."}, findings
+
+
+def summarize_history(manifest: dict, modules: list[dict], history: list[dict]) -> dict[str, Any]:
+    from .release import _timestamp
+
+    unique: dict[str, dict] = {}
+    for report in history:
+        unique.setdefault(sha256(report), report)
+    ordered = sorted(
+        unique.values(),
+        key=lambda item: _timestamp(item["generated_at"]),
+    )
+    rows: list[dict[str, Any]] = []
+    summary = {"regressed": 0, "improved": 0, "unchanged": 0, "not_comparable": 0}
+    if not ordered:
+        return {
+            "report_count": 0,
+            "metrics": [],
+            "summary": summary,
+            "reports": [],
+            "notice": "No historical release reports were supplied.",
+        }
+
+    module_maps = [{module["id"]: module for module in report["modules"]} for report in ordered]
+    for module in modules:
+        for suite in module["suites"]:
+            current_gates = {gate["signal"]: gate for gate in suite["gates"]}
+            for signal, current_gate in current_gates.items():
+                points: list[dict[str, Any]] = []
+                comparable: list[tuple[dict, dict[str, Any]]] = []
+                seen_runs: set[str] = set()
+                seen_reports: set[str] = set()
+                for report, module_map in zip(ordered, module_maps, strict=True):
+                    previous_module = module_map.get(module["id"])
+                    if previous_module is None:
+                        points.append({
+                            "version": report["application"]["version"],
+                            "generated_at": report["generated_at"],
+                            "status": "not_comparable",
+                            "reason": f"Module {module['id']} is absent from this historical review.",
+                            "observed": None,
+                        })
+                        continue
+                    previous_suite = next(
+                        (item for item in previous_module.get("suites", []) if item.get("id") == suite["id"]),
+                        None,
+                    )
+                    if previous_suite is None:
+                        points.append({
+                            "version": report["application"]["version"],
+                            "generated_at": report["generated_at"],
+                            "status": "not_comparable",
+                            "reason": f"Suite {suite['id']} is absent from this historical review.",
+                            "observed": None,
+                        })
+                        continue
+                    previous_gates = {gate["signal"]: gate for gate in previous_suite.get("gates", [])}
+                    row = _comparison_row(
+                        manifest,
+                        module["id"],
+                        suite["id"],
+                        signal,
+                        previous_suite,
+                        suite,
+                        previous_gates.get(signal),
+                        current_gate,
+                    )
+                    run_id = previous_suite.get("run_id")
+                    report_hash = previous_suite.get("report_sha256")
+                    if row["status"] != "not_comparable":
+                        if run_id in seen_runs or (report_hash and report_hash in seen_reports):
+                            row.update(status="not_comparable", reason="This historical source execution was already counted.")
+                        else:
+                            seen_runs.add(run_id)
+                            if report_hash:
+                                seen_reports.add(report_hash)
+                    point = {
+                        "version": report["application"]["version"],
+                        "generated_at": report["generated_at"],
+                        "status": row["status"],
+                        "reason": row["reason"],
+                        "observed": row["baseline"],
+                    }
+                    points.append(point)
+                    if row["status"] != "not_comparable":
+                        comparable.append((point, row))
+                latest_point, latest_row = comparable[-1] if comparable else (None, None)
+                if latest_row is None:
+                    status = "not_comparable"
+                    delta = None
+                    latest_value = None
+                    best_previous = None
+                    worst_previous = None
+                    reason = (
+                        next((point["reason"] for point in reversed(points) if point["reason"]), None)
+                        or "No comparable historical measurement is available."
+                    )
+                else:
+                    status = latest_row["status"]
+                    delta = latest_row["delta"]
+                    latest_value = latest_row["baseline"]
+                    comparable_values = [point["observed"] for point, _row in comparable]
+                    if signal in LOWER_IS_BETTER:
+                        best_previous = min(comparable_values)
+                        worst_previous = max(comparable_values)
+                    else:
+                        best_previous = max(comparable_values)
+                        worst_previous = min(comparable_values)
+                    reason = latest_row["reason"]
+                summary[status] += 1
+                rows.append({
+                    "module_id": module["id"],
+                    "suite_id": suite["id"],
+                    "signal": signal,
+                    "current": current_gate.get("observed"),
+                    "latest_previous": latest_value,
+                    "latest_previous_version": latest_point["version"] if latest_point else None,
+                    "latest_previous_generated_at": latest_point["generated_at"] if latest_point else None,
+                    "best_previous": best_previous,
+                    "worst_previous": worst_previous,
+                    "comparable_history_count": len(comparable),
+                    "status": status,
+                    "delta_from_latest": delta,
+                    "reason": reason,
+                    "points": points,
+                })
+    return {
+        "report_count": len(ordered),
+        "reports": [
+            {
+                "version": report["application"]["version"],
+                "generated_at": report["generated_at"],
+                "verdict": report["verdict"],
+                "sha256": sha256(report),
+            }
+            for report in ordered
+        ],
+        "summary": summary,
+        "metrics": rows,
+        "notice": (
+            "History trends describe the supplied matched local packs over time. "
+            "They are not a scheduled monitor, population estimate, or statistical significance claim."
+        ),
+    }

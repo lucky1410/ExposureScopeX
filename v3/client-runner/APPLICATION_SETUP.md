@@ -1,6 +1,6 @@
 # PRE-D guided application evaluation
 
-This guide requires **PRE-D Local 0.13.0 or later**. Verify the installed version
+This guide requires **PRE-D Local 0.14.0 or later** for all coverage previews below. Verify the installed version
 with `python -c "from esx_eval_runner import __version__; print(__version__)"`.
 
 ## One local starting point
@@ -16,9 +16,12 @@ providers can still use a network; local PRE-D is not a network sandbox.
 
 1. List the application version and all modules. Pick workflow, decision, or
    mixed coverage for each. Add required browser personas and module dependencies.
+   Optionally record manual review notes for inspections, approvals, or runbook
+   checks you want visible later in the report.
 2. Select existing local evaluation plan paths. Review their test cases and
-   their required metric dimensions. Bind each suggested objective to real cases
-   and describe the assertion actually made by those cases.
+   their required metric dimensions. Inspect the resulting review-scope matrix
+   and generated manifest preview, then bind each suggested objective to real
+   cases and describe the assertion actually made by those cases.
 3. Confirm the inventory and execution scope. Create a new local release folder,
    read the preflight gaps, then run the shown release command when ready.
 
@@ -28,6 +31,29 @@ all-module run. Existing folders and plans are not silently overwritten.
 Creation is bound to the previewed configuration, parsed cases, objective
 bindings and destination. If these change, preview and approve again. This
 snapshot does not attest to external adapter code or freeze the target app.
+
+The review-scope preview answers a narrower question than the release verdict:
+how far the review has actually progressed for each module. `evaluated` means
+all declared executable suites completed with usable PRE-D evidence,
+`inspected` means only reviewer-declared activity exists (including external
+evaluations), `blocked` means executable PRE-D coverage is incomplete,
+and `untouched` means no review activity is recorded. Manual review notes stay
+visible in the manifest preview and final report, but they do not satisfy
+executable PRE-D evidence requirements by themselves.
+
+Read **coverage advisories** alongside blocking preflight issues. Advisories
+highlight baseline decision evidence omitted from the plan, missing population
+context, and weaker browser signals. They do not prevent execution. The workflow
+summary lists planned content, title, route, and element-state checks, plus cases
+without an assertion after the last navigation or interaction. A hidden-element
+wait is not proof that the intended page rendered. Review the assertion and its
+later execution outcome separately. These same cautions appear in the release
+report, including when a suite was blocked.
+
+If you already know the larger labelled population behind a decision suite,
+add optional suite `population` metadata in the manifest after setup. The
+release report can then show executed-pack versus available-pack context
+without pretending the pack is automatically representative.
 
 If a module has no plan, use the linked decision/API or browser setup first.
 For a command adapter, reuse its existing validated PRE-D config. The application
@@ -58,6 +84,8 @@ Case bindings require actual case IDs and matching browser personas. Workflow
 plans need explicit success assertions; opening a page alone is insufficient.
 An assertion description is a reviewer declaration. PRE-D cannot prove that a
 case titled `permission-test` really exercises every permission boundary.
+Likewise, a manual review note can prove that someone inspected a runbook or
+dependency map, but it cannot turn an unexecuted module into evaluated coverage.
 
 Passing module suites separately does not prove the integration between them.
 Add a real cross-module assertion and bind it to an integration objective. Do
@@ -75,6 +103,8 @@ write-interception mechanisms.
 - Fix the app or a demonstrably wrong test expectation. Rerun the same full pack.
 - Pass `--baseline previous-release.json` to compare supported metrics and cases.
   Changed datasets, protocols, thresholds or objective bindings stay visible.
+- Add repeated `--history previous-N.json` inputs when you want conservative
+  multi-run trend context across more than one earlier release review.
 
 Observed wrong decisions remain visible on single-class packs even if broader
 classification is not measurable. This does not manufacture macro F1 or turn a

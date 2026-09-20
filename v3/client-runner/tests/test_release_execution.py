@@ -124,6 +124,19 @@ class WholeInventoryTests(unittest.TestCase):
             self.assertTrue({"inventory_unconfirmed", "required_kind_missing"} <= codes)
             run.assert_not_called()
 
+    def test_preflight_reports_non_blocking_coverage_advisories(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = initialize(root)
+            attach(root)
+            self.assertEqual(call("release", "preflight", "--manifest", str(path), "--out", str(root / "preflight.json")), 0)
+            preflight = json.loads((root / "preflight.json").read_text())
+            self.assertEqual(preflight["status"], "ready")
+            self.assertEqual(
+                {item["code"] for item in preflight["advisories"]},
+                {"baseline_dimension_unexercised", "population_context_missing"},
+            )
+
     def test_existing_report_is_not_fresh_execution(self):
         with TemporaryDirectory() as directory, patch("esx_eval_runner.cli.run_command") as run:
             root = Path(directory)
@@ -343,7 +356,7 @@ class WholeInventoryTests(unittest.TestCase):
             copied = deepcopy(plan["modules"][0]["suites"][0])
             copied.update(id="second-pack", config="copy.json")
             plan["modules"][1]["suites"] = [copied]
-            preflight, _ = preflight_all_modules(validate_manifest(plan), path)
+            preflight, _, _ = preflight_all_modules(validate_manifest(plan), path)
             self.assertIn("duplicate_plan", [i["code"] for i in preflight["issues"]])
 
     def test_preflight_output_cannot_overwrite_a_plan(self):

@@ -111,8 +111,36 @@ class ApplicationSetupTests(unittest.TestCase):
         self.assertTrue(all(not item["bindings"] for item in result["modules"][0]["objectives"]))
         self.assertEqual(result["preflight"]["status"], "blocked")
         self.assertEqual({issue["code"] for issue in result["preflight"]["issues"]}, {"requirement_unbound"})
+        self.assertEqual(result["review_scope"]["summary"]["blocked"], 1)
+        self.assertEqual(result["review_scope"]["modules"][0]["review_status"], "blocked")
+        self.assertEqual(result["review_scope"]["modules"][0]["executable_methods"][0]["status"], "blocked")
+        self.assertEqual(result["preflight_display"]["issues"][0]["summary"], "A reviewed objective still has no real case binding.")
         for secret in ("input-secret-sentinel", "command-secret-sentinel", "example_index", "import json,sys"):
             self.assertNotIn(secret, json.dumps(result))
+
+    def test_manual_review_note_is_preserved_and_shown_in_scope_preview(self):
+        self.values["modules"][0]["review_methods"] = [{
+            "label": "Runbook review",
+            "status": "inspected",
+            "summary": "Reviewed rollback notes and dependency owners.",
+            "evidence_pointer": "notes/release-review.md",
+        }]
+        preview = preview_application(self.values)
+        scope_module = preview["review_scope"]["modules"][0]
+        self.assertEqual(scope_module["review_status"], "blocked")
+        self.assertEqual(scope_module["manual_methods"][0]["label"], "Runbook review")
+        self.assertEqual(scope_module["manual_methods"][0]["status"], "inspected")
+        self.assertIn('"review_methods"', preview["review_scope"]["manifest_json"])
+        self.bind_all()
+        self.values["modules"][0]["review_methods"] = [{
+            "label": "Runbook review",
+            "status": "inspected",
+            "summary": "Reviewed rollback notes and dependency owners.",
+            "evidence_pointer": "notes/release-review.md",
+        }]
+        created = create_reviewed(self.values)
+        self.assertEqual(created["manifest"]["modules"][0]["review_methods"][0]["label"], "Runbook review")
+        self.assertEqual(created["manifest"]["modules"][0]["review_methods"][0]["status"], "inspected")
 
     def test_preview_and_create_never_execute_adapters_or_network_or_import_app(self):
         self.bind_all()
@@ -141,7 +169,7 @@ class ApplicationSetupTests(unittest.TestCase):
         self.assertEqual(summary, result)
         self.assertEqual(manifest, result["manifest"])
         self.assertEqual(summary["status"], "created")
-        preflight, prepared = preflight_all_modules(manifest, manifest_path)
+        preflight, prepared, _ = preflight_all_modules(manifest, manifest_path)
         self.assertEqual(summary["preflight"], preflight)
         self.assertEqual(preflight["status"], "ready")
         self.assertEqual(preflight["planned_case_count"], 20)
@@ -301,6 +329,24 @@ class ApplicationSetupTests(unittest.TestCase):
         self.assertIn("configured judge", result["metric_presets"][-1]["guidance"])
         self.assertIn("adds no judge or metrics", result["metric_presets"][-1]["guidance"])
 
+    def test_preview_surfaces_decision_and_workflow_coverage_advisories(self):
+        result = preview_application(self.values)
+        self.assertEqual(
+            {item["code"] for item in result["preflight_display"]["advisories"]},
+            {"baseline_dimension_unexercised", "population_context_missing"},
+        )
+        self.values["modules"][0]["profile"] = "workflow"
+        write(self.plan, workflow_config())
+        workflow_preview = preview_application(self.values)
+        self.assertEqual(
+            workflow_preview["modules"][0]["plans"][0]["workflow_signal_strength"]["route_signal_only_count"],
+            1,
+        )
+        self.assertEqual(
+            {item["code"] for item in workflow_preview["preflight_display"]["advisories"]},
+            {"workflow_route_only_signal"},
+        )
+
     def test_no_overwrite_of_existing_empty_directory_nonempty_directory_or_file(self):
         for name in ("empty", "occupied", "file"):
             with self.subTest(name=name):
@@ -439,12 +485,14 @@ class ApplicationPageTests(unittest.TestCase):
         for required in ('href="/"', 'href="/browser"', 'prefers-color-scheme:dark',
                          '/api/application/preview', '/api/application/create', 'X-ESX-Setup-Token',
                          'textContent', 'cases.selectedOptions', 'option.value=item.case_id',
-                         'suite_id:suite.value', 'Remove module', 'Remove plan', 'Remove binding'):
+                         'suite_id:suite.value', 'Remove module', 'Remove plan', 'Remove binding',
+                         'Add review note', 'review_scope', 'manifest_json'):
             self.assertIn(required, page)
         for forbidden in ('innerHTML', 'insertAdjacentHTML', 'document.write', '<script src=', '<link ',
                           'JSON ARRAY', 'custom_cases', 'eval('):
             self.assertNotIn(forbidden, page)
         self.assertIn("not AI decision quality", page)
+        self.assertIn("Manual review notes stay visible", page)
         self.assertIn("disabled", parsed.attributes["create"])
         self.assertIn("pred-application-release", parsed.attributes["directory"]["value"])
 

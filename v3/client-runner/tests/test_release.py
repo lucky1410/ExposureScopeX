@@ -16,6 +16,7 @@ from unittest.mock import patch
 from esx_eval_runner.audit import verify_audit_log
 from esx_eval_runner.cli import main
 from esx_eval_runner.local_metrics import classification_metrics, confidence_metrics
+from esx_eval_runner.release_execution import workflow_signal_strength
 from esx_eval_runner.release import MANIFEST_SCHEMA, build_release_report, default_gates, validate_manifest
 from esx_eval_runner.release_html import render_release_report
 from esx_eval_runner.runner import RunnerError, sha256
@@ -55,6 +56,28 @@ def local_report(*, version: str = "release-4", confidence: float | None = None)
                                           "duplicate_input_count": 0, "majority_class_rate": 0.5}},
         "execution": {"adapter_type": "command_json_v1", "case_count": 20, "scored_case_count": 20, "blocked_case_count": 0},
         "metrics": metrics,
+    }
+
+
+def workflow_report(*, version: str = "release-4", executed: int = 2, blocked: int = 0, signal_match_rate: float = 1.0) -> dict:
+    case_rows = []
+    for index in range(executed):
+        case_rows.append({"case_id": f"browser-{index:03}", "persona": "admin", "outcome": "passed"})
+    for index in range(blocked):
+        case_rows.append({"case_id": f"blocked-{index:03}", "persona": "admin", "outcome": "blocked"})
+    return {
+        "schema_version": "esx-local-evaluation-report-1.2", "status": "completed_locally",
+        "package_id": "workflow-run", "subject": {"agent_id": "application-ui", "subject_version": version},
+        "run_provenance": {"project_key": "sample-app", "issued_at": NOW.isoformat()},
+        "evaluation": {"required_dimensions": ["workflow_coverage"],
+                       "comparison_basis": {"dataset_sha256": sha256({"fixture": "workflow-cases"}), "protocol_sha256": sha256({"fixture": "workflow-protocol"})}},
+        "execution": {"adapter_type": "browser_journey", "case_count": executed + blocked,
+                      "scored_case_count": executed, "blocked_case_count": blocked,
+                      "browser_case_diagnostics": case_rows},
+        "metrics": {"workflow_coverage": {"measurement_status": "measured", "trust_status": "verified",
+                                           "representativeness": "representative",
+                                           "workflow_execution_rate": executed / (executed + blocked or 1),
+                                           "workflow_signal_match_rate": signal_match_rate}},
     }
 
 
@@ -161,6 +184,86 @@ class ReleasePolicyTests(unittest.TestCase):
         source["evaluation"]["required_dimensions"].append("security")
         self.assertTrue(any(f["code"] == "metric_policy_missing" for f in assess(report=source)["findings"]))
 
+    def test_dimension_coverage_surfaces_unrequested_baseline_tier_metrics(self):
+        result = assess()
+        suite = result["modules"][0]["suites"][0]
+        by_dimension = {item["dimension"]: item for item in suite["dimension_coverage"]}
+        self.assertEqual(by_dimension["decision_evidence"]["tier"], "baseline")
+        self.assertEqual(by_dimension["decision_evidence"]["policy_status"], "not_requested")
+        self.assertEqual(result["dimension_coverage"]["baseline_unexercised"], 1)
+        page = render_release_report(result)
+        self.assertIn("Metric dimension coverage", page)
+        self.assertIn("Decision evidence alignment and abstention", page)
+
+    def test_population_context_reports_declared_sample_fraction_without_claiming_representativeness(self):
+        plan = manifest()
+        plan["modules"][0]["suites"][0]["population"] = {
+            "available_case_count": 200,
+            "class_counts": {"allow": 120, "review": 80},
+            "source": "Held-out labelled archive",
+        }
+        result = assess(plan)
+        coverage = result["modules"][0]["suites"][0]["population_coverage"]
+        self.assertEqual(coverage["status"], "declared_population")
+        self.assertEqual(coverage["available_case_count"], 200)
+        self.assertAlmostEqual(coverage["sample_fraction"], 0.1)
+        self.assertEqual(coverage["executed_expected_class_counts"], {"allow": 10, "review": 10})
+        self.assertEqual(coverage["class_coverage"][0]["label"], "allow")
+        self.assertEqual(result["population_coverage"]["declared_population_suite_count"], 1)
+        page = render_release_report(result)
+        self.assertIn("Population coverage", page)
+        self.assertIn("Held-out labelled archive", page)
+
+    def test_non_blocking_advisories_surface_without_changing_ship_verdict(self):
+        result = assess()
+        self.assertEqual(result["verdict"], "ship")
+        self.assertEqual(result["summary"]["advisories"], 2)
+        codes = {item["code"] for item in result["advisories"]}
+        self.assertEqual(codes, {"baseline_dimension_unexercised", "population_context_missing"})
+        page = render_release_report(result)
+        self.assertIn("Coverage advisories", page)
+        self.assertIn("baseline decision evidence", page.lower())
+
+    def test_workflow_signal_strength_advisory_is_visible_but_non_blocking(self):
+        plan = {
+            "schema_version": MANIFEST_SCHEMA,
+            "application": {"id": "sample-app", "version": "release-4", "inventory_complete": True},
+            "modules": [{"id": "ui", "name": "UI", "owner": "UI team", "required_kinds": ["workflow"], "suites": [{
+                "id": "workflow-pack", "kind": "workflow", "subject_id": "application-ui",
+                "report": "workflow.local-report.json",
+            }]}],
+        }
+        report = workflow_report()
+        metadata = {
+            "workflow-pack": {
+                "required_dimensions": ["workflow_coverage"],
+                "workflow_signal_strength": workflow_signal_strength([
+                    {
+                        "case_id": "home",
+                        "expected_label": "pass",
+                        "input": {"journey": [{"type": "goto", "path": "/"}, {"type": "assert_path", "path": "/"}]},
+                    },
+                    {
+                        "case_id": "settings",
+                        "expected_label": "pass",
+                        "input": {"journey": [{"type": "goto", "path": "/settings"}, {"type": "expect_text", "value": "Settings"}]},
+                    },
+                ]),
+            }
+        }
+        result = build_release_report(
+            plan,
+            {"workflow-pack": {"report": report, "report_sha256": sha256(report)}},
+            now=NOW,
+            plan_metadata=metadata,
+        )
+        self.assertEqual(result["verdict"], "ship")
+        self.assertEqual(result["summary"]["advisories"], 1)
+        self.assertEqual(result["advisories"][0]["code"], "workflow_route_only_signal")
+        page = render_release_report(result)
+        self.assertIn("Workflow signal strength", page)
+        self.assertIn("route-only", page)
+
     def test_corrupt_counts_and_invalid_scores_never_pass(self):
         for value in (None, True, "1", -0.1, 1.1, float("inf"), float("nan")):
             with self.subTest(value=value):
@@ -254,6 +357,79 @@ class ReleasePolicyTests(unittest.TestCase):
         self.assertIn("Next action:", page)
         self.assertIn("Do not ship", page)
         self.assertIn("Nothing was uploaded", page)
+
+    def test_review_scope_distinguishes_evaluated_inspected_blocked_and_untouched(self):
+        plan = {
+            "schema_version": MANIFEST_SCHEMA,
+            "application": {"id": "sample-app", "version": "release-4", "inventory_complete": True},
+            "modules": [
+                {"id": "evaluated", "owner": "Decision team", "required_kinds": ["decision"], "suites": [{
+                    "id": "decision-pack", "kind": "decision", "subject_id": "decision-engine",
+                    "report": "decision.local-report.json",
+                }]},
+                {"id": "inspected", "owner": "Release owner", "review_methods": [{
+                    "id": "architecture-review", "label": "Architecture review",
+                    "status": "inspected", "summary": "Reviewed deployment notes and failover assumptions.",
+                    "evidence_pointer": "notes/architecture-review.md",
+                }]},
+                {"id": "blocked", "owner": "UI team", "required_kinds": ["workflow"], "suites": [{
+                    "id": "blocked-ui", "kind": "workflow", "subject_id": "application-ui",
+                    "report": "blocked-ui.local-report.json",
+                }]},
+                {"id": "untouched", "owner": "Platform team", "required_kinds": ["decision"], "suites": []},
+            ],
+        }
+        result = build_release_report(
+            plan,
+            {"decision-pack": {"report": local_report(), "report_sha256": sha256(local_report())}},
+            now=NOW,
+        )
+        statuses = {module["id"]: module["review_status"] for module in result["modules"]}
+        self.assertEqual(statuses["evaluated"], "evaluated")
+        self.assertEqual(statuses["inspected"], "inspected")
+        self.assertEqual(statuses["blocked"], "blocked")
+        self.assertEqual(statuses["untouched"], "untouched")
+        self.assertEqual(
+            result["review_scope"],
+            {
+                "evaluated": 1,
+                "inspected": 1,
+                "blocked": 1,
+                "untouched": 1,
+                "method_count": 4,
+                "notice": result["review_scope"]["notice"],
+            },
+        )
+
+    def test_review_scope_html_shows_matrix_and_manual_methods(self):
+        plan = {
+            "schema_version": MANIFEST_SCHEMA,
+            "application": {"id": "sample-app", "version": "release-4", "inventory_complete": True},
+            "modules": [
+                {"id": "workflow-module", "name": "Workflow module", "owner": "UI team",
+                 "required_kinds": ["workflow"], "suites": [{
+                     "id": "workflow-pack", "kind": "workflow", "subject_id": "application-ui",
+                     "report": "workflow.local-report.json",
+                 }]},
+                {"id": "inspected-module", "name": "Inspected module", "owner": "Release owner",
+                 "review_methods": [{
+                     "id": "runbook-review", "label": "Runbook review", "status": "inspected",
+                     "summary": "Confirmed rollback notes and dependency checklist.",
+                 }]},
+            ],
+        }
+        report = build_release_report(
+            plan,
+            {"workflow-pack": {"report": workflow_report(), "report_sha256": sha256(workflow_report())}},
+            now=NOW,
+        )
+        page = render_release_report(report)
+        self.assertIn("Review scope matrix", page)
+        self.assertIn("Modules with executed PRE-D evidence", page)
+        self.assertIn("Workflow module", page)
+        self.assertIn("Inspected module", page)
+        self.assertIn("Runbook review", page)
+        self.assertIn("No decision review recorded.", page)
 
 
 class ReleaseCliTests(unittest.TestCase):

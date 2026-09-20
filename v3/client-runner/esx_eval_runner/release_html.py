@@ -60,6 +60,244 @@ def _coverage_section(report: dict[str, Any]) -> str:
             + "".join(rows) + "</tbody></table></div></section>")
 
 
+def _review_scope_section(report: dict[str, Any]) -> str:
+    scope = report.get("review_scope") or {}
+    summary = "".join(
+        "<div><strong>" + _e(scope.get(status, 0)) + "</strong><span>" + label + "</span></div>"
+        for status, label in (
+            ("evaluated", "Modules with executed PRE-D evidence"),
+            ("inspected", "Modules reviewed without executable evidence"),
+            ("blocked", "Modules with incomplete required executable review"),
+            ("untouched", "Modules with no recorded review"),
+        )
+    )
+    rows = []
+    for module in report["modules"]:
+        methods = module.get("review_methods", [])
+        workflow = next((item for item in methods if item.get("source") == "pre_d_executable_evidence" and item.get("kind") == "workflow"), None)
+        decision = next((item for item in methods if item.get("source") == "pre_d_executable_evidence" and item.get("kind") == "decision"), None)
+        other = [
+            "<b>" + _e(item.get("label", item.get("id", "Review"))) + ":</b> "
+            + _e(item.get("status", "unknown").replace("_", " ").title())
+            + "<br><small>" + _e(item.get("summary", "")) + "</small>"
+            for item in methods if item.get("source") != "pre_d_executable_evidence"
+        ]
+        rows.append(
+            "<tr><td><a href='#module-" + _e(module["id"]) + "'>" + _e(module["name"]) + "</a></td>"
+            + "<td>" + _e(module.get("review_status", "untouched").replace("_", " ").title()) + "</td>"
+            + "<td>" + _e((workflow or {}).get("status", "untouched").replace("_", " ").title())
+            + "<br><small>" + _e((workflow or {}).get("summary", "No workflow review recorded.")) + "</small></td>"
+            + "<td>" + _e((decision or {}).get("status", "untouched").replace("_", " ").title())
+            + "<br><small>" + _e((decision or {}).get("summary", "No decision review recorded.")) + "</small></td>"
+            + "<td>" + ("".join(other) if other else "None recorded") + "</td></tr>"
+        )
+    return (
+        "<section id='scope'><h2>Review scope matrix</h2><p>"
+        + _e(scope.get("notice", ""))
+        + "</p><div class='stats'>" + summary + "</div><div class='table-wrap'><table><thead><tr>"
+        + "<th>Module</th><th>Overall review status</th><th>Workflow execution</th><th>Decision evaluation</th><th>Additional review methods</th>"
+        + "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div></section>"
+    )
+
+
+def _advisory_section(report: dict[str, Any]) -> str:
+    advisories = report.get("advisories", [])
+    if not advisories:
+        return (
+            "<section id='advisories'><details><summary>No additional coverage advisories</summary><div class='inside'>"
+            "<p>PRE-D did not find extra non-blocking coverage cautions for this declared scope.</p>"
+            "</div></details></section>"
+        )
+    cards = []
+    for item in advisories:
+        location = " / ".join(str(item[key]) for key in ("module_id", "suite_id") if item.get(key)) or "Application scope"
+        location_html = _e(location)
+        if item.get("suite_id") or item.get("module_id"):
+            anchor = "suite-" + item["suite_id"] if item.get("suite_id") else "module-" + item["module_id"]
+            location_html = "<a href='#" + _e(anchor) + "'>" + location_html + "</a>"
+        cases = "<p><b>Cases:</b> " + _e(", ".join(item["case_ids"])) + "</p>" if item.get("case_ids") else ""
+        pointer = "<p><b>Evidence:</b> <code>" + _e(item["evidence_pointer"]) + "</code></p>" if item.get("evidence_pointer") else ""
+        cards.append(
+            "<article class='finding advisory'><p class='eyebrow'>ADVISORY / " + _e(item["category"].replace("_", " "))
+            + "</p><h3>" + location_html + "</h3><p>" + _e(item["why"]) + "</p><p class='action'><b>Strengthen next:</b> "
+            + _e(item["recommendation"]) + "</p><p><b>Owner:</b> " + _e(item["owner"]) + "</p>" + cases + pointer
+            + "<small>This is a non-blocking coverage caution. It does not change the release verdict on its own.</small></article>"
+        )
+    return (
+        "<section id='advisories'><h2>Coverage advisories</h2><p>"
+        "These items do not block release by themselves, but they explain where the current plan can still overstate what PASS proves."
+        "</p>" + "".join(cards) + "</section>"
+    )
+
+
+def _dimension_section(report: dict[str, Any]) -> str:
+    summary = report.get("dimension_coverage") or {}
+    rows = []
+    for module in report["modules"]:
+        for suite in module["suites"]:
+            for item in suite.get("dimension_coverage", []):
+                note = item.get("reason") or item.get("evidence_source") or ""
+                trust = item.get("trust_status", "missing")
+                measurement = item.get("measurement_status", "not_measured")
+                rows.append(
+                    "<tr><td><a href='#module-" + _e(module["id"]) + "'>" + _e(module["name"]) + "</a><br><small>"
+                    + _e(suite["id"]) + "</small></td><td>" + _e(item["title"])
+                    + "</td><td>" + _e(item["tier"].title())
+                    + "</td><td>" + _e(item["policy_status"].replace("_", " ").title())
+                    + "</td><td>" + _e(measurement.replace("_", " ").title())
+                    + "<br><small>Trust: " + _e(trust.replace("_", " ")) + "</small></td><td>"
+                    + _e(note or "No additional detail.") + "</td></tr>"
+                )
+    cards = "".join(
+        "<div><strong>" + _e(summary.get(key, 0)) + "</strong><span>" + label + "</span></div>"
+        for key, label in (
+            ("gated", "Gated dimensions"),
+            ("baseline_unexercised", "Baseline-tier left unexercised"),
+            ("advanced_measured", "Advanced dimensions measured"),
+            ("not_requested", "Dimensions not requested"),
+            ("request_unknown", "Request status unavailable"),
+        )
+    )
+    return (
+        "<section id='dimensions'><h2>Metric dimension coverage</h2><p>"
+        + _e(summary.get("notice", ""))
+        + "</p><div class='stats'>" + cards + "</div><div class='table-wrap'><table><thead><tr>"
+        + "<th>Module / suite</th><th>Dimension</th><th>Tier</th><th>Release policy</th><th>Observed state</th><th>Detail</th>"
+        + "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div></section>"
+    )
+
+
+def _history_section(report: dict[str, Any]) -> str:
+    history = report.get("history")
+    if not history:
+        return (
+            "<section id='history'><details><summary>No multi-run history</summary><div class='inside'>"
+            "<p>Supply one or more <code>--history previous-release.json</code> artifacts to see conservative pack trends across more than one past run.</p>"
+            "</div></details></section>"
+        )
+    summary = history.get("summary", {})
+    cards = "".join(
+        "<div><strong>" + _e(summary.get(key, 0)) + "</strong><span>" + label + "</span></div>"
+        for key, label in (
+            ("regressed", "Signals worse than latest comparable history"),
+            ("improved", "Signals better than latest comparable history"),
+            ("unchanged", "Signals unchanged"),
+            ("not_comparable", "Signals without comparable history"),
+        )
+    )
+    reports = "".join(
+        "<li>" + _e(item["version"]) + " / " + _e(item["generated_at"]) + " / " + _e(item["verdict"].replace("_", " ").title()) + "</li>"
+        for item in history.get("reports", [])
+    )
+    rows = []
+    for row in history.get("metrics", []):
+        points = "".join(
+            "<li>" + _e(point["version"]) + ": "
+            + _e(point["status"].replace("_", " ").title())
+            + (" (" + _e(point["reason"]) + ")" if point.get("reason") else "")
+            + (" / observed " + _e(point["observed"]) if point.get("observed") is not None else "")
+            + "</li>"
+            for point in row.get("points", [])
+        )
+        delta = "Not compared" if row.get("delta_from_latest") is None else f"{row['delta_from_latest']:+.6g}"
+        rows.append(
+            "<tr><td>" + _e(row["module_id"] + " / " + row["suite_id"]) + "<br><small>" + _e(row["signal"]) + "</small></td>"
+            + "<td>" + _e(row.get("latest_previous_version") or "Unavailable")
+            + "<br><small>" + _e(row.get("latest_previous") if row.get("latest_previous") is not None else "No comparable value") + "</small></td>"
+            + "<td>" + _e(row.get("current") if row.get("current") is not None else "Unavailable") + "</td>"
+            + "<td>" + _e(delta) + "</td>"
+            + "<td>" + _e(row["status"].replace("_", " ").title())
+            + "<br><small>" + _e(row.get("reason") or "No additional detail.") + "</small></td>"
+            + "<td><details><summary>" + _e(row.get("comparable_history_count", 0)) + " comparable runs</summary><div class='inside'><ul>"
+            + (points or "<li>No comparable history points.</li>") + "</ul></div></details></td></tr>"
+        )
+    return (
+        "<section id='history'><h2>Historical trend context</h2><p>"
+        + _e(history.get("notice", ""))
+        + "</p><div class='stats'>" + cards + "</div>"
+        + ("<h3>Supplied prior reports</h3><ul>" + reports + "</ul>" if reports else "")
+        + "<div class='table-wrap'><table><thead><tr><th>Suite / check</th><th>Latest comparable history</th><th>Current</th><th>Delta</th><th>Trend</th><th>History</th></tr></thead><tbody>"
+        + "".join(rows) + "</tbody></table></div></section>"
+    )
+
+
+def _suite_dimension_detail(suite: dict[str, Any]) -> str:
+    coverage = suite.get("dimension_coverage", [])
+    baseline = [item["title"] for item in coverage if item.get("tier") == "baseline" and item.get("policy_status") == "not_requested"]
+    measured = [item["title"] for item in coverage if item.get("measurement_status") == "measured" and item.get("tier") == "advanced"]
+    parts = []
+    if baseline:
+        parts.append("<p><b>Baseline-tier dimensions left unexercised:</b> " + _e(", ".join(baseline)) + ".</p>")
+    if measured:
+        parts.append("<p><b>Advanced dimensions measured:</b> " + _e(", ".join(measured)) + ".</p>")
+    return "".join(parts)
+
+
+def _workflow_signal_detail(suite: dict[str, Any]) -> str:
+    strength = suite.get("workflow_signal_strength")
+    if not isinstance(strength, dict):
+        return ""
+    notes = []
+    if strength.get("content_signal_count"):
+        notes.append(f"{strength['content_signal_count']} content-signal case(s)")
+    if strength.get("title_signal_only_count"):
+        notes.append(f"{strength['title_signal_only_count']} title-only case(s)")
+    if strength.get("route_signal_only_count"):
+        notes.append(f"{strength['route_signal_only_count']} route-only case(s)")
+    if strength.get("element_state_only_count"):
+        notes.append(f"{strength['element_state_only_count']} element-state-only case(s)")
+    if strength.get("no_explicit_signal_count"):
+        notes.append(f"{strength['no_explicit_signal_count']} case(s) without a final assertion")
+    summary = ", ".join(notes) if notes else "No signal-strength summary recorded."
+    weak_cases = [
+        row["case_id"] for row in strength.get("cases", [])
+        if isinstance(row, dict) and row.get("signal_strength") != "content_signal"
+    ]
+    return (
+        "<details><summary>Workflow signal strength</summary><div class='inside'><p>Planned checks; execution outcomes are reported separately.</p><p><b>" + _e(summary)
+        + "</b><br>" + _e(strength.get("notice", "")) + "</p>"
+        + ("<p><b>Weaker cases:</b> " + _e(", ".join(weak_cases)) + "</p>" if weak_cases else "")
+        + "</div></details>"
+    )
+
+
+def _suite_population_detail(suite: dict[str, Any]) -> str:
+    coverage = suite.get("population_coverage")
+    if not isinstance(coverage, dict):
+        return ""
+    if coverage.get("status") == "not_declared":
+        return "<p><b>Population context:</b> " + _e(coverage.get("notice", "")) + "</p>"
+    class_rows = "".join(
+        "<tr><td>" + _e(item["label"]) + "</td><td>" + _e(item["available_case_count"]) + "</td><td>"
+        + _e(item["executed_case_count"]) + "</td><td>"
+        + _e(f"{item['sample_fraction']:.2%}" if item.get("sample_fraction") is not None else "Unavailable")
+        + "</td></tr>"
+        for item in coverage.get("class_coverage", [])
+    )
+    fraction = coverage.get("sample_fraction")
+    summary = (
+        f"{coverage['executed_case_count']} executed / {coverage['available_case_count']} available "
+        + (f"({fraction:.2%})" if fraction is not None else "")
+    )
+    extras = []
+    if coverage.get("source"):
+        extras.append("Source: " + str(coverage["source"]))
+    if coverage.get("sampling_notes"):
+        extras.append("Sampling notes: " + str(coverage["sampling_notes"]))
+    if coverage.get("unrepresented_labels"):
+        extras.append("Unrepresented labels in this run: " + ", ".join(coverage["unrepresented_labels"]))
+    if coverage.get("undeclared_executed_labels"):
+        extras.append("Executed labels outside declared population map: " + ", ".join(coverage["undeclared_executed_labels"]))
+    return (
+        "<details><summary>Population coverage</summary><div class='inside'><p><b>" + _e(summary)
+        + "</b><br>" + _e(coverage.get("notice", "")) + "</p>"
+        + ("<p>" + _e(" | ".join(extras)) + "</p>" if extras else "")
+        + ("<div class='table-wrap'><table><thead><tr><th>Label</th><th>Declared available</th><th>Executed</th><th>Sample fraction</th></tr></thead><tbody>"
+           + class_rows + "</tbody></table></div>" if class_rows else "")
+        + "</div></details>"
+    )
+
+
 def _requirements_detail(module: dict) -> str:
     requirements = module.get("test_requirements", [])
     if not requirements:
@@ -176,7 +414,7 @@ def render_release_report(report: dict[str, Any]) -> str:
                 "<details id='suite-" + _e(suite["id"]) + "'><summary>" + _e(suite["id"]) + " <span>" + _e(VERDICTS[suite["verdict"]]) + "</span></summary>"
                 + "<div class='inside'><p>" + _e(suite["executed_cases"]) + " / " + _e(suite["requested_cases"])
                 + " cases executed. Evaluation: " + _e(suite["kind"]) + ".</p>"
-                + observed + _policy_detail(suite)
+                + observed + _workflow_signal_detail(suite) + _suite_dimension_detail(suite) + _suite_population_detail(suite) + _policy_detail(suite)
                 + ("<div class='table-wrap'><table><thead><tr><th>Check</th><th>Observed</th><th>Required</th><th>Evidence</th><th>Result</th></tr></thead><tbody>" + rows + "</tbody></table></div>" if rows else "<p>No usable gate results.</p>")
                 + link + "</div></details>"
             )
@@ -206,7 +444,7 @@ def render_release_report(report: dict[str, Any]) -> str:
             + "<small>Root cause requires investigation; the evidence above identifies the affected evaluation area.</small></article>"
         )
     stats = "".join("<div><strong>" + _e(summary[key]) + "</strong><span>" + label + "</span></div>" for key, label in
-                    (("module_count", "Modules in inventory"), ("suite_count", "Evaluation plans"), ("blockers", "Blocking results"), ("evidence_gaps", "Evidence gaps"), ("conditions", "Conditions to review")))
+                    (("module_count", "Modules in inventory"), ("suite_count", "Evaluation plans"), ("blockers", "Blocking results"), ("evidence_gaps", "Evidence gaps"), ("conditions", "Conditions to review"), ("advisories", "Coverage advisories")))
     explanations = {
         "ship": "Every required plan met the declared checks with sufficient local evidence for this scope.",
         "ship_with_conditions": "The declared checks support a conditional recommendation. Review the conditions and exclusions below.",
@@ -217,15 +455,15 @@ def render_release_report(report: dict[str, Any]) -> str:
     return """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>PRE-D Release Review</title><style>
 :root{color-scheme:dark;--bg:#0b1416;--panel:#142328;--border:#395055;--text:#f8fbf7;--muted:#b9c5c3;--lime:#c9f36b;--coral:#ff8464;--gold:#f5cc67}
-*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top right,#294742,transparent 65%),var(--bg);color:var(--text);font:16px Georgia,serif;line-height:1.55}main{max-width:1200px;margin:auto;padding:40px 24px}h1,h2,h3,p{margin-top:0}h1{font-size:clamp(36px,6vw,70px);line-height:1.05;font-weight:400;margin:14px 0}h2{font-size:30px;font-weight:400}h3{font-size:23px;font-weight:400;margin-bottom:8px}p{color:var(--muted)}a{color:var(--lime)}.eyebrow,code,.badge,summary,.stats span,small{font-family:ui-monospace,Consolas,monospace}.eyebrow{color:var(--coral);font-size:11px;letter-spacing:.14em}.hero{padding:36px;background:linear-gradient(125deg,#203934,#102124);border:1px solid var(--border)}.hero h1{color:var(--lime)}.hero.do_not_ship h1{color:var(--coral)}.hero.insufficient_evidence h1,.hero.ship_with_conditions h1{color:var(--gold)}.scope{font-size:14px;max-width:820px}.stats{display:grid;grid-template-columns:repeat(5,1fr);border:1px solid var(--border);margin:20px 0 38px}.stats>div{padding:20px;border-right:1px solid var(--border);background:var(--panel)}.stats strong{display:block;font-size:32px;font-weight:400}.stats span{font-size:10px;color:var(--muted)}.module,.finding{padding:24px;border:1px solid var(--border);background:var(--panel);margin-bottom:16px}.module-head{display:flex;justify-content:space-between;gap:16px}.badge{height:fit-content;padding:6px 10px;border:1px solid var(--gold);color:var(--gold);font-size:11px;white-space:nowrap}.badge.ship{border-color:var(--lime);color:var(--lime)}.badge.do_not_ship{border-color:var(--coral);color:var(--coral)}.finding{border-left:4px solid var(--gold)}.finding.blocker{border-left-color:var(--coral)}.action{background:#0e1b1e;padding:14px;color:var(--text)}small{color:var(--muted);font-size:11px}details{border:1px solid var(--border);margin-top:12px;background:#0e1b1e}summary{padding:14px;cursor:pointer;font-size:12px}summary span{float:right;color:var(--gold)}.inside{padding:16px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font:12px ui-monospace,Consolas,monospace}td,th{padding:12px 8px;border-bottom:1px solid var(--border);text-align:left}th{color:var(--muted)}nav{display:flex;gap:24px;margin-bottom:28px}footer{border-top:1px solid var(--border);margin-top:28px;padding-top:20px}code{overflow-wrap:anywhere}li{margin-bottom:10px;color:var(--muted)}@media(max-width:700px){main{padding:16px}.hero,.module,.finding{padding:20px}.stats{grid-template-columns:repeat(2,1fr)}.module-head{display:block}.badge{display:inline-block;margin-bottom:12px}summary span{float:none;display:block;margin-top:8px}nav{flex-wrap:wrap}}@media print{body{background:white;color:black}.hero,.module,.finding,.stats>div,details,.action{background:white;color:black}p,small,li{color:#333}h1{color:black!important}nav{display:none}}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top right,#294742,transparent 65%),var(--bg);color:var(--text);font:16px Georgia,serif;line-height:1.55}main{max-width:1200px;margin:auto;padding:40px 24px}h1,h2,h3,p{margin-top:0}h1{font-size:clamp(36px,6vw,70px);line-height:1.05;font-weight:400;margin:14px 0}h2{font-size:30px;font-weight:400}h3{font-size:23px;font-weight:400;margin-bottom:8px}p{color:var(--muted)}a{color:var(--lime)}.eyebrow,code,.badge,summary,.stats span,small{font-family:ui-monospace,Consolas,monospace}.eyebrow{color:var(--coral);font-size:11px;letter-spacing:.14em}.hero{padding:36px;background:linear-gradient(125deg,#203934,#102124);border:1px solid var(--border)}.hero h1{color:var(--lime)}.hero.do_not_ship h1{color:var(--coral)}.hero.insufficient_evidence h1,.hero.ship_with_conditions h1{color:var(--gold)}.scope{font-size:14px;max-width:820px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));border:1px solid var(--border);margin:20px 0 38px}.stats>div{padding:20px;border-right:1px solid var(--border);background:var(--panel)}.stats strong{display:block;font-size:32px;font-weight:400}.stats span{font-size:10px;color:var(--muted)}.module,.finding{padding:24px;border:1px solid var(--border);background:var(--panel);margin-bottom:16px}.module-head{display:flex;justify-content:space-between;gap:16px}.badge{height:fit-content;padding:6px 10px;border:1px solid var(--gold);color:var(--gold);font-size:11px;white-space:nowrap}.badge.ship{border-color:var(--lime);color:var(--lime)}.badge.do_not_ship{border-color:var(--coral);color:var(--coral)}.finding{border-left:4px solid var(--gold)}.finding.blocker{border-left-color:var(--coral)}.finding.advisory{border-left-color:var(--border)}.action{background:#0e1b1e;padding:14px;color:var(--text)}small{color:var(--muted);font-size:11px}details{border:1px solid var(--border);margin-top:12px;background:#0e1b1e}summary{padding:14px;cursor:pointer;font-size:12px}summary span{float:right;color:var(--gold)}.inside{padding:16px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font:12px ui-monospace,Consolas,monospace}td,th{padding:12px 8px;border-bottom:1px solid var(--border);text-align:left}th{color:var(--muted)}nav{display:flex;gap:24px;margin-bottom:28px}footer{border-top:1px solid var(--border);margin-top:28px;padding-top:20px}code{overflow-wrap:anywhere}li{margin-bottom:10px;color:var(--muted)}@media(max-width:700px){main{padding:16px}.hero,.module,.finding{padding:20px}.stats{grid-template-columns:repeat(2,1fr)}.module-head{display:block}.badge{display:inline-block;margin-bottom:12px}summary span{float:none;display:block;margin-top:8px}nav{flex-wrap:wrap}}@media print{body{background:white;color:black}.hero,.module,.finding,.stats>div,details,.action{background:white;color:black}p,small,li{color:#333}h1{color:black!important}nav{display:none}}
 section{margin-bottom:36px}td{overflow-wrap:anywhere}.table-wrap{border:1px solid var(--border)}nav{flex-wrap:wrap}
-</style></head><body><main><nav><a href='#execution'>What actually ran</a><a href='#actions'>What needs attention</a><a href='#changes'>What changed</a><a href='#coverage'>Coverage</a><a href='#modules'>Module results</a><a href='#basis'>Evaluation basis</a></nav>""" + (
+</style></head><body><main><nav><a href='#execution'>What actually ran</a><a href='#actions'>What needs attention</a><a href='#advisories'>Advisories</a><a href='#changes'>What changed</a><a href='#history'>History</a><a href='#scope'>Review scope</a><a href='#dimensions'>Dimensions</a><a href='#coverage'>Coverage</a><a href='#modules'>Module results</a><a href='#basis'>Evaluation basis</a></nav>""" + (
         "<header class='hero " + _e(report["verdict"]) + "'><p class='eyebrow'>PRE-D / APPLICATION RELEASE REVIEW / LOCAL</p><h1>"
         + _e(report["verdict_label"]) + "</h1><h2>" + _e(app["id"]) + " <small>" + _e(app["version"])
         + "</small></h2><p>" + explanations[report["verdict"]] + "</p><p class='scope'>" + _e(report["scope_statement"])
         + "</p></header><div class='stats'>" + stats + "</div>" + _requirements_summary(report) + _execution_section(report) + "<section id='actions'><h2>What needs attention</h2>"
         + ("".join(issues) or "<p>All declared release checks passed. Review the scope and evaluation basis before shipping.</p>")
-        + "</section>" + _comparison_section(report) + _coverage_section(report)
+        + "</section>" + _advisory_section(report) + _comparison_section(report) + _history_section(report) + _review_scope_section(report) + _dimension_section(report) + _coverage_section(report)
         + "<section id='modules'><h2>Module results</h2>" + "".join(module_cards)
         + "</section><footer id='basis'><h2>Evaluation basis</h2><p>Generated " + _e(report["generated_at"])
         + ". Policy maximum report age: " + _e(report["policy"]["max_report_age_hours"]) + " hours.</p><p>Manifest fingerprint: <code>"

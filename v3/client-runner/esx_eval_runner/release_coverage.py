@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .runner import RunnerError, sha256
+from .workflow_signals import has_explicit_signal
 
 
 CATEGORIES = {"happy_path", "negative_path", "boundary", "authorization", "recovery", "integration"}
@@ -122,8 +123,7 @@ def plan_requirement_issues(module: dict, plans: dict[str, list[dict]]) -> list[
                 code = "requirement_case_missing" if case is None else (
                     "requirement_persona_mismatch" if "persona" in requirement and case.get("persona", "default") != requirement["persona"] else None)
                 if case and not code and requirement["kind"] == "workflow":
-                    assertions = {"expect_text", "expect_visible", "assert_path", "assert_title"}
-                    if not any(step.get("type") in assertions for step in case["input"]["journey"]):
+                    if not has_explicit_signal(case["input"]["journey"]):
                         code = "requirement_assertion_missing"
                 if code:
                     issues.append({"code": code, "module_id": module["id"], "suite_id": suite_id,

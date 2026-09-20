@@ -8,6 +8,15 @@ from typing import Any
 
 from .runner import RunnerError, _validate_config, read_json, sha256
 from .release_coverage import plan_requirement_issues
+from .workflow_signals import has_explicit_signal, workflow_signal_advisories, workflow_signal_strength
+
+
+def plan_metadata(evaluation: dict[str, Any], cases: list[dict[str, Any]], *, kind: str) -> dict[str, Any]:
+    required = list(evaluation.get("required_dimensions", ["classification", "confidence"]))
+    result: dict[str, Any] = {"required_dimensions": required}
+    if kind == "workflow":
+        result["workflow_signal_strength"] = workflow_signal_strength(cases)
+    return result
 
 
 def load_plan(path: Path, application: dict, suite: dict | None = None) -> tuple[dict, list, dict, str]:
@@ -19,24 +28,37 @@ def load_plan(path: Path, application: dict, suite: dict | None = None) -> tuple
         raise RunnerError("Plan project_key and subject_version must match the release application")
     kind = "workflow" if adapter["type"] == "browser_journey" else "decision"
     if kind == "workflow":
-        assertions = {"expect_text", "expect_visible", "assert_path", "assert_title"}
-        if any(not any(step.get("type") in assertions for step in case["input"]["journey"]) for case in cases):
-            raise RunnerError("Release workflows require an explicit expect_text, expect_visible, assert_path, or assert_title assertion in every case; navigation alone is not a success signal")
+        if any(not has_explicit_signal(case["input"]["journey"]) for case in cases):
+            raise RunnerError("Release workflows require an explicit expect_text, wait_for_text, expect_visible, wait_for_selector, assert_path, or assert_title assertion in every case; navigation alone is not a success signal")
     if suite and (evaluation["agent_id"] != suite["subject_id"] or kind != suite["kind"]):
         raise RunnerError("Plan subject or evaluation kind does not match its release suite")
     return evaluation, cases, adapter, sha256(config)
 
 
-def preflight_all_modules(manifest: dict, manifest_path: Path) -> tuple[dict, dict[str, tuple[Path, str]]]:
+def preflight_all_modules(
+    manifest: dict, manifest_path: Path,
+) -> tuple[dict, dict[str, tuple[Path, str]], dict[str, dict[str, Any]]]:
     """Check all plans before any adapter runs; never infer a missing test oracle."""
     issues: list[dict[str, Any]] = []
+    advisories: list[dict[str, Any]] = []
     modules = []
     prepared = {}
+    metadata: dict[str, dict[str, Any]] = {}
     seen_paths: set[Path] = set()
     seen_configs: set[str] = set()
 
     def issue(code: str, action: str, module_id: str | None = None, suite_id: str | None = None) -> None:
         issues.append({"code": code, "module_id": module_id, "suite_id": suite_id, "action": action})
+
+    def advisory(code: str, summary: str, action: str, module_id: str, suite_id: str, **extra: Any) -> None:
+        advisories.append({
+            "code": code,
+            "module_id": module_id,
+            "suite_id": suite_id,
+            "summary": summary,
+            "action": action,
+            **extra,
+        })
 
     if not manifest["application"]["inventory_complete"]:
         issue("inventory_unconfirmed", "Review the full module inventory and confirm application.inventory_complete. Discovery is not execution.")
@@ -76,12 +98,16 @@ def preflight_all_modules(manifest: dict, manifest_path: Path) -> tuple[dict, di
                 issue("duplicate_plan", "Use a distinct plan for each suite; binding one file twice is not additional module coverage.", module_id, suite_id)
             seen_paths.add(path)
             try:
-                _, cases, _, digest = load_plan(path, manifest["application"], suite)
+                evaluation, cases, _, digest = load_plan(path, manifest["application"], suite)
             except (RunnerError, OSError, ValueError):
                 issue("invalid_plan", "Validate this plan with esx-eval evidence-check. Check its path, dataset, adapter, application/version and subject. No target was called.", module_id, suite_id)
                 continue
+            metadata[suite_id] = plan_metadata(evaluation, cases, kind=suite["kind"])
             row["planned_cases"] = len(cases)
             plans[suite_id] = cases
+            row["required_dimensions"] = list(metadata[suite_id]["required_dimensions"])
+            if "workflow_signal_strength" in metadata[suite_id]:
+                row["workflow_signal_strength"] = metadata[suite_id]["workflow_signal_strength"]
             if digest in seen_configs and not repeated_path:
                 issue("duplicate_plan", "This config duplicates another suite's plan content. Supply distinct module-specific cases and bindings, not a copied plan.", module_id, suite_id)
             seen_configs.add(digest)
@@ -90,12 +116,36 @@ def preflight_all_modules(manifest: dict, manifest_path: Path) -> tuple[dict, di
             row["config_sha256"] = digest
             if approval.get("config_sha256") != digest:
                 issue("execution_not_approved", "Review the current plan and reattach it with --read-only or --isolated-writes plus an isolation note. Approval must match this exact config.", module_id, suite_id)
+            if suite["kind"] == "decision":
+                required = set(metadata[suite_id]["required_dimensions"])
+                if "decision_evidence" not in required:
+                    advisory(
+                        "baseline_dimension_unexercised",
+                        "Baseline decision evidence is not requested in this plan.",
+                        "Add decision_evidence to evaluation.required_dimensions and gate at least one abstention or evidence-reference signal before relying on this suite as a fuller decision-quality release input.",
+                        module_id,
+                        suite_id,
+                        dimensions=["decision_evidence"],
+                    )
+                if "population" not in suite:
+                    advisory(
+                        "population_context_missing",
+                        "This decision suite has no declared labelled population context.",
+                        "Optionally declare suite.population.available_case_count and class_counts so PRE-D can show how much of the available labelled universe this pack actually covers.",
+                        module_id,
+                        suite_id,
+                    )
+            if suite["kind"] == "workflow":
+                strength = metadata[suite_id]["workflow_signal_strength"]
+                for caution in workflow_signal_advisories(strength):
+                    advisory(module_id=module_id, suite_id=suite_id, **caution)
             if len(issues) == suite_start:
                 row["status"] = "ready"
                 prepared[suite_id] = (path, digest)
         issues.extend(plan_requirement_issues(module, plans))
         modules.append({"id": module_id, "required": module["required"],
                         "test_requirement_count": len(module.get("test_requirements", [])),
+                        "advisory_count": sum(item.get("module_id") == module_id for item in advisories),
                         "status": "ready" if len(issues) == start else "blocked", "suites": suites})
     result = {
         "schema_version": "pre-d-release-preflight-1.0", "manifest_sha256": sha256(manifest),
@@ -103,10 +153,11 @@ def preflight_all_modules(manifest: dict, manifest_path: Path) -> tuple[dict, di
         "ready_module_count": sum(m["status"] == "ready" for m in modules),
         "planned_suite_count": sum(len(m["suites"]) for m in modules),
         "planned_case_count": sum(s["planned_cases"] for m in modules for s in m["suites"]),
-        "modules": modules, "issues": issues, "target_calls_made": False,
+        "modules": modules, "issues": issues, "advisories": advisories,
+        "target_calls_made": False,
         "notice": "Readiness validates the supplied plans, not connectivity, business correctness, or complete test design. Execution approval is an operator declaration, not an external-write sandbox.",
     }
-    return result, {} if issues else prepared
+    return result, {} if issues else prepared, metadata
 
 
 def execution_summary(report: dict, *, mode: str, attempted: list[str], reused: list[str],

@@ -294,6 +294,40 @@ class ReleaseComparisonTests(unittest.TestCase):
         self.assertIn("What changed since the baseline", page)
         self.assertIn("not statistical significance", page)
 
+    def test_history_summarizes_multi_run_trends_without_claiming_scheduling(self):
+        older_plan = manifest()
+        older_plan["application"]["version"] = "release-2"
+        older_source = local_report(version="release-2", confidence=0.4)
+        older_source["package_id"] = "history-run-1"
+        older = build_release_report(
+            older_plan,
+            {"decision-pack": {"report": older_source}},
+            now=NOW,
+        )
+        previous_source = local_report(version="release-3", confidence=0.498)
+        previous_source["package_id"] = "history-run-2"
+        previous_plan = manifest()
+        previous_plan["application"]["version"] = "release-3"
+        previous = build_release_report(
+            previous_plan,
+            {"decision-pack": {"report": previous_source}},
+            now=NOW,
+        )
+        current_source = local_report()
+        current_source["package_id"] = "candidate-run"
+        current = build_release_report(
+            manifest(),
+            {"decision-pack": {"report": current_source, "report_sha256": sha256(current_source)}},
+            now=NOW,
+            history=[older, previous],
+        )
+        self.assertEqual(current["history"]["report_count"], 2)
+        self.assertEqual(current["history"]["summary"]["improved"], 1)
+        self.assertEqual(current["history"]["summary"]["unchanged"], 2)
+        page = render_release_report(current)
+        self.assertIn("Historical trend context", page)
+        self.assertIn("not a scheduled monitor", page)
+
 
 class ComparisonCliTests(unittest.TestCase):
     def test_public_fixture_executes_without_an_installed_runner_in_child_process(self):
@@ -384,6 +418,34 @@ class ComparisonCliTests(unittest.TestCase):
             self.assertEqual(result["comparison"]["summary"]["not_comparable"], 0)
             self.assertEqual(result["verdict"], "ship")
             self.assertNotIn("example_index", json.dumps(result))
+
+    def test_release_check_accepts_history_reports(self):
+        with TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            root = Path(directory)
+            plan = manifest()
+            suite = plan["modules"][0]["suites"][0]
+            suite["config"] = "adapter.json"
+            suite.pop("report")
+            for version, confidence, output in (
+                ("release-2", 0.4, "history-1"),
+                ("release-3", 0.498, "history-2"),
+                ("release-4", None, "candidate"),
+            ):
+                config = adapter_config(confidence)
+                config["evaluation"]["subject_version"] = version
+                plan["application"]["version"] = version
+                write(root / "adapter.json", config)
+                write(root / "manifest.json", plan)
+                args = ["release", "check", "--manifest", str(root / "manifest.json"), "--run", "--out", str(root / f"{output}.json")]
+                if output == "candidate":
+                    args += [
+                        "--history", str(root / "history-1.json"),
+                        "--history", str(root / "history-2.json"),
+                    ]
+                self.assertEqual(main(args), 0)
+            result = json.loads((root / "candidate.json").read_text())
+            self.assertEqual(result["history"]["report_count"], 2)
+            self.assertEqual(result["history"]["summary"]["improved"], 1)
 
 
 if __name__ == "__main__":

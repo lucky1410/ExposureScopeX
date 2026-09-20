@@ -218,6 +218,33 @@ Review low-confidence verdicts and validate the chosen judge against human-revie
 examples before interpreting these results as release evidence. Raw answers and
 source text are omitted from the reports.
 
+### Before your first semantic acceptance test
+
+1. Verify the installed package version matches the build being tested. For this
+   release, `python -c "from esx_eval_runner import __version__; print(__version__)"`
+   must print `0.14.0`.
+2. Configure a real independent local judge, such as the bundled Ollama bridge
+   with an already-installed model. A deterministic regression-test fixture is
+   not a semantic judge. Custom judges must support extraction, extraction review,
+   and evidence comparison. Record the judge identity and version.
+3. Enable `groundedness` and `hallucination` in `evaluation.required_dimensions`.
+   Supply the actual response and exact source chunks for each matching case ID.
+   Preserve empty evidence when nothing was retrieved; do not invent supporting
+   chunks. Add `must_abstain` expectations where the test requires abstention.
+4. Start with a small human-reviewed pack containing supported, contradicted,
+   insufficient-evidence, mixed-claim, and correct/incorrect abstention examples.
+   This acceptance pack validates the judge; it is not a mandatory separate gold
+   claim file for every subsequent semantic run.
+5. Inspect extraction coverage, verdict counts, source references, abstention
+   denominators, and provenance in the HTML/JSON. Confirm failures remain visible
+   and do not turn partial evaluation into a perfect full-run score. Use the saved
+   case IDs and your local source material to inspect disagreements.
+
+Only broaden the pack after reviewing disagreements with the human answer key.
+Passing runner regression tests establishes implementation behavior, not semantic
+judge accuracy or universal truth. These scores assess support in the supplied
+sources; missing support is not, by itself, proof of real-world falsehood.
+
 ### Preserve and regenerate results
 
 Every run saves `<name>.semantic-results.json` alongside `<name>.json`. Keep
