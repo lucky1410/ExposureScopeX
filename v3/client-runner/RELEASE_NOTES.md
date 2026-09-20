@@ -1,4 +1,27 @@
-# PRE-D Local 0.15.1
+# PRE-D Local 0.15.2
+
+This patch release adds source-first full-platform onboarding for urgent local
+demo/evaluation packages. It can draft broad system inventory and check plans
+from a repository snapshot even when a live OpenAPI export is unavailable, while
+keeping execution claims honest until reviewed evidence checks are enabled.
+
+## What changed in 0.15.2
+
+- Added a sanitized VINI demo profile pack under `examples/vini_demo/` for
+  building a local full-platform evaluation package without modifying the target
+  application.
+- Added source-readiness HTML/JSON generation that clearly separates discovered
+  surface, drafted checks, missing runtime evidence and next setup actions.
+- Made the demo builder OpenAPI-enhanced instead of OpenAPI-required: repo-only
+  source inventory can start immediately, then API/runtime evidence can be bound
+  later.
+- Hardened protected-profile command execution with `trusted_command_policy`
+  argv hashes so exact reviewed local adapters and JUnit commands can run while
+  changed or unreviewed commands remain blocked.
+- Added regression coverage for reviewed trusted commands, command adapters and
+  nested judge commands under protected source profiles.
+
+## What changed in 0.15.1
 
 This release expands PRE-D Local from selected AI/browser scorecards into a
 reviewed local system-evaluation workflow. It adds protected reusable profiles,
@@ -56,7 +79,7 @@ Download the wheel, `SHA256SUMS`, README, and guides from this release. Verify
 checksums as described in the README, then install in the evaluator environment:
 
 ```text
-python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.1-py3-none-any.whl
+python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.2-py3-none-any.whl
 python -c "from esx_eval_runner import __version__; print(__version__)"
 esx-eval setup --application
 ```
