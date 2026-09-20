@@ -72,6 +72,8 @@ examples/mock_adapter.py
 examples/run_full_metrics_fixture.py
 examples/run_release_fixture.py
 examples/system_reference_demo.py
+examples/vini_demo/build_vini_demo.py
+examples/vini_demo/business-context.sanitized.json
 exposurescopex_eval_runner.egg-info/PKG-INFO
 exposurescopex_eval_runner.egg-info/SOURCES.txt
 exposurescopex_eval_runner.egg-info/dependency_links.txt

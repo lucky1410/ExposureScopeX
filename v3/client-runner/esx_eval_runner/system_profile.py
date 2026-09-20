@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .runner import RunnerError, sha256
 from .system_inventory import discover_system, document, add_role_matrix
-from .system_safety import POLICY, snapshot_sources, source_diff
+from .system_safety import POLICY, MAX_BYTES, MAX_FILES, EXCLUDED, EXCLUDED_EXTENSIONS, snapshot_sources, source_diff
 from .system_scope import draft_scope
 
 
@@ -32,7 +32,14 @@ def bootstrap(*, project: str, version: str, repository: str | None = None,
     if roles:
         add_role_matrix(plan, roles)
     plan["source_protection"] = {"schema_version": POLICY, "mode": "read_only",
-                                 "roots": [str(p) for p in roots], "snapshot": after}
+                                 "roots": [str(p) for p in roots],
+                                 "scan_limits": {
+                                     "max_files": MAX_FILES,
+                                     "max_bytes": MAX_BYTES,
+                                     "excluded_directories": sorted(EXCLUDED),
+                                     "excluded_extensions": sorted(EXCLUDED_EXTENSIONS),
+                                 },
+                                 "snapshot": after}
     plan["profile"] = {"schema_version": PROFILE, "revision": 1, "inputs": inputs,
                        "created_at": datetime.now(timezone.utc).isoformat(),
                        "openapi_sha256": sha256(document(openapi)) if openapi else None,

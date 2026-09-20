@@ -51,10 +51,17 @@ def render_report(report: dict) -> str:
     integrity = report.get("source_integrity", {})
     files = integrity.get("files", [])
     source_rows = "".join(f'<li>{_esc(f["change"])}: {_esc(f["path"])}</li>' for f in files)
+    issues = integrity.get("after", {}).get("issues") or integrity.get("before", {}).get("issues") or integrity.get("after_issues") or integrity.get("before_issues") or []
+    issue_rows = "".join(f'<li>{_esc(issue.get("path", "repository"))}: {_esc(issue.get("reason", "unknown"))}</li>' for issue in issues)
+    status = integrity.get("status", "not_configured")
     source = f'<section id="source-integrity"><p class="eyebrow">APPLICATION SOURCE</p><h2>{_esc(integrity.get("status", "not_configured").replace("_", " ").capitalize())}</h2><p>{_esc(integrity.get("notice", "No source fingerprint was configured for this run."))}</p>'
-    if integrity.get("status") in {"changed", "incomplete"}:
-        source += '<p class="blocked">Source changed or could not be fully checked. Execution stopped. Review the file changes and rerun against a stable candidate; the responsible process is not established.</p>'
-    source += f'<details><summary>File changes and fingerprint coverage</summary><ul>{source_rows}</ul><p>Files hashed: {_esc(len(integrity.get("before", {}).get("files", {})))}</p><p>Excluded cache/build directories: {_esc(", ".join(integrity.get("before", {}).get("excluded_directories", [])))}</p></details></section>'
+    if status == "changed":
+        source += '<p class="blocked">Source changed: drift was observed during the run. Execution stopped. Review the file changes and rerun against a stable candidate; the responsible process is not established.</p>'
+    elif status == "incomplete":
+        source += '<p class="blocked">Source fingerprinting was incomplete. This is not proof of source drift; review scan limits, excluded paths, unreadable files or links before relying on source-integrity protection.</p>'
+    elif status == "not_configured":
+        source += '<p class="blocked">Source protection was not configured for this run. This is different from a failed or incomplete fingerprint.</p>'
+    source += f'<details><summary>File changes and fingerprint coverage</summary><ul>{source_rows or "<li>No changed files recorded.</li>"}</ul><p>Files hashed: {_esc(len(integrity.get("before", {}).get("files", {})))}</p><p>Bytes hashed: {_esc(integrity.get("before", {}).get("bytes_hashed", "unknown"))}</p><p>Scan issues: </p><ul>{issue_rows or "<li>No scan issues recorded.</li>"}</ul><p>Excluded cache/build directories: {_esc(", ".join(integrity.get("before", {}).get("excluded_directories", [])))}</p></details></section>'
     delta = report.get("changes")
     comparison = '<section id="changes"><h2>Changes since your baseline</h2><p>No baseline was supplied. Select an earlier accepted system report with <code>--baseline</code> to compare results.</p></section>'
     if delta:
@@ -90,7 +97,8 @@ def _render_report(report: dict) -> str:
     weak = [r["id"] for r in report["checks"] if r.get("strength") == "status_only"]
     caution = f'<p class="blocked">Status-only checks: {_esc(", ".join(weak))}. These prove response status, not correct content or business behavior.</p>' if weak else ""
     caution += "".join(f'<p class="blocked">{_esc(row["id"])}: {_esc(advice["summary"])} {_esc(advice["action"])}</p>' for row in report["checks"] for advice in row.get("workflow_advisories", []))
-    return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D system review</title><style>{STYLE}</style><main><p class="eyebrow">PRE-D / SYSTEM RELEASE REVIEW</p><h1>{_esc(title)}</h1><p>{_esc(report["project_id"])} / {_esc(report["application_version"])}</p><nav><a href="#findings">What to fix</a><a href="#scope">Behavior coverage</a><a href="#coverage">Modules</a><a href="#evidence">Evidence</a></nav><p>{_esc(report["notice"])}</p><div class="grid">{cards}</div>{caution}<section id="findings"><h2>What needs attention</h2>{"".join(findings) or "<p>No executed check failed. Review uncovered components before drawing a release conclusion.</p>"}</section>{scope_panel(report)}<section id="coverage"><h2>Coverage, not assumptions</h2><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Execution</th><th>Boundary / next step</th></tr>{coverage}</table></div></section><section id="evidence"><h2>Inspect the evidence</h2>{"".join(details)}</section><small>Run {_esc(report["run_id"])} | {_esc(report["created_at"])} | {_esc(report.get("report_sha256", ""))}</small></main></html>'
+    definition = "A component is counted as executed only when each required reviewed layer has an enabled check that ran to a pass/fail terminal state. Drafted, disabled, unbound, blocked, or status-only evidence remains a gap."
+    return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D system review</title><style>{STYLE}</style><main><p class="eyebrow">PRE-D / SYSTEM RELEASE REVIEW</p><h1>{_esc(title)}</h1><p>{_esc(report["project_id"])} / {_esc(report["application_version"])}</p><nav><a href="#findings">What to fix</a><a href="#scope">Behavior coverage</a><a href="#coverage">Modules</a><a href="#evidence">Evidence</a></nav><p>{_esc(report["notice"])}</p><div class="grid">{cards}</div><p class="muted">{_esc(definition)}</p>{caution}<section id="findings"><h2>What needs attention</h2>{"".join(findings) or "<p>No executed check failed. Review uncovered components before drawing a release conclusion.</p>"}</section>{scope_panel(report)}<section id="coverage"><h2>Coverage, not assumptions</h2><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Execution</th><th>Boundary / next step</th></tr>{coverage}</table></div></section><section id="evidence"><h2>Inspect the evidence</h2>{"".join(details)}</section><small>Run {_esc(report["run_id"])} | {_esc(report["created_at"])} | {_esc(report.get("report_sha256", ""))}</small></main></html>'
 
 
 def dimension_details(component: dict) -> str:

@@ -273,14 +273,12 @@ def check_browser_session(adapter: dict[str, Any], persona: str = "default") -> 
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
-            context = browser.new_context(storage_state=state)
-            page = context.new_page()
             try:
-                page.goto(urljoin(selected["base_url"], auth["login_path"]), wait_until="domcontentloaded", timeout=int(selected.get("action_timeout_ms", 15_000)))
-                _perform(page, selected["base_url"], auth["success"], int(selected.get("action_timeout_ms", 15_000)))
+                reason = _validate_saved_session(browser, selected, state, auth, playwright_error=PlaywrightError)
+                if reason is not None:
+                    return {"persona": persona, "session_status": "stale_or_invalid", "result": "reauthentication_required", "reason": reason}
                 return {"persona": persona, "session_status": status, "result": "session_usable"}
             finally:
-                context.close()
                 browser.close()
     except (PlaywrightError, RunnerError, OSError) as exc:
         return {"persona": persona, "session_status": "stale_or_invalid", "result": "reauthentication_required", "reason": _failure_kind(exc, playwright_error=PlaywrightError)}
@@ -326,16 +324,28 @@ def _overall_session_status(sessions: dict[str, tuple[dict[str, Any] | None, str
 
 def _prepare_session(browser: Any, adapter: dict[str, Any]) -> tuple[dict[str, Any] | None, str, str | None]:
     state_path = _local_path(adapter.get("session_state_path"))
+    auth = adapter.get("auth")
+    bootstrap = adapter.get("session_bootstrap")
     if state_path and state_path.is_file():
         try:
             raw_state = json.loads(state_path.read_text(encoding="utf-8"))
             state = _local_only_session_state(raw_state, adapter["base_url"])
-            return state, "reused_local_session", None
+            session_check = bootstrap or auth
+            if isinstance(session_check, dict):
+                reason = _validate_saved_session(browser, adapter, state, session_check)
+                if reason is None:
+                    return state, "reused_local_session", None
+                if isinstance(bootstrap, dict):
+                    return None, "stale_or_invalid", reason
+                # Form-auth profiles can recover automatically with approved
+                # environment variables; SSO/session-bootstrap profiles need
+                # explicit tester reauthentication.
+            else:
+                return state, "reused_local_session", None
         except (OSError, json.JSONDecodeError):
             return None, "session_unavailable", "saved_session_unreadable"
-    auth = adapter.get("auth")
     if not isinstance(auth, dict):
-        if isinstance(adapter.get("session_bootstrap"), dict):
+        if isinstance(bootstrap, dict):
             return None, "interactive_auth_required", "session_bootstrap_required"
         return None, "not_requested", None
     context = browser.new_context()
@@ -348,6 +358,22 @@ def _prepare_session(browser: Any, adapter: dict[str, Any]) -> tuple[dict[str, A
         return state, "authenticated_this_run", None
     except Exception as exc:  # Page errors can include application content, so retain only a category.
         return None, "authentication_failed", _failure_kind(exc)
+    finally:
+        context.close()
+
+
+def _validate_saved_session(browser: Any, adapter: dict[str, Any], state: dict[str, Any], auth: dict[str, Any],
+                            *, playwright_error: type[Exception] | None = None) -> str | None:
+    """Validate a cached session against the approved local success signal."""
+    context = browser.new_context(storage_state=state)
+    page = context.new_page()
+    timeout_ms = int(adapter.get("action_timeout_ms", 15_000))
+    try:
+        page.goto(urljoin(adapter["base_url"], auth["login_path"]), wait_until="domcontentloaded", timeout=timeout_ms)
+        _perform(page, adapter["base_url"], auth["success"], timeout_ms)
+        return None
+    except Exception as exc:
+        return _failure_kind(exc, playwright_error=playwright_error)
     finally:
         context.close()
 

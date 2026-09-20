@@ -3,7 +3,9 @@
 from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 import io
+import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
@@ -129,6 +131,82 @@ class PersonaRoleTests(unittest.TestCase):
                 self.assertIsNone(state)
                 self.assertEqual((status, reason), ("interactive_auth_required", "session_bootstrap_required"))
                 browser.new_context.assert_not_called()
+
+    def test_cached_persona_session_is_validated_before_reuse(self):
+        adapter = browser_config()["adapter"]
+        state = {
+            "cookies": [{"domain": "127.0.0.1", "name": "app"}],
+            "origins": [{"origin": "http://127.0.0.1:3000", "localStorage": []}],
+        }
+        browser = Mock()
+        context = Mock()
+        page = Mock()
+        page.url = "http://127.0.0.1:3000/login"
+        visible_text = Mock()
+        visible_text.wait_for.side_effect = AssertionError("session success signal missing")
+        body = Mock()
+        body.get_by_text.return_value = visible_text
+        page.locator.return_value = body
+        browser.new_context.return_value = context
+        context.new_page.return_value = page
+        with TemporaryDirectory() as directory, patch.object(Path, "cwd", return_value=Path(directory)):
+            session_path = Path(directory) / ".esx" / "personas" / "analyst.json"
+            session_path.parent.mkdir(parents=True)
+            session_path.write_text(json.dumps(state), encoding="utf-8")
+            selected = browser_adapter_for_persona(adapter, "analyst")
+            state, status, reason = _prepare_session(browser, selected)
+        self.assertIsNone(state)
+        self.assertEqual((status, reason), ("stale_or_invalid", "assertion_failed"))
+        browser.new_context.assert_called_once()
+        context.close.assert_called_once()
+
+    def test_stale_form_auth_session_refreshes_with_approved_env_credentials(self):
+        adapter = {
+            "base_url": "http://127.0.0.1:3000",
+            "session_state_path": ".esx/default-session.json",
+            "auth": {
+                "login_path": "/login",
+                "username_env": "ESX_TEST_USERNAME",
+                "password_env": "ESX_TEST_PASSWORD",
+                "username_selector": "#email",
+                "password_selector": "#password",
+                "submit_selector": "#login",
+                "success": {"type": "wait_for_text", "value": "Dashboard"},
+            },
+        }
+        state = {
+            "cookies": [{"domain": "127.0.0.1", "name": "app"}],
+            "origins": [{"origin": "http://127.0.0.1:3000", "localStorage": []}],
+        }
+        browser = Mock()
+        stale_context, login_context = Mock(), Mock()
+        stale_page, login_page = Mock(), Mock()
+        stale_page.url = "http://127.0.0.1:3000/login"
+        login_page.url = "http://127.0.0.1:3000/dashboard"
+        stale_text = Mock()
+        stale_text.wait_for.side_effect = AssertionError("expired")
+        stale_locator = Mock()
+        stale_locator.get_by_text.return_value = stale_text
+        stale_page.locator.return_value = stale_locator
+        login_text = Mock()
+        login_locator = Mock()
+        login_locator.get_by_text.return_value = login_text
+        login_page.locator.return_value = login_locator
+        login_context.storage_state.return_value = state
+        stale_context.new_page.return_value = stale_page
+        login_context.new_page.return_value = login_page
+        browser.new_context.side_effect = [stale_context, login_context]
+        with TemporaryDirectory() as directory, patch.object(Path, "cwd", return_value=Path(directory)), patch.dict("os.environ", {"ESX_TEST_USERNAME": "demo", "ESX_TEST_PASSWORD": "secret"}):
+            session_path = Path(directory) / ".esx" / "default-session.json"
+            session_path.parent.mkdir(parents=True)
+            session_path.write_text(json.dumps(state), encoding="utf-8")
+            refreshed, status, reason = _prepare_session(browser, adapter)
+        self.assertEqual(status, "authenticated_this_run")
+        self.assertIsNone(reason)
+        self.assertEqual(refreshed["cookies"], state["cookies"])
+        self.assertEqual(browser.new_context.call_count, 2)
+        stale_context.close.assert_called_once()
+        login_context.close.assert_called_once()
 
     def test_role_label_is_not_a_persona_id_or_automatic_case_binding(self):
         adapter = browser_config()["adapter"]

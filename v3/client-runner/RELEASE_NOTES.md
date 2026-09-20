@@ -1,9 +1,32 @@
-# PRE-D Local 0.15.2
+# PRE-D Local 0.15.3
 
-This patch release adds source-first full-platform onboarding for urgent local
-demo/evaluation packages. It can draft broad system inventory and check plans
-from a repository snapshot even when a live OpenAPI export is unavailable, while
-keeping execution claims honest until reviewed evidence checks are enabled.
+This patch release hardens the 0.15.x full-platform workflow against the
+blockers found during real application testing. It keeps the 0.15.2
+source-first onboarding model, but fixes the most misleading failure modes:
+large repository fingerprints, stale browser sessions, generic binding errors,
+and under-explained terminal report states.
+
+## What changed in 0.15.3
+
+- Source protection now ignores generated/vendor/build directories and common
+  binary artifacts by default, records scan limits in the profile, and lets
+  teams raise those limits explicitly when a repository needs it.
+- Incomplete fingerprints are now reported as scan-limit/unreadable/link issues,
+  not as proof that source code changed. Actual source drift remains a separate
+  blocking condition.
+- Setup, preflight, execution and after-check verification now use the same
+  source scan limits, so protected profiles do not fail because different phases
+  fingerprinted a real repository differently.
+- Saved browser sessions are validated against the configured success signal
+  before protected workflows run. Stale SSO/session-bootstrap profiles now block
+  at session setup with a reauthentication reason, while form-auth profiles can
+  refresh through approved environment variables.
+- Objective binding errors now name the expected component, layer and role
+  mismatch, making planner/reviewer fixes traceable.
+- System HTML reports now explain what an executed component means and distinguish
+  source `changed`, `incomplete`, and `not_configured` states.
+- Added regression tests for generated-tree exclusion, incomplete fingerprint
+  blockers, detailed binding errors, and stale-session detection.
 
 ## What changed in 0.15.2
 
@@ -79,7 +102,7 @@ Download the wheel, `SHA256SUMS`, README, and guides from this release. Verify
 checksums as described in the README, then install in the evaluator environment:
 
 ```text
-python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.2-py3-none-any.whl
+python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.3-py3-none-any.whl
 python -c "from esx_eval_runner import __version__; print(__version__)"
 esx-eval setup --application
 ```

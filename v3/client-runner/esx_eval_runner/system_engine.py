@@ -544,7 +544,7 @@ def recovery_check(plan: dict, check: dict, root: Path) -> dict:
 
 
 def execute_system(plan: dict, root: Path, out: Path) -> dict:
-    from .system_safety import guard_output, protected_roots, snapshot_sources, source_diff
+    from .system_safety import guard_output, protected_roots, snapshot_sources, source_diff, source_limits
     guard_output(plan, out)
     ready = preflight(plan, root)
     if not ready["ready"]:
@@ -552,7 +552,9 @@ def execute_system(plan: dict, root: Path, out: Path) -> dict:
     if out.exists():
         raise RunnerError("Use a new output directory; prior evidence is never overwritten")
     roots = protected_roots(plan)
-    source_before = snapshot_sources(roots)
+    max_files, max_bytes, excluded_dirs, excluded_exts = source_limits(plan)
+    source_before = snapshot_sources(roots, max_files=max_files, max_bytes=max_bytes,
+                                     excluded_directories=excluded_dirs, excluded_extensions=excluded_exts)
     if roots and source_diff(plan["source_protection"]["snapshot"], source_before)["status"] != "unchanged":
         raise RunnerError("Source changed after preflight; refresh and review")
     source_after = source_before
@@ -606,7 +608,8 @@ def execute_system(plan: dict, root: Path, out: Path) -> dict:
         results.append(row)
         append_audit_event(audit, "system_check_completed", {"run_id": run_id, "check_id": check["id"], "status": row["status"], "result_sha256": sha256(row)})
         if roots:
-            source_after = snapshot_sources(roots)
+            source_after = snapshot_sources(roots, max_files=max_files, max_bytes=max_bytes,
+                                            excluded_directories=excluded_dirs, excluded_extensions=excluded_exts)
             integrity = source_diff(source_before, source_after)
             if integrity["status"] != "unchanged":
                 integrity["after_check_id"] = check["id"]
@@ -620,7 +623,8 @@ def execute_system(plan: dict, root: Path, out: Path) -> dict:
         build_evidence.update(after=after, status="matched_before_and_after" if after["status"] == "passed" else "candidate_changed_or_unreachable")
         append_audit_event(audit, "system_candidate_rechecked", {"run_id": run_id, "result_sha256": sha256(build_evidence)})
     if roots:
-        source_after = snapshot_sources(roots)
+        source_after = snapshot_sources(roots, max_files=max_files, max_bytes=max_bytes,
+                                        excluded_directories=excluded_dirs, excluded_extensions=excluded_exts)
         final_integrity = source_diff(source_before, source_after)
         if integrity["status"] not in {"unchanged", "not_configured"}:
             integrity["final_observation"] = final_integrity

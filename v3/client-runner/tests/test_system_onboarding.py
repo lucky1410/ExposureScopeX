@@ -140,6 +140,31 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual(plan["source_protection"]["snapshot"]["status"], "incomplete")
             self.assertTrue(protection_blockers(plan, self.work))
 
+    def test_source_snapshot_excludes_generated_vendor_trees_before_byte_limit(self):
+        vendor = self.repo / "node_modules" / "package"
+        vendor.mkdir(parents=True)
+        (vendor / "bundle.js").write_text("x" * 1024, encoding="utf-8")
+        with patch("esx_eval_runner.system_safety.MAX_BYTES", 128):
+            snapshot = snapshot_sources([self.repo])
+        self.assertEqual(snapshot["status"], "complete")
+        self.assertIn("0/app.py", snapshot["files"])
+        self.assertFalse(any("node_modules" in key for key in snapshot["files"]))
+
+    def test_incomplete_source_blocker_names_scan_limit_instead_of_source_drift(self):
+        plan = deepcopy(self.plan)
+        plan["source_protection"]["scan_limits"]["max_bytes"] = 1
+        blockers = protection_blockers(plan, self.work)
+        self.assertTrue(any("byte_limit" in item for item in blockers))
+        self.assertFalse(any("Application source changed since setup" in item for item in blockers))
+
+    def test_scope_binding_errors_name_expected_and_actual_fields(self):
+        plan = deepcopy(self.plan)
+        objective = plan["scope_contract"]["objectives"][0]
+        objective["check_id"] = plan["checks"][0]["id"]
+        objective["layer"] = "ai"
+        with self.assertRaisesRegex(RunnerError, "expected component .* and layer ai == functional"):
+            validate_plan(plan, self.work)
+
     def test_custom_commands_are_blocked_under_code_protection(self):
         plan = deepcopy(self.plan)
         plan["checks"] = [{"id": "custom", "type": "command", "layer": "code", "component_ids": [plan["components"][0]["id"]],

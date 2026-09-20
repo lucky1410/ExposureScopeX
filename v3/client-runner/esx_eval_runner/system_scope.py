@@ -72,9 +72,31 @@ def validate_scope(plan: dict) -> None:
         if check_id:
             check = checks[check_id]
             if objective["component_id"] not in check["component_ids"] or objective["layer"] != check["layer"]:
-                raise RunnerError("Objective binding must match the check component and layer")
+                raise RunnerError(
+                    "Objective binding mismatch for "
+                    + objective["id"]
+                    + " -> "
+                    + check_id
+                    + ": expected component "
+                    + objective["component_id"]
+                    + " within "
+                    + ", ".join(check["component_ids"])
+                    + " and layer "
+                    + objective["layer"]
+                    + " == "
+                    + check["layer"]
+                )
             if role is not None and check.get("role") != role:
-                raise RunnerError("Objective binding must match the check's explicit role")
+                raise RunnerError(
+                    "Objective role mismatch for "
+                    + objective["id"]
+                    + " -> "
+                    + check_id
+                    + ": expected "
+                    + role
+                    + ", check role is "
+                    + str(check.get("role"))
+                )
         for field in ("case_ids", "assertion_paths"):
             values = objective.get(field, [])
             if not isinstance(values, list) or len(values) > 1000 or any(
