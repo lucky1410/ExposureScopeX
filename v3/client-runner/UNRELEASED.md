@@ -1,6 +1,6 @@
-# PRE-D Local 0.15.0 Release Working Notes
+# PRE-D Local 0.15.1 Release Working Notes
 
-Published scope for the 0.15.0 release.
+Published scope for the 0.15.1 release.
 
 - Added reusable protected application profiles, conservative discovery refresh,
   retained check/evidence bindings and explicit source/contract change review.

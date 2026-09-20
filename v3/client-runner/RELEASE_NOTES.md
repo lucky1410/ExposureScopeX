@@ -1,4 +1,4 @@
-# PRE-D Local 0.15.0
+# PRE-D Local 0.15.1
 
 This release expands PRE-D Local from selected AI/browser scorecards into a
 reviewed local system-evaluation workflow. It adds protected reusable profiles,
@@ -56,7 +56,7 @@ Download the wheel, `SHA256SUMS`, README, and guides from this release. Verify
 checksums as described in the README, then install in the evaluator environment:
 
 ```text
-python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.0-py3-none-any.whl
+python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.1-py3-none-any.whl
 python -c "from esx_eval_runner import __version__; print(__version__)"
 esx-eval setup --application
 ```
@@ -87,6 +87,9 @@ mean unsupported by the supplied sources, not necessarily false in the real worl
 - The GitHub release workflow reruns the full suite plus retained system and
   whole-system acceptance scripts before building and publishing the versioned
   wheel and documentation with SHA-256 checksums.
+- Patch update: the monitor cleanup acceptance test now asserts only the actual
+  monitor interval sleep, avoiding unrelated process-polling sleeps in CI while
+  preserving the stop-before-next-cycle guarantee.
 - Deterministic fixtures do not establish real-model judge accuracy. Independent
   semantic-judge validation and representative application acceptance remain needed.
 - `system monitor` is a foreground opt-in loop, not an installed scheduler or

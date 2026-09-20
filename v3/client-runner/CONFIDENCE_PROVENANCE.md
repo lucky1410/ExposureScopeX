@@ -1,7 +1,6 @@
 # Confidence Provenance and Independent Decision Metrics
 
-These working-tree changes are unpublished. Installing the published 0.15.0
-wheel does not install them.
+Available in PRE-D Local 0.15.1 and later.
 
 ## Choose the Measurement, Not a Mandatory Bundle
 

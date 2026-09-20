@@ -1,6 +1,6 @@
 # PRE-D Local System Evaluation
 
-**Available in PRE-D Local 0.15.0.**
+**Available in PRE-D Local 0.15.1.**
 
 For reusable setup, a read-only source policy, bounded local planning assistance
 and traceable baseline comparisons, start with [local onboarding](LOCAL_ONBOARDING.md).

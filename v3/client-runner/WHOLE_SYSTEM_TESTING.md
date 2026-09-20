@@ -1,6 +1,6 @@
 # Whole-System Testing Contract
 
-Available in PRE-D Local 0.15.0. No platform account or Docker is required by
+Available in PRE-D Local 0.15.1. No platform account or Docker is required by
 PRE-D. The application itself may have its own dependencies.
 
 PRE-D coordinates its existing AI/browser, HTTP, code, security, load, recovery

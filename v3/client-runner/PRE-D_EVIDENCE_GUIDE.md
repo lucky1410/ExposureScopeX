@@ -222,7 +222,7 @@ source text are omitted from the reports.
 
 1. Verify the installed package version matches the build being tested. For this
    release, `python -c "from esx_eval_runner import __version__; print(__version__)"`
-   must print `0.15.0`.
+   must print `0.15.1`.
 2. Configure a real independent local judge, such as the bundled Ollama bridge
    with an already-installed model. A deterministic regression-test fixture is
    not a semantic judge. Custom judges must support extraction, extraction review,

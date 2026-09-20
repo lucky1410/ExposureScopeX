@@ -1,6 +1,6 @@
 # Reusable Local Setup and Change Review
 
-Available in PRE-D Local 0.15.0. Install the published wheel or this checkout
+Available in PRE-D Local 0.15.1. Install the published wheel or this checkout
 to test protected reusable profiles, bounded local planning and change review.
 
 PRE-D keeps a local application profile containing discovered components,

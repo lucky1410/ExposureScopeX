@@ -435,11 +435,17 @@ class SystemAcceptanceTests(unittest.TestCase):
             plan["checks"].append({**basic_plan(app.url)["checks"][0], "id": "must-not-run", "path": "/health"})
             approve_plan(plan, self.root, isolated=True, allow_disruption=True)
             write_json(self.root / "plan.json", plan)
-            with patch("esx_eval_runner.system_cli.time.sleep") as sleep, redirect_stdout(io.StringIO()):
+            monitor_sleeps = []
+
+            def record_monitor_sleep(seconds):
+                if seconds == 60:
+                    monitor_sleeps.append(seconds)
+
+            with patch("esx_eval_runner.system_cli.time.sleep", side_effect=record_monitor_sleep), redirect_stdout(io.StringIO()):
                 status = main(["system", "monitor", "--plan", str(self.root / "plan.json"), "--out", str(self.evidence / "cycles"),
                     "--history", str(self.evidence / "history.sqlite"), "--cycles", "3", "--interval-seconds", "60"])
             self.assertEqual(status, 2)
-            self.assertEqual(sleep.call_count, 0)
+            self.assertEqual(monitor_sleeps, [])
             self.assertNotIn("/health", app.calls)
             self.assertEqual(len(history_runs(self.evidence / "history.sqlite", "sample-app")), 1)
 
