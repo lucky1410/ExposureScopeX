@@ -12,6 +12,7 @@ from .system_inventory import IGNORED, document
 
 
 POLICY = "pre-d-source-protection-1.0"
+TRUSTED_COMMANDS = "pre-d-trusted-local-commands-1.0"
 SNAPSHOT = "pre-d-source-snapshot-1.0"
 MAX_FILES = 10000
 MAX_BYTES = 128_000_000
@@ -121,10 +122,47 @@ def source_diff(before: dict, after: dict) -> dict:
             "files": rows, "changed_file_count": len(rows)}
 
 
-def _has_command(value: object) -> bool:
+def command_sha256(argv: list[str]) -> str:
+    return sha256(argv)
+
+
+def _command_paths(value: object, prefix: str = "") -> list[tuple[str, list[str]]]:
+    rows = []
     if isinstance(value, dict):
-        return any(k in {"command", "inject_command", "recover_command"} or _has_command(v) for k, v in value.items())
-    return isinstance(value, list) and any(_has_command(v) for v in value)
+        for key, item in value.items():
+            path = f"{prefix}.{key}" if prefix else key
+            if key in {"command", "inject_command", "recover_command"} and isinstance(item, list):
+                rows.append((path, item))
+            else:
+                rows.extend(_command_paths(item, path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            rows.extend(_command_paths(item, f"{prefix}.{index}" if prefix else str(index)))
+    return rows
+
+
+def _trusted_command_index(plan: dict) -> set[tuple[str, str, str]]:
+    policy = plan.get("trusted_command_policy")
+    if policy is None:
+        return set()
+    if not isinstance(policy, dict) or policy.get("schema_version") != TRUSTED_COMMANDS or policy.get("reviewed") is not True:
+        raise RunnerError("trusted_command_policy must be reviewed and use the supported schema")
+    entries = policy.get("entries")
+    if not isinstance(entries, list) or len(entries) > 500:
+        raise RunnerError("trusted_command_policy entries must be a bounded list")
+    index = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise RunnerError("trusted_command_policy entries must be objects")
+        check_id, field, digest = entry.get("check_id"), entry.get("field"), entry.get("argv_sha256")
+        if not all(isinstance(v, str) and v for v in (check_id, field, digest)) or not isinstance(entry.get("reason"), str) or not entry["reason"].strip():
+            raise RunnerError("trusted_command_policy entries require check_id, field, argv_sha256 and reason")
+        index.add((check_id, field, digest))
+    return index
+
+
+def _trusted_command(plan: dict, check_id: str, field: str, argv: list[str], index: set[tuple[str, str, str]]) -> bool:
+    return (check_id, field, command_sha256(argv)) in index
 
 
 def protection_blockers(plan: dict, root: Path) -> list[str]:
@@ -133,19 +171,26 @@ def protection_blockers(plan: dict, root: Path) -> list[str]:
     roots = protected_roots(plan)
     guard_output(plan, root)
     blockers = []
+    trusted = _trusted_command_index(plan)
     for check in plan.get("checks", []):
         if not check.get("enabled"):
             continue
         if check.get("type") in {"command", "recovery"}:
-            blockers.append(check["id"] + ": unrestricted commands cannot enforce read-only application code; use an external isolated test environment")
-            continue
+            if isinstance(check.get("result_file"), str):
+                guard_output(plan, root / check["result_file"])
+            missing = [field for field, argv in _command_paths(check) if not _trusted_command(plan, check["id"], field, argv, trusted)]
+            if missing:
+                blockers.append(check["id"] + ": protected profiles require reviewed trusted_command_policy entries for " + ", ".join(missing))
+                continue
         if check.get("type") == "evaluation":
             config_path = (root / check["config"]).resolve()
             config = document(config_path)
             guard_output(plan, config_path.parent)
-            if _has_command(config):
-                blockers.append(check["id"] + ": command adapters/judges require external isolation; the protected profile cannot launch them")
-            if config.get("adapter", {}).get("type") not in {"http_json_target", "browser_journey"}:
+            commands = _command_paths(config)
+            missing = [field for field, argv in commands if not _trusted_command(plan, check["id"], field, argv, trusted)]
+            if missing:
+                blockers.append(check["id"] + ": protected profiles require reviewed trusted_command_policy entries for " + ", ".join(missing))
+            if config.get("adapter", {}).get("type") not in {"http_json_target", "browser_journey"} and (not commands or missing):
                 blockers.append(check["id"] + ": use a built-in HTTP or browser connector in the protected profile")
             # Browser session and diagnostic paths are relative to the evaluation file.
             def check_paths(value):

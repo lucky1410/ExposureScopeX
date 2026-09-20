@@ -1,0 +1,51 @@
+{
+  "rules": [
+    {
+      "id": "BR-disposition-reviewed-outcome",
+      "title": "Investigation disposition must produce a reviewed outcome",
+      "expected_behavior": "A decision module should return a concrete reviewed outcome or an explicit abstention reason for each labelled case.",
+      "component_ids": ["vini-investigation-disposition"],
+      "layers": ["ai"],
+      "actors": ["analyst"],
+      "entities": ["investigation"],
+      "states": ["open", "reviewed", "decided"],
+      "permissions": ["review_investigation"],
+      "expected_outcomes": ["label matches the reviewed case expectation", "abstention is correct when evidence is insufficient"],
+      "negative_outcomes": ["unexplained undecided output is not accepted as a correct decision"],
+      "source": "sanitized-demo-intake",
+      "risk": "high",
+      "reviewed": true
+    },
+    {
+      "id": "BR-dlp-status-completes",
+      "title": "DLP analysis status must match completed analysis",
+      "expected_behavior": "When a DLP analysis run completes, the visible alert status and assessment record should advance consistently.",
+      "component_ids": ["vini-dlp-decisions"],
+      "layers": ["ai", "workflow"],
+      "actors": ["analyst"],
+      "entities": ["dlp_alert", "dlp_assessment"],
+      "states": ["queued", "running", "completed", "failed"],
+      "permissions": ["review_dlp_alert"],
+      "expected_outcomes": ["completed model run is reflected in the alert status", "fresh assessment timestamp is observable"],
+      "negative_outcomes": ["alert remains running after model run completion"],
+      "source": "sanitized-demo-intake",
+      "risk": "high",
+      "reviewed": true
+    },
+    {
+      "id": "BR-role-boundaries",
+      "title": "Role boundaries must match declared access policy",
+      "expected_behavior": "Each protected API and workflow should allow only the roles declared by the owner-reviewed policy.",
+      "component_ids": ["vini-core-workflows"],
+      "layers": ["authorization", "workflow"],
+      "actors": ["admin", "soc_lead", "analyst", "read_only"],
+      "entities": ["workspace", "case", "admin_setting"],
+      "permissions": ["view", "update", "administer"],
+      "expected_outcomes": ["allowed roles can reach intended pages", "denied roles receive explicit denial or redirect"],
+      "negative_outcomes": ["read-only identity mutates state", "non-admin identity reaches admin-only settings"],
+      "source": "sanitized-demo-intake",
+      "risk": "high",
+      "reviewed": true
+    }
+  ]
+}

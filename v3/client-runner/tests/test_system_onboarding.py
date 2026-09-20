@@ -22,7 +22,7 @@ from esx_eval_runner.system_cli import write_json
 from esx_eval_runner.system_engine import approve_plan, execute_system, preflight, validate_plan, plan_digest, http_check
 from esx_eval_runner.system_history import record_run, history_runs, candidate_matches
 from esx_eval_runner.system_profile import bootstrap, refresh_profile
-from esx_eval_runner.system_safety import guard_output, snapshot_sources, source_diff, protection_blockers
+from esx_eval_runner.system_safety import command_sha256, guard_output, snapshot_sources, source_diff, protection_blockers
 from esx_eval_runner.system_ui import render_report, setup_handler
 from test_system_evaluation import reference_app, basic_plan, decision_config
 
@@ -144,8 +144,21 @@ class OnboardingTests(unittest.TestCase):
         plan = deepcopy(self.plan)
         plan["checks"] = [{"id": "custom", "type": "command", "layer": "code", "component_ids": [plan["components"][0]["id"]],
                            "enabled": True, "reviewed": True, "command": ["do-not-run"], "result_file": "out.xml"}]
-        with self.assertRaisesRegex(RunnerError, "unrestricted"):
+        with self.assertRaisesRegex(RunnerError, "trusted_command_policy"):
             approve_plan(plan, self.work)
+
+    def test_reviewed_trusted_command_policy_allows_exact_command_under_protection(self):
+        command = [os.sys.executable, "-c", "pass"]
+        plan = deepcopy(self.plan)
+        plan["checks"] = [{"id": "custom", "type": "command", "layer": "code", "component_ids": [plan["components"][0]["id"]],
+                           "enabled": True, "reviewed": True, "command": command, "result_file": "out.xml"}]
+        plan["trusted_command_policy"] = {"schema_version": "pre-d-trusted-local-commands-1.0", "reviewed": True,
+                                          "entries": [{"check_id": "custom", "field": "command",
+                                                       "argv_sha256": command_sha256(command),
+                                                       "reason": "Approved local test runner in isolated evaluator workspace."}]}
+        self.assertEqual(protection_blockers(plan, self.work), [])
+        plan["checks"][0]["command"] = [os.sys.executable, "-c", "print('changed')"]
+        self.assertTrue(any("trusted_command_policy" in s for s in protection_blockers(plan, self.work)))
 
     def test_nested_judge_commands_do_not_bypass_protection(self):
         plan = deepcopy(self.plan)
@@ -154,7 +167,20 @@ class OnboardingTests(unittest.TestCase):
         config["assurance"] = {"grounding_judge": {"command": ["not-executed"]}}
         write_json(self.work / "eval.json", config)
         plan["checks"] = [{"id": "ai", "type": "evaluation", "enabled": True, "config": "eval.json"}]
-        self.assertTrue(any("judges" in s for s in protection_blockers(plan, self.work)))
+        self.assertTrue(any("assurance.grounding_judge.command" in s for s in protection_blockers(plan, self.work)))
+
+    def test_reviewed_command_adapter_can_run_with_protected_profile(self):
+        command = [os.sys.executable, "-c", "pass"]
+        plan = deepcopy(self.plan)
+        config = decision_config()
+        config["adapter"] = {"type": "command_json_v1", "command": command}
+        write_json(self.work / "eval.json", config)
+        plan["checks"] = [{"id": "ai", "type": "evaluation", "enabled": True, "config": "eval.json"}]
+        plan["trusted_command_policy"] = {"schema_version": "pre-d-trusted-local-commands-1.0", "reviewed": True,
+                                          "entries": [{"check_id": "ai", "field": "adapter.command",
+                                                       "argv_sha256": command_sha256(command),
+                                                       "reason": "Approved local decision adapter; command body is outside protected app source."}]}
+        self.assertEqual(protection_blockers(plan, self.work), [])
 
     def test_refresh_preserves_custom_assertions_and_removed_components_as_gaps(self):
         plan = deepcopy(self.plan)

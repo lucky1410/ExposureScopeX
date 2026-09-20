@@ -15,6 +15,12 @@ test identities, tenant fixtures, a reset procedure and owner-approved budgets.
 Keep credentials and raw customer data on the tester's machine. Approval flags
 record permission; they do not isolate your application.
 
+If a protected profile needs an existing test runner, local adapter or semantic
+judge, add a reviewed `trusted_command_policy` entry for the exact argv hash.
+PRE-D still fingerprints source before and after the run and blocks command
+result artifacts inside the protected repository. This is traceability and
+drift detection, not a sandbox.
+
 Install the published wheel or this source version, then:
 
 ```text

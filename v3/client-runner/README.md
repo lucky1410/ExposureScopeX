@@ -39,6 +39,9 @@ assistance, suggestion review and baseline comparisons. Protected profiles keep
 PRE-D artifacts outside application source and stop when observed source
 changes invalidate a run. Optional local models draft behavior objectives
 under a bounded tool interface. See [setup, limits and reuse](LOCAL_ONBOARDING.md).
+Exact reviewed local commands can be allowed by argv hash through
+`trusted_command_policy`, so existing test runners and local adapters remain
+traceable without becoming unrestricted execution.
 
 The release includes the `esx-eval system` workflow: bounded
 repository/OpenAPI discovery, guided review, native HTTP/role/tenant checks,

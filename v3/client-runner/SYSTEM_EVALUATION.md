@@ -5,7 +5,9 @@
 For reusable setup, a read-only source policy, bounded local planning assistance
 and traceable baseline comparisons, start with [local onboarding](LOCAL_ONBOARDING.md).
 Protected profiles block unrestricted external commands; the command layers
-below retain their earlier explicit isolation requirements.
+below retain their earlier explicit isolation requirements. Exact reviewed local
+commands can be allowed with `trusted_command_policy` entries keyed by check ID,
+field and argv hash; command changes block approval again.
 
 PRE-D can now coordinate more than AI scorecards: source/API inventory,
 reviewed HTTP contracts, existing browser and AI evaluations, external code and
@@ -102,6 +104,32 @@ are not followed and proxy environment settings are not used for native probes.
 disposable data and isolated integrations. A GET can still have app-defined side
 effects. Commands, adapters, test frameworks and models can access the network
 and filesystem with the evaluator's permissions. Never run untrusted commands.
+
+Protected profiles do not make subprocesses read-only. They make the trade-off
+explicit and observable: source fingerprints are checked before/after execution,
+PRE-D artifacts must stay outside the protected repository, and command checks
+or command-based adapters require exact reviewed `trusted_command_policy`
+entries. A changed argv, missing reason or result file inside the protected
+repository blocks preflight.
+
+Example trusted command entry:
+
+```json
+{
+  "trusted_command_policy": {
+    "schema_version": "pre-d-trusted-local-commands-1.0",
+    "reviewed": true,
+    "entries": [
+      {
+        "check_id": "backend-pytest",
+        "field": "command",
+        "argv_sha256": "sha256 from esx_eval_runner.system_safety.command_sha256(command)",
+        "reason": "Approved local test runner in isolated evaluator workspace."
+      }
+    ]
+  }
+}
+```
 
 ## Connect AI Metrics and Browser Workflows
 
