@@ -1,4 +1,4 @@
-FROM golang:1.26.6-bookworm AS toolbuilder
+FROM golang:1.27.0-bookworm AS toolbuilder
 
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && \
     rm -rf /var/lib/apt/lists/*
@@ -68,7 +68,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -o /out/amass github.com/owasp-amass/amass/v5/cmd/amass && \
     go build -o /out/ffuf github.com/ffuf/ffuf/v2
 
-FROM golang:1.26.6-bookworm AS security-tool-base
+FROM golang:1.27.0-bookworm AS security-tool-base
 ENV GOTOOLCHAIN=local
 ENV GOFLAGS=-mod=mod
 WORKDIR /build
