@@ -48,6 +48,28 @@ check), not a production capacity benchmark. Layer 4b is not an infrastructure
 provisioner or universal chaos engine. No module is silently excluded because
 it lacks a numeric confidence: use the evidence path appropriate to its behavior.
 
+## Module Evaluation Map
+
+Every system report now includes a results-based module evaluation map. It
+classifies discovered and configured work into eight product-facing areas:
+
+| Area | What PRE-D can report | Minimum evidence |
+| --- | --- | --- |
+| AI decision modules | Accuracy, precision, recall, F1, confidence, abstention and decision evidence | Labelled cases, real predictions, genuine confidence when requested, evidence/abstention expectations |
+| RAG / knowledge modules | Groundedness, hallucination, retrieval relevance and evidence coverage | Response text, source chunks, retrieval/evidence IDs and an independent local judge |
+| Browser workflow modules | Login, navigation, page reachability, visible signals and browser diagnostics | Reviewed journeys, approved session/persona and stable content assertions |
+| API workflow modules | Status, schema/content assertions and expected business outputs | Safe endpoint, reviewed inputs, expected statuses and JSON assertions |
+| Security modules | Authorization, tenant isolation, unsafe action blocking and prompt-injection outcomes | Role matrix, isolated tenants/fixtures, adversarial cases and expected outcomes |
+| Reliability modules | Retries, stuck states, dead letters, timeout handling and recovery checks | Health counters, bounded load budgets, isolated failure/recovery checks |
+| Cost / latency modules | Tokens, runtime, cost, throughput and p95 latency | Per-case usage telemetry or bounded load observations |
+| Admin / config modules | Role access, configuration visibility, drift and safe admin workflows | Test roles, read-only fixtures, config assertions and explicit approval for writes |
+
+The map does not turn discovery into proof. Each area is labelled as
+`evaluated`, `partial`, `failed`, `blocked`, `configured_not_run`,
+`planned_only`, or `not_applicable`, with verified, declared, blocked or missing
+evidence strength. The report also shows which metric groups were verified and
+what action is needed next.
+
 ## Install This Source Version
 
 From the repository root, use an evaluator virtual environment:

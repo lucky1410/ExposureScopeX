@@ -114,3 +114,14 @@ still required; no live production target was tested during development.
 - Business-rule suggestions remain hypotheses until the application owner
   reviews them and binds executable evidence. Implemented code behavior still
   never becomes the oracle by default.
+
+## Module Evaluation Reporting
+
+- Added a results-based module evaluation map to system reports. Reports now
+  classify AI decision, RAG/knowledge, browser workflow, API workflow,
+  security, reliability, cost/latency and admin/config areas separately.
+- Each area reports discovered components, complete components, configured
+  checks, executed checks, verified metrics, declared metrics, missing requested
+  metrics, evidence strength, result basis and the next action.
+- Added documentation for the evidence each module type needs before PRE-D can
+  claim real coverage.

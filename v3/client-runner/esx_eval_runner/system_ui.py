@@ -21,7 +21,7 @@ STYLE = """
 main{max-width:1220px;margin:auto;padding:42px 28px}h1{font-size:clamp(32px,5vw,62px);line-height:1.04;max-width:900px}h2{font-size:28px}h3{font-size:21px}p{line-height:1.6}
 .eyebrow,button,label,th,nav,small{font-family:'Courier New',monospace}.eyebrow{color:var(--accent);letter-spacing:2px}section,.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px;margin:20px 0}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}.card{margin:0}.number{font-size:38px}small,.muted{color:var(--muted)}a{color:var(--accent)}nav{display:flex;gap:22px;flex-wrap:wrap}button{background:var(--accent);border:0;border-radius:6px;padding:12px 18px;cursor:pointer;color:#101a1d;font-weight:bold}button.secondary{background:var(--good)}button:disabled{opacity:.5}
-input,select,textarea{width:100%;background:#0f2022;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:10px;margin:8px 0 16px}input[type=checkbox]{width:auto;margin:10px}label{display:block;font-size:13px}details{border-top:1px solid var(--line);padding:16px 0}summary{cursor:pointer;font-size:20px}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:12px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-size:12px}.scroll{overflow:auto}.failed,.blocked{color:#ffc4a6}.passed{color:var(--good)}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:'Courier New',monospace}#status{white-space:pre-wrap}small,p,summary{overflow-wrap:anywhere}.grid>*{min-width:0}@media(max-width:600px){main{padding:24px 14px}section{padding:16px}td,th{padding:8px}.grid{grid-template-columns:minmax(0,1fr)}}
+input,select,textarea{width:100%;background:#0f2022;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:10px;margin:8px 0 16px}input[type=checkbox]{width:auto;margin:10px}label{display:block;font-size:13px}details{border-top:1px solid var(--line);padding:16px 0}summary{cursor:pointer;font-size:20px}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:12px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-size:12px}.scroll{overflow:auto}.failed,.blocked{color:#ffc4a6}.passed,.evaluated,.verified{color:var(--good)}.partial,.configured_not_run,.planned_only,.missing,.declared{color:#ffd59c}.not_applicable{color:var(--muted)}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:'Courier New',monospace}#status{white-space:pre-wrap}small,p,summary{overflow-wrap:anywhere}.grid>*{min-width:0}@media(max-width:600px){main{padding:24px 14px}section{padding:16px}td,th{padding:8px}.grid{grid-template-columns:minmax(0,1fr)}}
 """
 
 
@@ -76,9 +76,17 @@ def render_report(report: dict) -> str:
 def _render_report(report: dict) -> str:
     s = report["summary"]
     title = report["verdict"].replace("_", " ").capitalize()
-    cards = "".join(f'<div class="card"><small>{_esc(label)}</small><div class="number">{_esc(value)}</div></div>' for label, value in (
+    module_summary = report.get("module_evaluation_summary", {}).get("summary", {})
+    card_items = [
         ("Components with required checks executed", f'{s["complete_components"]}/{s["components"]}'),
-        ("Checks executed", s["checks_executed"]), ("Failed checks", s["failed"]), ("Blocked checks", s["blocked"])))
+        ("Checks executed", s["checks_executed"]), ("Failed checks", s["failed"]), ("Blocked checks", s["blocked"]),
+    ]
+    if module_summary:
+        card_items.extend([
+            ("Evaluation areas with evidence", f'{module_summary.get("areas_with_executed_evidence", 0)}/{module_summary.get("area_count", 0)}'),
+            ("Modules with evidence", f'{module_summary.get("modules_with_executed_evidence", 0)}/{module_summary.get("module_count", 0)}'),
+        ])
+    cards = "".join(f'<div class="card"><small>{_esc(label)}</small><div class="number">{_esc(value)}</div></div>' for label, value in card_items)
     findings = []
     details = []
     for row in report["checks"]:
@@ -98,7 +106,47 @@ def _render_report(report: dict) -> str:
     caution = f'<p class="blocked">Status-only checks: {_esc(", ".join(weak))}. These prove response status, not correct content or business behavior.</p>' if weak else ""
     caution += "".join(f'<p class="blocked">{_esc(row["id"])}: {_esc(advice["summary"])} {_esc(advice["action"])}</p>' for row in report["checks"] for advice in row.get("workflow_advisories", []))
     definition = "A component is counted as executed only when each required reviewed layer has an enabled check that ran to a pass/fail terminal state. Drafted, disabled, unbound, blocked, or status-only evidence remains a gap."
-    return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D system review</title><style>{STYLE}</style><main><p class="eyebrow">PRE-D / SYSTEM RELEASE REVIEW</p><h1>{_esc(title)}</h1><p>{_esc(report["project_id"])} / {_esc(report["application_version"])}</p><nav><a href="#findings">What to fix</a><a href="#scope">Behavior coverage</a><a href="#coverage">Modules</a><a href="#evidence">Evidence</a></nav><p>{_esc(report["notice"])}</p><div class="grid">{cards}</div><p class="muted">{_esc(definition)}</p>{caution}<section id="findings"><h2>What needs attention</h2>{"".join(findings) or "<p>No executed check failed. Review uncovered components before drawing a release conclusion.</p>"}</section>{scope_panel(report)}<section id="coverage"><h2>Coverage, not assumptions</h2><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Execution</th><th>Boundary / next step</th></tr>{coverage}</table></div></section><section id="evidence"><h2>Inspect the evidence</h2>{"".join(details)}</section><small>Run {_esc(report["run_id"])} | {_esc(report["created_at"])} | {_esc(report.get("report_sha256", ""))}</small></main></html>'
+    return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D system review</title><style>{STYLE}</style><main><p class="eyebrow">PRE-D / SYSTEM RELEASE REVIEW</p><h1>{_esc(title)}</h1><p>{_esc(report["project_id"])} / {_esc(report["application_version"])}</p><nav><a href="#findings">What to fix</a><a href="#module-evaluation">Module evaluation map</a><a href="#scope">Behavior coverage</a><a href="#coverage">Modules</a><a href="#evidence">Evidence</a></nav><p>{_esc(report["notice"])}</p><div class="grid">{cards}</div><p class="muted">{_esc(definition)}</p>{caution}<section id="findings"><h2>What needs attention</h2>{"".join(findings) or "<p>No executed check failed. Review uncovered components before drawing a release conclusion.</p>"}</section>{module_evaluation_panel(report)}{scope_panel(report)}<section id="coverage"><h2>Coverage, not assumptions</h2><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Execution</th><th>Boundary / next step</th></tr>{coverage}</table></div></section><section id="evidence"><h2>Inspect the evidence</h2>{"".join(details)}</section><small>Run {_esc(report["run_id"])} | {_esc(report["created_at"])} | {_esc(report.get("report_sha256", ""))}</small></main></html>'
+
+
+def module_evaluation_panel(report: dict) -> str:
+    matrix = report.get("module_evaluation_summary")
+    if not isinstance(matrix, dict):
+        return ""
+    summary = matrix.get("summary", {})
+    rows = []
+    for area in matrix.get("areas", []):
+        metrics = ", ".join(area.get("verified_metrics") or area.get("declared_metrics") or area.get("missing_requested_metrics") or [])
+        rows.append(
+            f'<tr><td><strong>{_esc(area["title"])}</strong><br><small>{_esc(area["description"])}</small></td>'
+            f'<td class="{_esc(area["status"])}">{_esc(area["status"].replace("_", " "))}</td>'
+            f'<td class="{_esc(area["evidence_strength"])}">{_esc(area["evidence_strength"].replace("_", " "))}</td>'
+            f'<td>{_esc(area["executed_check_count"])} / {_esc(area["configured_check_count"])} checks<br>'
+            f'<small>{_esc(area["complete_component_count"])} / {_esc(area["discovered_component_count"])} components complete</small></td>'
+            f'<td>{_esc(metrics or "No metric evidence")}</td>'
+            f'<td>{_esc(area["result_basis"])}<br><small>{_esc(area["action"])}</small></td></tr>'
+        )
+    module_rows = []
+    for row in matrix.get("modules", []):
+        module_rows.append(
+            f'<tr><td>{_esc(row["module"])}</td><td class="{_esc(row["status"])}">{_esc(row["status"].replace("_", " "))}</td>'
+            f'<td>{_esc(", ".join(row.get("categories", [])) or "uncategorized")}</td>'
+            f'<td>{_esc(row["executed_check_count"])} / {_esc(row["configured_check_count"])}</td>'
+            f'<td>{_esc(", ".join(row.get("verified_metrics", [])) or "No verified metric groups")}</td>'
+            f'<td>{_esc(row["next_action"])}</td></tr>'
+        )
+    return (
+        '<section id="module-evaluation"><p class="eyebrow">MODULE EVALUATION MAP</p>'
+        f'<h2>{_esc(summary.get("areas_with_executed_evidence", 0))} / {_esc(summary.get("area_count", 0))} evaluation areas have executed evidence</h2>'
+        f'<p>{_esc(matrix.get("notice", ""))}</p>'
+        f'<div class="grid"><div class="card"><small>Evaluated areas</small><div class="number">{_esc(summary.get("areas_evaluated", 0))}</div></div>'
+        f'<div class="card"><small>Failed areas</small><div class="number">{_esc(summary.get("areas_with_failures", 0))}</div></div>'
+        f'<div class="card"><small>Blocked areas</small><div class="number">{_esc(summary.get("areas_blocked", 0))}</div></div>'
+        f'<div class="card"><small>Verified metric groups</small><div class="number">{_esc(summary.get("verified_metric_groups", 0))}</div></div></div>'
+        f'<div class="scroll"><table><tr><th>Evaluation area</th><th>Status</th><th>Evidence</th><th>Execution</th><th>Metrics</th><th>Meaning / next action</th></tr>{"".join(rows)}</table></div>'
+        f'<details><summary>Per-module result map</summary><div class="scroll"><table><tr><th>Module</th><th>Status</th><th>Categories</th><th>Checks</th><th>Verified metrics</th><th>Next action</th></tr>{"".join(module_rows)}</table></div></details>'
+        '</section>'
+    )
 
 
 def dimension_details(component: dict) -> str:

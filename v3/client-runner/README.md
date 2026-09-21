@@ -49,6 +49,12 @@ existing AI/browser plan execution, JUnit test commands, bounded load/recovery,
 stratified labelled sampling, and opt-in local history with rolling alerts.
 See [the complete guide](SYSTEM_EVALUATION.md).
 
+System reports now include a **module evaluation map** that separates AI
+decision modules, RAG/knowledge, browser workflows, API workflows, security,
+reliability, cost/latency, and admin/config. Each area shows what was
+discovered, configured, executed, verified, declared or missing, plus the next
+action required before claiming coverage.
+
 The `decision_evidence` adapter crash is fixed. Classification no longer
 requires confidence, and semantic/evidence-only runs do not require unrelated
 classification labels. Existing formulas and provenance distinctions remain.

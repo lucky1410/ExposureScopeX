@@ -151,11 +151,24 @@ class WholeSystemTests(unittest.TestCase):
                 self.assertTrue(report["scope_contract"]["complete"], report["scope_contract"])
                 self.assertEqual(report["summary"]["components"], 10)
                 self.assertEqual(report["summary"]["complete_components"], 10)
+                matrix = report["module_evaluation_summary"]
+                self.assertEqual(matrix["summary"]["area_count"], 8)
+                self.assertGreaterEqual(matrix["summary"]["areas_with_executed_evidence"], 6)
+                ai_area = next(area for area in matrix["areas"] if area["id"] == "ai_decision")
+                self.assertIn("classification", ai_area["verified_metrics"])
+                self.assertEqual(ai_area["evidence_strength"], "verified")
+                rag_area = next(area for area in matrix["areas"] if area["id"] == "rag_knowledge")
+                self.assertEqual(rag_area["executed_check_count"], 0)
+                self.assertNotIn("classification", rag_area["verified_metrics"])
                 self.assertEqual(report["verdict"], "do_not_ship" if name == "faults" else "checks_passed_within_reviewed_scope")
                 if name == "faults":
                     failed = {c["id"] for c in report["checks"] if c["status"] == "failed"}
                     self.assertTrue({"triage", "contract", "admin-read_only", "tenant-a-as-b", "security", "queue", "worker-recovery", "throughput"} <= failed, failed)
-                self.assertIn("behavior objectives evaluated", render_report(report))
+                rendered = render_report(report)
+                self.assertIn("behavior objectives evaluated", rendered)
+                self.assertIn("Module evaluation map", rendered)
+                self.assertIn("AI decision modules", rendered)
+                self.assertIn("Security modules", rendered)
 
     def test_missing_objective_and_role_cannot_hide_behind_check_attachment(self):
         with fixture.application(self.root) as app:
