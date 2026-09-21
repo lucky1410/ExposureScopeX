@@ -1,6 +1,6 @@
 # ExposureScopeX Local AI Evaluation Runner
 
-**PRE-D Local 0.15.3: source-first full-platform onboarding, hardened source protection, coverage advisories, reviewed module scope, historical context, and local AI evaluation.**
+**PRE-D Local 0.15.4: source-first full-platform onboarding, module evaluation mapping, hardened source protection, coverage advisories, reviewed module scope, historical context, and local AI evaluation.**
 
 `esx-eval` is a **local-first pre-release evaluator** for a model, RAG
 application, agent, or multi-agent system. It runs next to the AI system being
@@ -24,7 +24,7 @@ code, traces, environment variables, stderr, credentials, or results.
 | Review required modules and decide what blocks a release | [Application release review](RELEASE_REVIEW.md) |
 | Compare two versions without hiding coverage changes | [Baseline comparison](RELEASE_REVIEW.md#compare-a-candidate-against-a-baseline) |
 | Connect groundedness, hallucination, or other metric evidence | [Evidence guide](PRE-D_EVIDENCE_GUIDE.md) |
-| See what changed and what remains unsupported | [0.15.3 release notes](RELEASE_NOTES.md) |
+| See what changed and what remains unsupported | [0.15.4 release notes](RELEASE_NOTES.md) |
 
 Python 3.11+ is required. Browser testing additionally needs Playwright and its
 Chromium runtime; semantic evaluation needs the configured independent local
@@ -34,7 +34,7 @@ make external requests.
 
 ## System Evaluation
 
-PRE-D Local 0.15.3 provides profile bootstrap/refresh, bounded planning
+PRE-D Local 0.15.4 provides profile bootstrap/refresh, bounded planning
 assistance, suggestion review and baseline comparisons. Protected profiles keep
 PRE-D artifacts outside application source and stop when observed source
 changes invalidate a run. Optional local models draft behavior objectives
@@ -76,7 +76,21 @@ behavior evidence cannot be hidden behind a suite-level pass. Start with
 `--require-whole-system`. See [the testing guide](WHOLE_SYSTEM_TESTING.md) for
 the ten-module reference acceptance and real-application prerequisites.
 
-## What is new in 0.15.3
+## What is new in 0.15.4
+
+- System reports now include a module evaluation map covering AI decision,
+  RAG/knowledge, browser workflow, API workflow, security, reliability,
+  cost/latency, and admin/config areas.
+- Each evaluation area now states discovered components, configured checks,
+  executed checks, verified/declared/missing dimensions, evidence strength,
+  status, and the next action needed before coverage can be claimed.
+- The map prevents a narrow suite from sounding like whole-platform coverage:
+  modules without configured or executed evidence stay visible as planned,
+  partial, blocked, missing, or not applicable.
+- Added regression coverage so generic API/service discovery does not
+  accidentally make specialized areas like RAG, cost, or admin look evaluated.
+
+## What changed in 0.15.3
 
 - Source-protection fingerprinting now excludes generated/vendor/build trees and
   common binary artifacts by default, while keeping configurable `scan_limits`
@@ -299,7 +313,7 @@ esx-eval release check --help
 ```
 
 Use `py` on Windows or `python3` on macOS/Linux if that is the interpreter for
-your evaluation environment. The version should be `0.15.3`. If the import
+your evaluation environment. The version should be `0.15.4`. If the import
 shows the new version but `esx-eval setup --help` has no `--application` option, the executable on
 PATH belongs to another environment; use the matching environment's executable.
 
@@ -761,7 +775,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.15.3"
+   $version = "0.15.4"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -775,7 +789,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 
    ```bash
    shasum -a 256 -c SHA256SUMS
-   python3 -m pip install --upgrade ./exposurescopex_eval_runner-0.15.3-py3-none-any.whl
+   python3 -m pip install --upgrade ./exposurescopex_eval_runner-0.15.4-py3-none-any.whl
    python3 -c "from esx_eval_runner import __version__; print(__version__)"
    ```
 

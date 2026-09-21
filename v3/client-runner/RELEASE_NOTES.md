@@ -1,4 +1,28 @@
-# PRE-D Local 0.15.3
+# PRE-D Local 0.15.4
+
+This patch release adds the module evaluation map to PRE-D system reports. It
+keeps the 0.15.x source-first onboarding and protected-profile workflow, but
+makes broad-platform evaluation status easier to read: each major module type
+now shows what was discovered, configured, executed, verified, declared, missing
+or still only planned.
+
+## What changed in 0.15.4
+
+- System HTML/JSON reports now include a module evaluation map for AI decision,
+  RAG/knowledge, browser workflow, API workflow, security, reliability,
+  cost/latency, and admin/config evaluation areas.
+- Each area reports discovered components, complete components, configured
+  checks, executed checks, pass/fail/blocked counts, verified dimensions,
+  declared dimensions, missing dimensions, evidence strength, status and next
+  action.
+- Module rows now separate evaluated, partial, failed, blocked, configured-not-run,
+  planned-only and not-applicable states instead of letting discovery imply
+  execution.
+- Specialized areas such as RAG/knowledge, cost/latency and admin/config now
+  require matching evidence or requested dimensions; generic API/service
+  discovery no longer makes them appear evaluated.
+- Added regression coverage for the module evaluation map and for avoiding
+  accidental cross-category evidence attribution.
 
 This patch release hardens the 0.15.x full-platform workflow against the
 blockers found during real application testing. It keeps the 0.15.2
@@ -102,7 +126,7 @@ Download the wheel, `SHA256SUMS`, README, and guides from this release. Verify
 checksums as described in the README, then install in the evaluator environment:
 
 ```text
-python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.3-py3-none-any.whl
+python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.4-py3-none-any.whl
 python -c "from esx_eval_runner import __version__; print(__version__)"
 esx-eval setup --application
 ```
