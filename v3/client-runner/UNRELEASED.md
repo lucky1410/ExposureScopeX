@@ -2,6 +2,26 @@
 
 Published scope for the 0.15.1 release.
 
+- Post-0.15.9 report readability work adds a first-class **AI Quality
+  Metrics** panel to system reports. Classification, confidence, decision
+  evidence, groundedness, hallucination, RAG, security, cost/latency and other
+  dimensions are visible near the top even when evidence is missing. Long
+  recommendation, finding and coverage tables are now collapsible by default.
+- The report hero now labels the strict denominator as **Fully covered
+  components** instead of implying that no checks executed. Executed checks,
+  areas with evidence and modules with evidence are shown separately so a broad
+  run with partial coverage no longer looks like total non-execution.
+- The strict fully-covered component count is no longer a hero KPI. The hero
+  now prioritizes executed checks, failed/blocked checks, verified AI metrics,
+  areas with evidence and modules with evidence; strict component completeness
+  lives in Coverage by area with an explicit explanation.
+- System reports now include a plain-language report guide and clearer section
+  hierarchy: Executive Summary, How to Read, AI Scorecard, Fix Plan, Immediate
+  Issues, Findings and Proof, Coverage Map, and Evidence Appendix. AI metric
+  cards now explain the score, calculation method, evidence considered and next
+  action so developers and non-developers can understand the result without
+  reading raw JSON.
+
 - 0.15.9 splits report findings into observed defects, blocked evidence,
   coverage gaps and setup gaps. Missing coverage now carries coverage priority
   instead of defect severity, and executive summaries state what was proved

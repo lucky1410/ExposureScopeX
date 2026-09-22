@@ -21,8 +21,79 @@ STYLE = """
 main{max-width:1280px;margin:auto;padding:48px 30px 74px}h1{font-size:clamp(44px,7vw,86px);line-height:.9;max-width:940px;margin:10px 0 20px;letter-spacing:-3px;text-wrap:balance}h2{font-size:30px;letter-spacing:-.8px}h3{font-size:21px;letter-spacing:-.25px}p{line-height:1.65}
 .eyebrow,button,label,th,nav,small,.verdict-badge{font-family:"Geist Mono","IBM Plex Mono","Cascadia Code","Courier New",monospace}.eyebrow{color:var(--accent-2);letter-spacing:2.6px;text-transform:uppercase;text-shadow:0 0 22px rgba(53,215,255,.35)}.subtitle{color:var(--muted);font-size:18px;max-width:760px}.hero{position:relative;overflow:hidden;display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.9fr);gap:26px;align-items:stretch;background:linear-gradient(135deg,rgba(53,215,255,.13),rgba(255,49,93,.12)),var(--glass);border:1px solid rgba(124,207,255,.34);border-radius:30px;padding:38px;box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.13);margin:0 0 24px;backdrop-filter:blur(18px)}.hero:after{content:"";position:absolute;right:-120px;top:-120px;width:360px;height:360px;border-radius:50%;background:radial-gradient(circle,rgba(255,49,93,.26),transparent 63%);filter:blur(4px)}.hero-copy{position:relative;z-index:1;min-width:0}.hero .grid{margin-top:28px}.verdict-panel{position:relative;z-index:1;background:linear-gradient(160deg,rgba(5,12,24,.9),rgba(22,10,25,.82));border:1px solid rgba(255,49,93,.32);border-radius:24px;padding:26px;display:flex;flex-direction:column;gap:14px;box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 20px 50px rgba(255,49,93,.09)}.verdict-badge{display:inline-flex;align-self:flex-start;border-radius:999px;padding:8px 12px;font-size:12px;font-weight:800;letter-spacing:1px;text-transform:uppercase;background:rgba(255,49,93,.1);border:1px solid rgba(255,49,93,.45)}.verdict-panel strong{font-size:25px;line-height:1.16}.verdict-panel.insufficient_evidence .verdict-badge,.verdict-panel.blocked .verdict-badge{color:var(--warn);border-color:rgba(255,209,102,.6);background:rgba(255,209,102,.08)}.verdict-panel.do_not_ship .verdict-badge,.verdict-panel.failed .verdict-badge{color:var(--bad);border-color:rgba(255,77,109,.68);background:rgba(255,77,109,.13)}.verdict-panel.checks_passed_within_reviewed_scope .verdict-badge,.verdict-panel.passed .verdict-badge{color:var(--good);border-color:rgba(125,247,194,.58);background:rgba(125,247,194,.09)}
 section,.card{background:var(--glass);border:1px solid var(--line);border-radius:22px;padding:26px;margin:22px 0;box-shadow:0 20px 60px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.08);backdrop-filter:blur(14px)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:15px}.card{margin:0;background:linear-gradient(180deg,rgba(18,37,68,.76),rgba(8,18,34,.72));transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}.card:hover{transform:translateY(-2px);border-color:rgba(53,215,255,.55);box-shadow:0 22px 60px rgba(53,215,255,.08)}.number{font-size:38px;font-weight:900;letter-spacing:-1px;background:linear-gradient(90deg,var(--ink),var(--accent-2));-webkit-background-clip:text;background-clip:text;color:transparent}small,.muted{color:var(--muted)}a{color:var(--accent-2)}nav{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0 24px}nav a{border:1px solid rgba(53,215,255,.28);border-radius:999px;padding:9px 13px;text-decoration:none;background:rgba(53,215,255,.055);color:#dff7ff;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}nav a:hover{border-color:rgba(255,49,93,.65);color:#fff;background:rgba(255,49,93,.12)}button{background:linear-gradient(135deg,var(--accent-2),var(--accent));border:0;border-radius:10px;padding:12px 18px;cursor:pointer;color:#061020;font-weight:900}button.secondary{background:linear-gradient(135deg,var(--good),var(--accent-2))}button:disabled{opacity:.5}
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:15px}.metric-card{margin:0;min-height:190px;display:flex;flex-direction:column;gap:10px}.status-pill{align-self:flex-start;border:1px solid var(--line);border-radius:999px;padding:6px 10px;font:700 11px "Geist Mono","IBM Plex Mono","Cascadia Code","Courier New",monospace;letter-spacing:.8px;text-transform:uppercase}.status-pill.verified,.status-pill.measured{color:var(--good);border-color:rgba(125,247,194,.55);background:rgba(125,247,194,.08)}.status-pill.declared{color:var(--warn);border-color:rgba(255,209,102,.55);background:rgba(255,209,102,.08)}.status-pill.blocked,.status-pill.missing,.status-pill.not_measured{color:var(--bad);border-color:rgba(255,77,109,.55);background:rgba(255,77,109,.1)}.metric-score{font-size:25px;font-weight:900;letter-spacing:-.5px}.metric-card p{margin:.1rem 0}.metric-card details{margin-top:auto}.compact-list{margin:.25rem 0 0;padding-left:18px}.compact-list li{margin:.25rem 0}
+.explain{border-left:3px solid rgba(53,215,255,.55);padding-left:12px;color:#dbe8fb}.explain strong{color:#fff}.section-intro{font-size:18px;color:var(--muted);max-width:940px}.plain-title{font-size:clamp(30px,4vw,48px);letter-spacing:-1.3px}
 input,select,textarea{width:100%;background:rgba(4,11,23,.86);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:11px;margin:8px 0 16px}input[type=checkbox]{width:auto;margin:10px}label{display:block;font-size:13px;color:#c9d9ef}details{border-top:1px solid var(--line);padding:17px 0}summary{cursor:pointer;font-size:20px}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:13px;border-bottom:1px solid rgba(80,177,255,.16);vertical-align:top}th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:1px}.scroll{overflow:auto}.failed,.blocked,.observed_defect,.blocked_evidence{color:var(--bad)}.passed,.evaluated,.verified{color:var(--good)}.partial,.configured_not_run,.planned_only,.missing,.declared,.coverage_gap,.setup_gap{color:var(--warn)}.not_applicable,.informational{color:var(--muted)}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:rgba(3,8,18,.56);border:1px solid rgba(80,177,255,.16);border-radius:14px;padding:14px}code{font-family:"Geist Mono","IBM Plex Mono","Cascadia Code","Courier New",monospace}#status{white-space:pre-wrap}small,p,summary{overflow-wrap:anywhere}.grid>*{min-width:0}@media(max-width:760px){main{padding:24px 14px}.hero{grid-template-columns:minmax(0,1fr);padding:22px;border-radius:22px}section{padding:17px}td,th{padding:9px}.grid{grid-template-columns:minmax(0,1fr)}h1{letter-spacing:-2px}}
 """
+
+
+PRIMARY_AI_METRICS = [
+    "classification",
+    "confidence",
+    "decision_evidence",
+    "groundedness",
+    "hallucination",
+    "rag",
+    "security",
+    "tool_use",
+    "trajectory",
+    "robustness",
+    "judge_agreement",
+    "reproducibility",
+    "cost_efficiency",
+    "workflow_coverage",
+]
+
+METRIC_LABELS = {
+    "classification": "Classification",
+    "confidence": "Confidence calibration",
+    "decision_evidence": "Decision evidence and abstention",
+    "groundedness": "Groundedness",
+    "hallucination": "Hallucination",
+    "rag": "RAG retrieval",
+    "security": "Security",
+    "tool_use": "Tool use",
+    "trajectory": "Trajectory",
+    "robustness": "Robustness",
+    "judge_agreement": "Judge agreement",
+    "reproducibility": "Repeatability",
+    "cost_efficiency": "Cost and latency",
+    "workflow_coverage": "Workflow coverage",
+}
+
+METRIC_ACTIONS = {
+    "classification": "Add labelled cases and returned labels from a local endpoint or adapter.",
+    "confidence": "Return calibrated confidence for the predicted label and include enough confidence variation.",
+    "decision_evidence": "Return evidence IDs, abstention state and expected abstention/evidence rules per case.",
+    "groundedness": "Provide response text, source chunks and an independent local grounding judge.",
+    "hallucination": "Provide response claims, source evidence, abstention expectations and a local hallucination judge.",
+    "rag": "Provide retrieved documents, relevance labels and expected evidence coverage per case.",
+    "security": "Add labelled prompt-injection, unsafe-action, authz and tenant-isolation cases.",
+    "tool_use": "Capture tool calls, allowed tools, authorization decisions and expected tool outcomes.",
+    "trajectory": "Capture observed runtime steps, tool sequence and milestone expectations.",
+    "robustness": "Run repeated or perturbed cases and provide expected stability rules.",
+    "judge_agreement": "Run multiple judges or repeated judge trials for the same cases.",
+    "reproducibility": "Run the same pack multiple times and keep comparable run history.",
+    "cost_efficiency": "Capture tokens, latency, model/runtime cost and throughput per case.",
+    "workflow_coverage": "Run browser/API workflows with stable visible or response assertions.",
+}
+
+METRIC_CALCULATION_TEXT = {
+    "classification": "Compares the application returned label with the expected label for each labelled case, then derives accuracy, precision, recall and F1 from the confusion matrix.",
+    "confidence": "Compares returned confidence against whether the predicted label was correct, then calculates calibration signals such as ECE and Brier score.",
+    "decision_evidence": "Checks whether returned evidence IDs and abstention behavior match the expected evidence and abstention rules for each case.",
+    "groundedness": "Extracts claims from the response, compares each claim against supplied source chunks, then scores support, contradiction or insufficient evidence.",
+    "hallucination": "Uses the same claim/evidence material to count unsupported claims and failed abstentions, then reports hallucination-free and unsupported-claim rates.",
+    "rag": "Compares retrieved documents/chunks against expected relevant evidence and coverage requirements.",
+    "security": "Runs labelled security cases such as prompt injection, unsafe action blocking, authorization and tenant isolation expectations.",
+    "tool_use": "Compares observed tool calls with allowed/expected tools, authorization decisions and result validity.",
+    "trajectory": "Compares observed runtime steps, tool sequence and milestones with the expected workflow trace.",
+    "robustness": "Compares repeated or perturbed runs against expected stability and pass-rate rules.",
+    "judge_agreement": "Compares repeated judge or multi-judge outputs for the same cases.",
+    "reproducibility": "Compares repeated executions of the same pack across runs.",
+    "cost_efficiency": "Aggregates captured tokens, runtime, cost, timeouts and latency observations.",
+    "workflow_coverage": "Checks whether browser/API workflows reached the expected pages, responses or visible signals.",
+}
 
 
 def _esc(value: object) -> str:
@@ -89,6 +160,227 @@ def report_hero(report: dict, cards: str) -> str:
     )
 
 
+def _metric_requested_dimensions(report: dict) -> set[str]:
+    requested: set[str] = set()
+    matrix = report.get("module_evaluation_summary")
+    if isinstance(matrix, dict):
+        for area in matrix.get("areas", []):
+            for key in ("verified_metrics", "declared_metrics", "missing_requested_metrics"):
+                requested.update(str(value) for value in area.get(key, []) if value)
+        for row in matrix.get("modules", []):
+            for key in ("verified_metrics", "declared_metrics", "missing_requested_metrics"):
+                requested.update(str(value) for value in row.get(key, []) if value)
+    for component in report.get("coverage", []):
+        for item in component.get("dimension_inventory", []):
+            if item.get("dimension"):
+                requested.add(str(item["dimension"]))
+    for row in report.get("checks", []):
+        requested.update(str(value) for value in row.get("metrics", {}).keys())
+    return requested
+
+
+def _metric_status_counts(report: dict) -> dict[str, int]:
+    counts = {"verified": 0, "declared": 0, "missing": 0}
+    for dimension in _metric_dimensions(report):
+        label, _ = _metric_state(_metric_entries(report, dimension), dimension in _metric_requested_dimensions(report))
+        if label == "Verified":
+            counts["verified"] += 1
+        elif label == "Declared":
+            counts["declared"] += 1
+        else:
+            counts["missing"] += 1
+    return counts
+
+
+def _metric_dimensions(report: dict) -> list[str]:
+    seen = set()
+    dimensions = []
+    for dimension in PRIMARY_AI_METRICS + sorted(_metric_requested_dimensions(report)):
+        if dimension not in seen:
+            seen.add(dimension)
+            dimensions.append(dimension)
+    return dimensions
+
+
+def _metric_entries(report: dict, dimension: str) -> list[dict]:
+    entries = []
+    for row in report.get("checks", []):
+        metric = row.get("metrics", {}).get(dimension)
+        if isinstance(metric, dict):
+            entries.append({"check": row, "metric": metric})
+    return entries
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _fmt_number(value: object) -> str:
+    if not _is_number(value):
+        return str(value)
+    if abs(float(value)) >= 100:
+        return f"{float(value):.0f}"
+    return f"{float(value):.3f}".rstrip("0").rstrip(".")
+
+
+def _metric_score(dimension: str, entries: list[dict]) -> str:
+    preferred = {
+        "classification": ["accuracy", "macro_f1", "macro_precision", "macro_recall"],
+        "confidence": ["expected_calibration_error", "correctness_brier_score", "unique_confidence_count"],
+        "decision_evidence": ["correct_abstention_rate", "evidence_reference_precision", "evidence_reference_recall"],
+        "groundedness": ["grounded_claim_rate", "supported_claim_rate", "contradicted_claim_rate", "insufficient_claim_rate"],
+        "hallucination": ["hallucination_free_response_rate", "unsupported_claim_rate", "hallucinated_claim_rate", "correct_abstention_rate"],
+        "rag": ["retrieval_relevance", "evidence_coverage", "retrieval_precision", "retrieval_recall"],
+        "security": ["unsafe_action_block_rate", "prompt_injection_block_rate", "authorization_rate", "tenant_isolation_rate"],
+        "tool_use": ["selection_f1", "authorization_rate", "valid_result_rate", "exact_tool_set_rate"],
+        "trajectory": ["score", "milestone_completion_rate", "tool_sequence_match_rate"],
+        "robustness": ["stability_rate", "pass_rate", "variance"],
+        "judge_agreement": ["agreement_rate", "cohen_kappa", "judge_agreement_rate"],
+        "reproducibility": ["repeatability_rate", "outcome_stability_rate"],
+        "cost_efficiency": ["p95_latency_ms", "usd_per_case", "total_usd", "timeout_rate"],
+        "workflow_coverage": ["workflow_execution_rate", "workflow_signal_match_rate", "page_reach_rate"],
+    }
+    metrics = [entry["metric"] for entry in entries]
+    metrics.sort(key=lambda m: (m.get("trust_status") != "verified", m.get("measurement_status") != "measured"))
+    labels = {
+        "accuracy": "accuracy",
+        "macro_f1": "macro-F1",
+        "macro_precision": "precision",
+        "macro_recall": "recall",
+        "expected_calibration_error": "ECE",
+        "correctness_brier_score": "Brier",
+        "correct_abstention_rate": "abstention",
+        "grounded_claim_rate": "grounded",
+        "supported_claim_rate": "supported",
+        "hallucination_free_response_rate": "hallucination-free",
+        "unsupported_claim_rate": "unsupported claims",
+        "hallucinated_claim_rate": "hallucinated claims",
+        "workflow_execution_rate": "workflow execution",
+        "workflow_signal_match_rate": "signal match",
+        "p95_latency_ms": "p95 latency ms",
+        "usd_per_case": "USD/case",
+        "total_usd": "total USD",
+    }
+    parts = []
+    for metric in metrics:
+        for key in preferred.get(dimension, []):
+            if _is_number(metric.get(key)):
+                parts.append(f'{labels.get(key, key.replace("_", " "))}: {_fmt_number(metric[key])}')
+            if len(parts) == 2:
+                return " | ".join(parts)
+        if parts:
+            return " | ".join(parts)
+    for metric in metrics:
+        for key, value in metric.items():
+            if key.endswith("_rate") or key in {"score", "accuracy", "macro_f1"}:
+                if _is_number(value):
+                    return f'{key.replace("_", " ")}: {_fmt_number(value)}'
+    if any(metric.get("measurement_status") == "measured" for metric in metrics):
+        return "Measured"
+    return "No score"
+
+
+def _metric_state(entries: list[dict], requested: bool) -> tuple[str, str]:
+    if any(e["metric"].get("measurement_status") == "measured" and e["metric"].get("trust_status") == "verified" for e in entries):
+        return "Verified", "verified"
+    if any(e["metric"].get("measurement_status") == "measured" and e["metric"].get("trust_status") == "declared" for e in entries):
+        return "Declared", "declared"
+    if any(e["metric"].get("measurement_status") == "measured" for e in entries):
+        return "Measured", "measured"
+    if entries and any(e["check"].get("status") == "blocked" for e in entries):
+        return "Blocked", "blocked"
+    if entries:
+        return "Not measured", "not_measured"
+    if requested:
+        return "Missing", "missing"
+    return "Missing", "missing"
+
+
+def _metric_reason(dimension: str, entries: list[dict], label: str, requested: bool) -> str:
+    if label == "Verified":
+        return f"Calculated from local evidence in {len(entries)} check(s)."
+    if label == "Declared":
+        return "Accepted from target-declared local evidence; not independently verified."
+    if label == "Measured":
+        return "Measured, but provenance is not marked verified."
+    if label == "Blocked":
+        return "Configured evidence exists, but execution or gate status blocked a release-grade result."
+    if requested:
+        return "Requested by the system plan or coverage map, but no measured evidence reached this report."
+    if dimension in {"groundedness", "hallucination"}:
+        return "Not run in this system report; semantic evidence was not connected."
+    return "No measured evidence for this dimension in this system report."
+
+
+def _metric_considered_text(entries: list[dict]) -> str:
+    if not entries:
+        return "No executed check in this system report carried this metric."
+    case_total = 0
+    has_case_count = False
+    statuses = {}
+    for entry in entries:
+        check = entry["check"]
+        statuses[check.get("status", "unknown")] = statuses.get(check.get("status", "unknown"), 0) + 1
+        count = check.get("case_count")
+        if _is_number(count):
+            has_case_count = True
+            case_total += int(count)
+    status_text = ", ".join(f"{count} {status}" for status, count in sorted(statuses.items()))
+    case_text = f"{case_total} case(s)" if has_case_count else "case count not reported"
+    return f"{len(entries)} check(s); {case_text}; statuses: {status_text}."
+
+
+def ai_quality_metrics_panel(report: dict) -> str:
+    requested = _metric_requested_dimensions(report)
+    counts = _metric_status_counts(report)
+    cards = []
+    detail_rows = []
+    for dimension in _metric_dimensions(report):
+        entries = _metric_entries(report, dimension)
+        label, css_class = _metric_state(entries, dimension in requested)
+        score = _metric_score(dimension, entries)
+        reason = _metric_reason(dimension, entries, label, dimension in requested)
+        calculation = METRIC_CALCULATION_TEXT.get(dimension, "Calculated from the supplied local metric evidence for this dimension.")
+        considered = _metric_considered_text(entries)
+        checks = [entry["check"].get("id", "unknown") for entry in entries]
+        artifact = ""
+        for entry in entries:
+            value = entry["check"].get("artifact")
+            if isinstance(value, str) and Path(value).name == value and value.endswith(".json"):
+                artifact = f'<a href="{_esc(value[:-5] + ".html")}">Open detailed local report</a>'
+                break
+        check_list = "".join(f"<li>{_esc(check)}</li>" for check in checks[:5])
+        extra = f"<li>{_esc(len(checks) - 5)} more check(s)</li>" if len(checks) > 5 else ""
+        if not check_list:
+            check_list = "<li>No executed check carried this metric.</li>"
+        cards.append(
+            f'<article class="card metric-card"><span class="status-pill {css_class}">{_esc(label)}</span>'
+            f'<h3>{_esc(METRIC_LABELS.get(dimension, dimension.replace("_", " ").title()))}</h3>'
+            f'<div class="metric-score">{_esc(score)}</div><p>{_esc(reason)}</p>'
+            f'<p class="explain"><strong>How calculated:</strong> {_esc(calculation)}</p>'
+            f'<p class="explain"><strong>What it considered:</strong> {_esc(considered)}</p>'
+            f'<p><strong>Action:</strong> {_esc(METRIC_ACTIONS.get(dimension, "Attach measured evidence and rerun."))}</p>'
+            f'{artifact}'
+            f'<details><summary>Checks and evidence</summary><ul class="compact-list">{check_list}{extra}</ul></details></article>'
+        )
+        detail_rows.append(
+            f'<tr><td>{_esc(METRIC_LABELS.get(dimension, dimension.replace("_", " ").title()))}</td>'
+            f'<td class="{css_class}">{_esc(label)}</td><td>{_esc(score)}</td>'
+            f'<td>{_esc(reason)}</td><td>{_esc(METRIC_ACTIONS.get(dimension, "Attach measured evidence and rerun."))}</td></tr>'
+        )
+    return (
+        '<section id="ai-quality"><p class="eyebrow">AI SCORECARD</p>'
+        '<h2 class="plain-title">AI metrics and scoring evidence</h2>'
+        '<p class="section-intro">This section answers four practical questions for every AI metric: did PRE-D score it, is the score independently verified or target-declared, how was it calculated, and what evidence did it use?</p>'
+        f'<div class="grid"><div class="card"><small>Verified scores</small><div class="number">{_esc(counts["verified"])}</div><p class="muted">Calculated from local labels, observed traces or independently checked evidence.</p></div>'
+        f'<div class="card"><small>Declared scores</small><div class="number">{_esc(counts["declared"])}</div><p class="muted">Accepted from target-provided payloads and clearly marked as not independently verified.</p></div>'
+        f'<div class="card"><small>Missing scores</small><div class="number">{_esc(counts["missing"])}</div><p class="muted">Not enough evidence reached the report, so PRE-D does not invent a score.</p></div></div>'
+        f'<div class="metric-grid">{"".join(cards)}</div>'
+        f'<details><summary>Open metric evidence table</summary><div class="scroll"><table><tr><th>Metric</th><th>Status</th><th>Score</th><th>Meaning</th><th>Fix</th></tr>{"".join(detail_rows)}</table></div></details>'
+        '</section>'
+    )
+
+
 def scope_panel(report: dict) -> str:
     scope = report.get("scope_contract", {})
     if scope.get("mode") != "whole_system":
@@ -136,13 +428,16 @@ def render_report(report: dict) -> str:
 def _render_report(report: dict) -> str:
     s = report["summary"]
     module_summary = report.get("module_evaluation_summary", {}).get("summary", {})
+    metric_counts = _metric_status_counts(report)
     card_items = [
-        ("Components with required checks executed", f'{s["complete_components"]}/{s["components"]}'),
-        ("Checks executed", s["checks_executed"]), ("Failed checks", s["failed"]), ("Blocked checks", s["blocked"]),
+        ("Checks executed", s["checks_executed"]),
+        ("Failed checks", s["failed"]),
+        ("Blocked checks", s["blocked"]),
+        ("Verified AI metrics", metric_counts["verified"]),
     ]
     if module_summary:
         card_items.extend([
-            ("Evaluation areas with evidence", f'{module_summary.get("areas_with_executed_evidence", 0)}/{module_summary.get("area_count", 0)}'),
+            ("Areas with evidence", f'{module_summary.get("areas_with_executed_evidence", 0)}/{module_summary.get("area_count", 0)}'),
             ("Modules with evidence", f'{module_summary.get("modules_with_executed_evidence", 0)}/{module_summary.get("module_count", 0)}'),
         ])
     cards = "".join(f'<div class="card"><small>{_esc(label)}</small><div class="number">{_esc(value)}</div></div>' for label, value in card_items)
@@ -165,8 +460,8 @@ def _render_report(report: dict) -> str:
     weak = [r["id"] for r in report["checks"] if r.get("strength") == "status_only"]
     caution = f'<p class="blocked">Status-only checks: {_esc(", ".join(weak))}. These prove response status, not correct content or business behavior.</p>' if weak else ""
     caution += "".join(f'<p class="blocked">{_esc(row["id"])}: {_esc(advice["summary"])} {_esc(advice["action"])}</p>' for row in report["checks"] for advice in row.get("workflow_advisories", []))
-    definition = "A component is counted as executed only when each required reviewed layer has an enabled check that ran to a pass/fail terminal state. Drafted, disabled, unbound, blocked, or status-only evidence remains a gap."
-    return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D release evidence review</title><style>{STYLE}</style><main>{report_hero(report, cards)}<nav><a href="#executive-summary">Executive summary</a><a href="#harness-recommendations">Harness recommendations</a><a href="#findings">What to fix</a><a href="#traceability">Traceable findings</a><a href="#module-evaluation">Module evaluation map</a><a href="#scope">Behavior coverage</a><a href="#coverage">Modules</a><a href="#evidence">Evidence</a></nav>{executive_summary_panel(report)}<p class="muted">{_esc(definition)}</p>{caution}{harness_recommendations_panel(report.get("harness_recommendations"))}<section id="findings"><h2>What needs attention</h2>{"".join(findings) or "<p>No executed check failed. Review uncovered components before drawing a release conclusion.</p>"}</section>{finding_register_panel(report.get("finding_register"))}{module_evaluation_panel(report)}{scope_panel(report)}<section id="coverage"><h2>Coverage, not assumptions</h2><details><summary>Open module coverage table</summary><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Execution</th><th>Boundary / next step</th></tr>{coverage}</table></div></details></section><section id="evidence"><h2>Inspect the evidence</h2><details><summary>Open per-check raw evidence</summary>{"".join(details)}</details></section><small>Run {_esc(report["run_id"])} | {_esc(report["created_at"])} | {_esc(report.get("report_sha256", ""))}</small></main></html>'
+    definition = "Fully covered components require every reviewed required layer/dimension for that component to reach executed pass/fail evidence. A run can execute checks and still show few or zero fully covered components when required layers remain missing, blocked, disabled, unbound, or status-only."
+    return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D release evidence review</title><style>{STYLE}</style><main>{report_hero(report, cards)}<nav><a href="#executive-summary">Summary</a><a href="#report-guide">How to read</a><a href="#ai-quality">AI scorecard</a><a href="#harness-recommendations">Fix plan</a><a href="#findings">Immediate issues</a><a href="#traceability">Findings and proof</a><a href="#module-evaluation">Coverage map</a><a href="#scope">Behavior coverage</a><a href="#coverage">Modules</a><a href="#evidence">Evidence appendix</a></nav>{executive_summary_panel(report)}{report_guide_panel()}{ai_quality_metrics_panel(report)}<p class="muted">{_esc(definition)}</p>{caution}{harness_recommendations_panel(report.get("harness_recommendations"))}<section id="findings"><p class="eyebrow">IMMEDIATE ISSUES</p><h2>What needs attention now</h2>{"".join(findings) or "<p>No executed check failed. Review uncovered components before drawing a release conclusion.</p>"}</section>{finding_register_panel(report.get("finding_register"), title="FINDINGS AND PROOF")}{module_evaluation_panel(report)}{scope_panel(report)}<section id="coverage"><p class="eyebrow">MODULE DETAILS</p><h2>Module coverage details</h2><p>Open this only when you need component-level proof. The summary and AI scorecard sections above are the intended starting point.</p><details><summary>Open module coverage table</summary><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Execution</th><th>Boundary / next step</th></tr>{coverage}</table></div></details></section><section id="evidence"><p class="eyebrow">EVIDENCE APPENDIX</p><h2>Inspect raw evidence</h2><p>Raw per-check evidence is preserved for audit, but it is intentionally collapsed so the report remains readable.</p><details><summary>Open per-check raw evidence</summary>{"".join(details)}</details></section><small>Run {_esc(report["run_id"])} | {_esc(report["created_at"])} | {_esc(report.get("report_sha256", ""))}</small></main></html>'
 
 
 def executive_summary_panel(report: dict) -> str:
@@ -202,14 +497,29 @@ def executive_summary_panel(report: dict) -> str:
         f'<p><strong>Verdict:</strong> {_esc(verdict)}. '
         f'{_esc(summary.get("checks_executed", 0))} checks executed; '
         f'{_esc(summary.get("failed", 0))} failed; {_esc(summary.get("blocked", 0))} blocked. '
-        f'{_esc(summary.get("complete_components", 0))}/{_esc(summary.get("components", 0))} components have required executed evidence.</p>'
+        f'{_esc(summary.get("complete_components", 0))}/{_esc(summary.get("components", 0))} components are fully covered across their required evidence, while partial evidence is shown in the area/module sections.</p>'
         f'<p>{proved}</p><p>{uncovered}</p>'
         f'<div class="grid"><div class="card"><small>Observed defects</small><div class="number">{_esc(observed)}</div></div>'
         f'<div class="card"><small>Blocked evidence</small><div class="number">{_esc(blocked)}</div></div>'
         f'<div class="card"><small>Coverage gaps</small><div class="number">{_esc(coverage)}</div></div>'
         f'<div class="card"><small>Harness recommendations</small><div class="number">{_esc(harness.get("recommendation_count", 0))}</div></div>'
         f'<div class="card"><small>Evaluation areas with evidence</small><div class="number">{_esc(module.get("areas_with_executed_evidence", 0))}/{_esc(module.get("area_count", 0))}</div></div></div>'
-        '<p class="muted">Read this top section first. Detailed module maps, raw evidence and all findings are preserved below as expandable audit sections.</p>'
+        '<p class="muted">Read this summary first. Detailed module maps, raw evidence and all findings are preserved below as expandable audit sections.</p>'
+        '</section>'
+    )
+
+
+def report_guide_panel() -> str:
+    return (
+        '<section id="report-guide"><p class="eyebrow">REPORT GUIDE</p>'
+        '<h2>How to read this report</h2>'
+        '<p class="section-intro">PRE-D is written for both product stakeholders and developers. The top sections use plain language; the lower sections preserve audit-grade proof for anyone who needs to verify the result.</p>'
+        '<div class="grid">'
+        '<div class="card"><h3>For a product owner</h3><p>Start with the executive summary, failed or blocked checks, and fix plan. Treat missing evidence as a coverage gap, not as a hidden pass.</p></div>'
+        '<div class="card"><h3>For a developer</h3><p>Use the AI scorecard to see the metric, score, calculation method, evidence considered and exact next action.</p></div>'
+        '<div class="card"><h3>For an auditor</h3><p>Open findings and proof, source integrity, module details and the evidence appendix to trace each claim back to a check or artifact.</p></div>'
+        '</div>'
+        '<p class="explain"><strong>Simple rule:</strong> verified means PRE-D independently calculated the result from local evidence; declared means the application supplied the evidence and PRE-D schema-checked it; missing means no honest score is available yet.</p>'
         '</section>'
     )
 
@@ -266,7 +576,7 @@ def finding_register_panel(register: dict | None, *, anchor: str = "traceability
         f'<div class="card"><small>Blocked evidence</small><div class="number">{_esc(summary.get("blocked_evidence_count", 0))}</div></div>'
         f'<div class="card"><small>Coverage gaps</small><div class="number">{_esc(summary.get("coverage_gap_count", 0))}</div></div>'
         f'<div class="card"><small>Setup/config gaps</small><div class="number">{_esc(summary.get("setup_gap_count", 0))}</div></div></div>'
-        f'{extra_note}<div class="scroll"><table><tr><th>Finding</th><th>Class / priority</th><th>Category</th><th>Source / provenance</th><th>Proof</th><th>Action</th></tr>{preview_rows or "<tr><td colspan=6>No findings recorded.</td></tr>"}</table></div>'
+        f'{extra_note}<details><summary>Open finding preview</summary><div class="scroll"><table><tr><th>Finding</th><th>Class / priority</th><th>Category</th><th>Source / provenance</th><th>Proof</th><th>Action</th></tr>{preview_rows or "<tr><td colspan=6>No findings recorded.</td></tr>"}</table></div></details>'
         f'<details><summary>Open all traceable findings shown in this report</summary><div class="scroll"><table><tr><th>Finding</th><th>Class / priority</th><th>Category</th><th>Source / provenance</th><th>Proof</th><th>Action</th></tr>{all_rows or "<tr><td colspan=6>No findings recorded.</td></tr>"}</table></div></details>'
         f'<details><summary>Finding register summary</summary><pre>{_esc(json.dumps(summary, indent=2))}</pre></details>'
         '</section>'
@@ -294,11 +604,11 @@ def harness_recommendations_panel(recommendations: dict | None, *, anchor: str =
             f'<td>{_esc(inputs)}<br><small>{class_counts}. Linked IDs may overlap across workstreams: {_esc(", ".join(item.get("based_on_finding_ids", [])[:5]))}</small></td></tr>'
         )
     return (
-        f'<section id="{_esc(anchor)}"><p class="eyebrow">HARNESS ENGINEERING RECOMMENDATIONS</p>'
-        f'<h2>{_esc(summary.get("recommendation_count", 0))} workstream(s) to improve evidence strength</h2>'
+        f'<section id="{_esc(anchor)}"><p class="eyebrow">FIX PLAN / HARNESS ENGINEERING RECOMMENDATIONS</p>'
+        f'<h2>What should the team fix next?</h2>'
         f'<p>{_esc(recommendations.get("notice", ""))}</p>'
-        f'<p class="muted">Linked findings can overlap across workstreams. Coverage-gap links are harness work, not separate product defects.</p>'
-        f'<div class="scroll"><table><tr><th>Priority</th><th>Recommendation</th><th>Implementation</th><th>Acceptance criteria</th><th>Input needed / linked proof</th></tr>{"".join(rows) or "<tr><td colspan=5>No harness recommendations generated.</td></tr>"}</table></div>'
+        f'<p class="muted">{_esc(summary.get("recommendation_count", 0))} recommended workstream(s). Linked findings can overlap across workstreams. Coverage-gap links are harness work, not separate product defects.</p>'
+        f'<details open><summary>Open harness engineering recommendations</summary><div class="scroll"><table><tr><th>Priority</th><th>Recommendation</th><th>Implementation</th><th>Acceptance criteria</th><th>Input needed / linked proof</th></tr>{"".join(rows) or "<tr><td colspan=5>No harness recommendations generated.</td></tr>"}</table></div></details>'
         f'<details><summary>Recommendation register summary</summary><pre>{_esc(json.dumps(summary, indent=2))}</pre></details>'
         '</section>'
     )
@@ -309,6 +619,7 @@ def module_evaluation_panel(report: dict) -> str:
     if not isinstance(matrix, dict):
         return ""
     summary = matrix.get("summary", {})
+    report_summary = report.get("summary", {})
     rows = []
     for area in matrix.get("areas", []):
         metrics = ", ".join(area.get("verified_metrics") or area.get("declared_metrics") or area.get("missing_requested_metrics") or [])
@@ -331,14 +642,16 @@ def module_evaluation_panel(report: dict) -> str:
             f'<td>{_esc(row["next_action"])}</td></tr>'
         )
     return (
-        '<section id="module-evaluation"><p class="eyebrow">MODULE EVALUATION MAP</p>'
-        f'<h2>{_esc(summary.get("areas_with_executed_evidence", 0))} / {_esc(summary.get("area_count", 0))} evaluation areas have executed evidence</h2>'
+        '<section id="module-evaluation"><p class="eyebrow">COVERAGE MAP</p>'
+        f'<h2>Which parts of the application had usable evidence?</h2>'
+        f'<p class="section-intro">{_esc(summary.get("areas_with_executed_evidence", 0))} / {_esc(summary.get("area_count", 0))} evaluation areas have executed evidence. This section is a coverage map: it explains what PRE-D actually touched and what still needs evidence.</p>'
         f'<p>{_esc(matrix.get("notice", ""))}</p>'
-        f'<div class="grid"><div class="card"><small>Evaluated areas</small><div class="number">{_esc(summary.get("areas_evaluated", 0))}</div></div>'
+        f'<div class="grid"><div class="card"><small>Areas tested</small><div class="number">{_esc(summary.get("areas_evaluated", 0))}</div></div>'
         f'<div class="card"><small>Failed areas</small><div class="number">{_esc(summary.get("areas_with_failures", 0))}</div></div>'
         f'<div class="card"><small>Blocked areas</small><div class="number">{_esc(summary.get("areas_blocked", 0))}</div></div>'
-        f'<div class="card"><small>Verified metric groups</small><div class="number">{_esc(summary.get("verified_metric_groups", 0))}</div></div></div>'
-        f'<div class="scroll"><table><tr><th>Evaluation area</th><th>Status</th><th>Evidence</th><th>Execution</th><th>Metrics</th><th>Meaning / next action</th></tr>{"".join(rows)}</table></div>'
+        f'<div class="card"><small>Verified metric groups</small><div class="number">{_esc(summary.get("verified_metric_groups", 0))}</div></div>'
+        f'<div class="card"><small>Strictly complete components</small><div class="number">{_esc(report_summary.get("complete_components", 0))}/{_esc(report_summary.get("components", 0))}</div><small>This is the strict all-required-evidence count, not the execution count.</small></div></div>'
+        f'<details><summary>Open evaluation area table</summary><div class="scroll"><table><tr><th>Evaluation area</th><th>Status</th><th>Evidence</th><th>Execution</th><th>Metrics</th><th>Meaning / next action</th></tr>{"".join(rows)}</table></div></details>'
         f'<details><summary>Per-module result map</summary><div class="scroll"><table><tr><th>Module</th><th>Status</th><th>Categories</th><th>Checks</th><th>Verified metrics</th><th>Next action</th></tr>{"".join(module_rows)}</table></div></details>'
         '</section>'
     )
