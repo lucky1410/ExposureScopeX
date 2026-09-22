@@ -1,10 +1,36 @@
-# PRE-D Local 0.15.9
+# PRE-D Local 0.15.10
+
+This patch makes the system report easier to understand for developers,
+technical evaluators and non-developer stakeholders without weakening the
+underlying proof model.
+
+## What changed in 0.15.10
+
+- Added a plain-language **Report Guide** that explains how product owners,
+  developers and auditors should read the report.
+- Added a first-class **AI Scorecard** near the top of system reports. Each
+  metric now shows its status, score, calculation method, evidence considered
+  and next action.
+- AI metrics such as classification, confidence, decision evidence,
+  groundedness, hallucination, RAG, security, tool use, trajectory,
+  repeatability, cost/latency and workflow coverage stay visible even when
+  evidence is missing.
+- Restored explicit **Harness Engineering Recommendations** wording while
+  keeping the simpler **Fix Plan** framing. The recommendations table is open
+  by default.
+- Renamed visible report sections for readability: **Coverage Map**,
+  **Findings and Proof**, **Module Details**, and **Evidence Appendix**.
+- Moved strict component-completeness counts out of the hero and labelled them
+  as strict all-required-evidence counts so they are not confused with executed
+  checks.
+- Kept long tables collapsed by default while preserving raw evidence and audit
+  proof for deeper review.
+
+## What changed in 0.15.9
 
 This patch fixes report semantics after the first clean broad-platform run:
 PRE-D now separates executed findings from missing coverage so large reports do
 not make untested surface area look like thousands of product defects.
-
-## What changed in 0.15.9
 
 - Added `finding_class` to traceable findings: `observed_defect`,
   `blocked_evidence`, `coverage_gap`, `setup_gap`, or `informational`.
@@ -239,7 +265,7 @@ Download the wheel, `SHA256SUMS`, README, and guides from this release. Verify
 checksums as described in the README, then install in the evaluator environment:
 
 ```text
-python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.9-py3-none-any.whl
+python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.10-py3-none-any.whl
 python -c "from esx_eval_runner import __version__; print(__version__)"
 esx-eval setup --application
 ```

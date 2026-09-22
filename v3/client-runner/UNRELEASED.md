@@ -1,8 +1,8 @@
-# PRE-D Local 0.15.1 Release Working Notes
+# PRE-D Local 0.15.10 Release Working Notes
 
-Published scope for the 0.15.1 release.
+Published scope for the 0.15.10 release.
 
-- Post-0.15.9 report readability work adds a first-class **AI Quality
+- 0.15.10 report readability work adds a first-class **AI Quality
   Metrics** panel to system reports. Classification, confidence, decision
   evidence, groundedness, hallucination, RAG, security, cost/latency and other
   dimensions are visible near the top even when evidence is missing. Long
