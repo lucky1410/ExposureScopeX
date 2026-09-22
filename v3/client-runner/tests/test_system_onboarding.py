@@ -17,6 +17,7 @@ from esx_eval_runner.audit import verify_audit_log
 from esx_eval_runner.cli import main
 from esx_eval_runner.runner import RunnerError, sha256
 from esx_eval_runner.system_assistant import propose, apply_suggestions
+from esx_eval_runner.system_agent_pack import build_agent_task_pack, import_agent_pack
 from esx_eval_runner.system_changes import compare_reports, attach_comparison, verify_report
 from esx_eval_runner.system_cli import write_json
 from esx_eval_runner.system_engine import approve_plan, execute_system, preflight, validate_plan, plan_digest, http_check
@@ -135,20 +136,37 @@ class OnboardingTests(unittest.TestCase):
             verify_report(report)
 
     def test_incomplete_fingerprint_is_not_a_clean_preflight(self):
-        with patch("esx_eval_runner.system_safety.MAX_FILES", 0):
-            plan = bootstrap(project="sample-app", version="candidate", repository=str(self.repo))
-            self.assertEqual(plan["source_protection"]["snapshot"]["status"], "incomplete")
-            self.assertTrue(protection_blockers(plan, self.work))
+        plan = bootstrap(project="sample-app", version="candidate", repository=str(self.repo), source_max_bytes=1)
+        self.assertEqual(plan["source_protection"]["snapshot"]["status"], "incomplete")
+        self.assertTrue(protection_blockers(plan, self.work))
 
     def test_source_snapshot_excludes_generated_vendor_trees_before_byte_limit(self):
         vendor = self.repo / "node_modules" / "package"
         vendor.mkdir(parents=True)
         (vendor / "bundle.js").write_text("x" * 1024, encoding="utf-8")
+        terraform = self.repo / "infra" / "terraform" / ".terraform" / "providers"
+        terraform.mkdir(parents=True)
+        (terraform / "provider.bin").write_text("x" * 1024, encoding="utf-8")
         with patch("esx_eval_runner.system_safety.MAX_BYTES", 128):
             snapshot = snapshot_sources([self.repo])
         self.assertEqual(snapshot["status"], "complete")
         self.assertIn("0/app.py", snapshot["files"])
         self.assertFalse(any("node_modules" in key for key in snapshot["files"]))
+        self.assertFalse(any(".terraform" in key for key in snapshot["files"]))
+
+    def test_bootstrap_discovery_skips_generated_artifact_trees(self):
+        generated = self.repo / "results" / "previous-run"
+        generated.mkdir(parents=True)
+        (generated / "old_artifact.py").write_text("@app.get('/stale-result')\ndef old(): pass\n", encoding="utf-8")
+        custom = self.repo / "backups"
+        custom.mkdir()
+        (custom / "backup.py").write_text("@app.get('/backup-route')\ndef old(): pass\n", encoding="utf-8")
+        plan = bootstrap(project="sample-app", version="candidate", repository=str(self.repo), source_exclude_dirs=["backups"])
+        paths = {component["path"] for component in plan["components"]}
+        self.assertIn("/ok", paths)
+        self.assertNotIn("/stale-result", paths)
+        self.assertNotIn("/backup-route", paths)
+        self.assertFalse(any("results/" in evidence["source"] for component in plan["components"] for evidence in component["evidence"]))
 
     def test_incomplete_source_blocker_names_scan_limit_instead_of_source_drift(self):
         plan = deepcopy(self.plan)
@@ -209,6 +227,8 @@ class OnboardingTests(unittest.TestCase):
 
     def test_refresh_preserves_custom_assertions_and_removed_components_as_gaps(self):
         plan = deepcopy(self.plan)
+        plan["source_protection"]["scan_limits"]["max_bytes"] = 700_000_000
+        plan["source_protection"]["scan_limits"]["excluded_directories"].append("backups")
         plan["checks"][0].update(enabled=True, reviewed=True, expected_status=[200], json_assertions=[{"path": "ready", "equals": True}])
         plan["components"][0]["module"] = "my-owner-group"
         original_id = plan["components"][0]["id"]
@@ -219,6 +239,9 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(previous["module"], "my-owner-group")
         self.assertEqual(refreshed["checks"][0]["json_assertions"], plan["checks"][0]["json_assertions"])
         self.assertFalse(refreshed["checks"][0]["enabled"])
+        self.assertEqual(refreshed["source_protection"]["scan_limits"]["max_bytes"], 700_000_000)
+        self.assertIn("backups", refreshed["source_protection"]["scan_limits"]["excluded_directories"])
+        self.assertEqual(refreshed["source_protection"]["snapshot"]["max_bytes"], 700_000_000)
         self.assertEqual(len(refreshed["profile_changes"]["added_components"]), 1)
         self.assertNotIn("approval", refreshed)
         validate_plan(refreshed, self.work)
@@ -391,11 +414,15 @@ class OnboardingTests(unittest.TestCase):
     def test_cli_bootstrap_assist_accept_refresh_audit(self):
         path, proposal_path = self.work / "plan.json", self.work / "proposal.json"
         with redirect_stdout(io.StringIO()):
-            self.assertEqual(main(["system", "bootstrap", "--project", "sample-app", "--version", "candidate", "--repo", str(self.repo), "--out", str(path)]), 0)
+            self.assertEqual(main(["system", "bootstrap", "--project", "sample-app", "--version", "candidate", "--repo", str(self.repo),
+                                   "--source-max-bytes", "700000000", "--source-exclude-dir", "backups", "--out", str(path)]), 0)
             self.assertEqual(main(["system", "assist", "--plan", str(path), "--out", str(proposal_path)]), 0)
             proposal = json.loads(proposal_path.read_text())
             self.assertEqual(main(["system", "accept", "--plan", str(path), "--proposal", str(proposal_path), "--suggestion", proposal["suggestions"][0]["id"]]), 0)
             self.assertEqual(main(["system", "refresh", "--plan", str(path)]), 0)
+        refreshed = json.loads(path.read_text())
+        self.assertEqual(refreshed["source_protection"]["scan_limits"]["max_bytes"], 700_000_000)
+        self.assertIn("backups", refreshed["source_protection"]["scan_limits"]["excluded_directories"])
         self.assertEqual(verify_audit_log(path.with_suffix(".audit.jsonl"))["record_count"], 4)
 
     def test_cli_assist_accepts_business_context_file(self):
@@ -414,6 +441,113 @@ class OnboardingTests(unittest.TestCase):
         proposal = json.loads(proposal_path.read_text())
         self.assertEqual(proposal["business_logic_model"]["rule_count"], 1)
         self.assertEqual(proposal["suggestions"][0]["business_rule_id"], "BR-health-ready")
+
+    def test_cli_writes_workflow_readiness_drafts_and_evidence_gap_report(self):
+        path = self.work / "plan.json"
+        workflow_path = self.work / "workflow-readiness.json"
+        drafts_path = self.work / "draft-packs.json"
+        gaps_path = self.work / "evidence-gaps.json"
+        write_json(path, self.plan)
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            self.assertEqual(main(["system", "validate-workflows", "--plan", str(path), "--out", str(workflow_path)]), 0)
+            self.assertEqual(main(["system", "draft-packs", "--plan", str(path), "--out", str(drafts_path)]), 0)
+            self.assertEqual(main(["system", "evidence-gaps", "--plan", str(path), "--out", str(gaps_path)]), 2)
+        status = json.loads(stream.getvalue().strip().splitlines()[-1])
+        self.assertEqual(status["status"], "report_generated_with_actionable_gaps")
+        self.assertIn("Report generated successfully", status["exit_reason"])
+        self.assertTrue(workflow_path.is_file())
+        self.assertTrue(drafts_path.is_file())
+        self.assertTrue(gaps_path.is_file())
+        self.assertTrue(gaps_path.with_suffix(".html").is_file())
+        self.assertFalse(json.loads(drafts_path.read_text())["target_calls_made"])
+        gaps = json.loads(gaps_path.read_text())
+        self.assertGreater(gaps["summary"]["action_item_count"], 0)
+        self.assertEqual(gaps["command_status"]["status"], "report_generated_with_actionable_gaps")
+
+    def test_agent_task_pack_is_read_only_metadata_without_source_contents(self):
+        task = build_agent_task_pack(self.plan, self.work)
+        rendered = json.dumps(task)
+        self.assertEqual(task["schema_version"], "pre-d-agent-task-pack-1.0")
+        self.assertFalse(task["target_calls_made"])
+        self.assertFalse(task["application_code_modified"])
+        self.assertIn("Do not modify application source code.", rendered)
+        self.assertIn("app.py", rendered)
+        self.assertNotIn("def health", rendered)
+
+    def test_agent_pack_import_adds_disabled_drafts_with_provenance(self):
+        config = decision_config()
+        write_json(self.work / "eval.json", config)
+        component_id = self.plan["components"][0]["id"]
+        pack = {"schema_version": "pre-d-agent-pack-1.0", "plan_sha256": plan_digest(self.plan),
+                "target_calls_made": False, "application_code_modified": False,
+                "proposals": [
+                    {"id": "objective-health-ready", "type": "scope_objective",
+                     "component_id": component_id, "layer": "functional", "title": "Health reports readiness",
+                     "expected_behavior": "The health route should report ready when dependencies are healthy.",
+                     "anchors": [{"kind": "component", "component_id": component_id}, {"kind": "source_file", "path": "app.py"}]},
+                    {"id": "decision-health", "type": "evaluation_config", "check_id": "agent-decision-health",
+                     "config": "eval.json", "component_ids": [component_id], "layer": "ai",
+                     "anchors": [{"kind": "component", "component_id": component_id}]},
+                ]}
+        updated = import_agent_pack(self.plan, self.work, pack)
+        check = next(row for row in updated["checks"] if row["id"] == "agent-decision-health")
+        self.assertFalse(check["enabled"])
+        self.assertFalse(check["reviewed"])
+        self.assertEqual(check["agent_provenance"]["status"], "agent_drafted")
+        objective = next(row for row in updated["scope_contract"]["objectives"] if row["title"] == "Health reports readiness")
+        self.assertFalse(objective["reviewed"])
+        self.assertEqual(objective["agent_provenance"]["proposal_id"], "objective-health-ready")
+        self.assertFalse(updated["inventory_confirmed"])
+        self.assertNotIn("approval", updated)
+        validate_plan(updated, self.work)
+
+    def test_agent_pack_rejects_hallucinated_or_overreaching_output(self):
+        component_id = self.plan["components"][0]["id"]
+        base = {"schema_version": "pre-d-agent-pack-1.0", "plan_sha256": plan_digest(self.plan),
+                "target_calls_made": False, "application_code_modified": False}
+        with self.assertRaisesRegex(RunnerError, "source_file anchor"):
+            import_agent_pack(self.plan, self.work, {**base, "proposals": [
+                {"id": "bad-source", "type": "scope_objective", "component_id": component_id,
+                 "layer": "functional", "title": "Bad", "expected_behavior": "Bad",
+                 "anchors": [{"kind": "source_file", "path": "missing.py"}]},
+            ]})
+        with self.assertRaisesRegex(RunnerError, "unknown component"):
+            import_agent_pack(self.plan, self.work, {**base, "proposals": [
+                {"id": "bad-component", "type": "scope_objective", "component_id": "fabricated",
+                 "layer": "functional", "title": "Bad", "expected_behavior": "Bad",
+                 "anchors": [{"kind": "component", "component_id": "fabricated"}]},
+            ]})
+        with self.assertRaisesRegex(RunnerError, "imported disabled"):
+            import_agent_pack(self.plan, self.work, {**base, "proposals": [
+                {"id": "bad-enabled", "type": "system_check",
+                 "anchors": [{"kind": "component", "component_id": component_id}],
+                 "check": {"id": "bad-enabled", "type": "http", "layer": "functional",
+                           "component_ids": [component_id], "enabled": True, "reviewed": False,
+                           "path": "/ok", "method": "GET", "expected_status": [200]}},
+            ]})
+
+    def test_cli_exports_and_imports_agent_pack(self):
+        path = self.work / "plan.json"
+        task_path = self.work / "agent-tasks.json"
+        pack_path = self.work / "agent-pack.json"
+        write_json(path, self.plan)
+        component_id = self.plan["components"][0]["id"]
+        pack = {"schema_version": "pre-d-agent-pack-1.0", "plan_sha256": plan_digest(self.plan),
+                "target_calls_made": False, "application_code_modified": False,
+                "proposals": [{"id": "objective-health-ready", "type": "scope_objective",
+                               "component_id": component_id, "layer": "functional",
+                               "title": "Health reports readiness",
+                               "expected_behavior": "The health route should report ready.",
+                               "anchors": [{"kind": "component", "component_id": component_id}]}]}
+        write_json(pack_path, pack)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["system", "agent-tasks", "--plan", str(path), "--out", str(task_path)]), 0)
+            self.assertEqual(main(["system", "import-agent-pack", "--plan", str(path), "--pack", str(pack_path)]), 0)
+        updated = json.loads(path.read_text())
+        self.assertTrue(task_path.is_file())
+        self.assertEqual(updated["agent_imports"][0]["proposal_ids"], ["objective-health-ready"])
+        self.assertEqual(verify_audit_log(path.with_suffix(".audit.jsonl"))["record_count"], 2)
 
     def test_setup_refuses_policy_removal_and_accepts_template_review(self):
         path = self.work / "plan.json"

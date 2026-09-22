@@ -15,7 +15,12 @@ from .runner import RunnerError, read_json, sha256
 
 SCHEMA = "pre-d-system-plan-1.0"
 LAYERS = ("functional", "workflow", "ai", "integration", "code", "authorization", "security", "reliability")
-IGNORED = {".git", "node_modules", ".venv", "venv", "build", "dist", ".next", "__pycache__", ".pytest_cache"}
+SOURCE_EXTENSIONS = {".py", ".tsx", ".jsx", ".js", ".ts"}
+GENERATED_ARTIFACT_DIRS = {"outputs", "results", "work"}
+IGNORED = {
+    ".git", "node_modules", ".venv", "venv", "build", "dist", ".next", "__pycache__", ".pytest_cache",
+    *GENERATED_ARTIFACT_DIRS,
+}
 
 
 def document(path: str | Path) -> dict:
@@ -63,8 +68,29 @@ def _python_routes(text: str) -> list[tuple[str, str]]:
     return found
 
 
+def _exclude_names(values: list[str] | None, *, kind: str) -> set[str]:
+    if values is None:
+        return set()
+    if not isinstance(values, list) or len(values) > 200:
+        raise RunnerError(f"Discovery {kind} excludes must be a bounded list")
+    invalid = [value for value in values if not isinstance(value, str) or not value or "/" in value or "\\" in value]
+    if invalid:
+        raise RunnerError(f"Discovery {kind} excludes must be simple names")
+    return set(values)
+
+
+def _exclude_extensions(values: list[str] | None) -> set[str]:
+    excluded = _exclude_names(values, kind="extension")
+    invalid = [value for value in excluded if not value.startswith(".")]
+    if invalid:
+        raise RunnerError("Discovery extension excludes must start with '.'")
+    return {value.lower() for value in excluded}
+
+
 def discover_system(*, project_id: str, version: str, repository: str | None = None,
-                    openapi: str | None = None, base_url: str = "", max_files: int = 2000) -> dict:
+                    openapi: str | None = None, base_url: str = "", max_files: int = 2000,
+                    exclude_dirs: list[str] | None = None,
+                    exclude_extensions: list[str] | None = None) -> dict:
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", project_id) or not version:
         raise RunnerError("Supply a lowercase project ID and application version")
     if not repository and not openapi:
@@ -75,6 +101,8 @@ def discover_system(*, project_id: str, version: str, repository: str | None = N
     checks = []
     warnings = []
     counts = {"files_scanned": 0, "files_skipped": 0, "truncated": False}
+    ignored_dirs = IGNORED | _exclude_names(exclude_dirs, kind="directory")
+    ignored_extensions = _exclude_extensions(exclude_extensions)
 
     def add(kind: str, route: str, source: str, method: str = "", module: str | None = None, **extra: Any) -> dict:
         key = identifier(kind, method, route)
@@ -96,11 +124,35 @@ def discover_system(*, project_id: str, version: str, repository: str | None = N
         if not root.is_dir():
             raise RunnerError("Repository must be a local directory")
         stop = False
-        for folder, dirs, files in os.walk(root, followlinks=False):
-            dirs[:] = sorted(d for d in dirs if d not in IGNORED and not linked(Path(folder, d)))
+        def onerror(_error):
+            counts["files_skipped"] += 1
+
+        for folder, dirs, files in os.walk(root, followlinks=False, onerror=onerror):
+            kept_dirs = []
+            for directory in sorted(dirs):
+                if directory in ignored_dirs:
+                    continue
+                try:
+                    if linked(Path(folder, directory)):
+                        counts["files_skipped"] += 1
+                        continue
+                except OSError:
+                    counts["files_skipped"] += 1
+                    continue
+                kept_dirs.append(directory)
+            dirs[:] = kept_dirs
             for name in sorted(files):
                 path = Path(folder, name)
-                if linked(path) or path.suffix.lower() not in {".py", ".tsx", ".jsx", ".js", ".ts"}:
+                suffix = path.suffix.lower()
+                if suffix in ignored_extensions or suffix not in SOURCE_EXTENSIONS:
+                    continue
+                try:
+                    if linked(path):
+                        counts["files_skipped"] += 1
+                        continue
+                    size = path.stat().st_size
+                except OSError:
+                    counts["files_skipped"] += 1
                     continue
                 if counts["files_scanned"] >= max_files:
                     counts["truncated"] = True
@@ -108,7 +160,7 @@ def discover_system(*, project_id: str, version: str, repository: str | None = N
                     break
                 counts["files_scanned"] += 1
                 rel = path.relative_to(root).as_posix()
-                if path.stat().st_size > 256_000:
+                if size > 256_000:
                     counts["files_skipped"] += 1
                     continue
                 try:

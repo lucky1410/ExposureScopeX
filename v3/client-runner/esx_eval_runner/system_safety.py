@@ -19,7 +19,7 @@ MAX_BYTES = 128_000_000
 EXCLUDED = IGNORED | {
     ".git", ".hg", ".svn",
     ".mypy_cache", ".ruff_cache", ".cache", ".tox", ".pytest_cache",
-    ".next", ".nuxt", ".turbo", ".parcel-cache", ".vite",
+    ".next", ".nuxt", ".turbo", ".parcel-cache", ".vite", ".terraform",
     "node_modules", "dist", "build", "target", "coverage", ".venv", "venv",
     "__pycache__",
 }

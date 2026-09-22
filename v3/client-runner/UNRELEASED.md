@@ -2,6 +2,22 @@
 
 Published scope for the 0.15.1 release.
 
+- 0.15.8 adds harness engineering recommendations and summary-first HTML
+  system reports. Reports now open with verdict, coverage, proof-backed
+  findings, recommendation counts and high-priority workstreams, while raw
+  evidence tables remain available in collapsed audit sections.
+
+- 0.15.7 adds proof-backed finding registers to system and evidence-gap
+  reports. Each finding now has stable IDs, evidence provenance, repro steps,
+  owner actions, non-invasive status and audit hashes, with HTML traceability
+  tables for both engineering and executive review.
+
+- 0.15.6 fixes discovery over repositories that contain generated PRE-D/app
+  artifacts: `results`, `outputs`, `work` and cache/build/vendor trees are
+  skipped consistently during discovery and source protection. Evidence-gap
+  commands now report when JSON/HTML generation succeeded but actionable gaps
+  remain, instead of looking like a failed report generation.
+
 - Added reusable protected application profiles, conservative discovery refresh,
   retained check/evidence bindings and explicit source/contract change review.
 - Added a bounded local planning loop with inventory-only tools, validated
@@ -125,3 +141,49 @@ still required; no live production target was tested during development.
   metrics, evidence strength, result basis and the next action.
 - Added documentation for the evidence each module type needs before PRE-D can
   claim real coverage.
+- Tightened area metric attribution so specialized areas only show metric groups
+  that belong to that area. For example, cost/latency no longer inherits
+  classification or decision-evidence metrics from a decision check that also
+  requested cost telemetry.
+- Browser workflow suites that execute only a subset of planned cases now report
+  `workflow_suite_incomplete`, planned/executed/blocked/not-run counts and
+  per-case rows for passed, blocked and not-run journeys. This makes a `1/14`
+  workflow execution failure actionable instead of presenting it as a generic
+  metric-gate failure.
+- Added coverage-readiness preflight output, standalone workflow validation,
+  review-only coverage pack drafting and a standalone evidence-gap report.
+  `system validate-workflows` checks browser pack cases, persona/session
+  bindings and weak assertions without target calls. `system draft-packs`
+  produces review-required workflow/API/AI/security/reliability templates with
+  explicit `REVIEW_*` placeholders. `system evidence-gaps` writes JSON and HTML
+  that separates missing evidence, blocked checks, weak workflow assertions and
+  module/metric gaps before a tester reruns the target.
+- `system preflight` now surfaces enabled browser workflow blockers before
+  dispatch, including missing approved sessions that would otherwise turn into
+  incomplete suites at runtime. Whole-system readiness also requires strong
+  workflow evidence instead of accepting route-only/path-only planned checks as
+  complete coverage.
+- Added strict agent-assisted authoring handoff. `system agent-tasks` exports
+  read-only PRE-D task packs for Claude/Codex-style agents, including inventory,
+  readiness, evidence gaps, draft templates and a non-invasive contract without
+  source file contents or target calls. `system import-agent-pack` accepts only
+  current-plan, source-anchored proposals and imports them as disabled,
+  unreviewed drafts with audit provenance. It rejects target-call claims,
+  application-code modification claims, enabled/reviewed checks, stale packs,
+  unknown components, hallucinated routes and unverifiable source files.
+- Added a full-platform setup checklist to setup HTML, evidence-gap JSON/HTML
+  and embedded system reports. Missing modules and metric dimensions now map to
+  ordered repair steps, concrete required inputs, suggested pack types and
+  copy-pasteable commands instead of only appearing as raw coverage gaps.
+
+## Source Protection Scan Limits
+
+- Added `.terraform` to the default generated/cache directory exclusions for
+  source protection, matching Terraform provider caches to the existing
+  `node_modules`, `.venv`, `dist` and build-tree behavior.
+- Added `system bootstrap` and `system refresh` CLI controls for source
+  fingerprinting: `--source-max-files`, `--source-max-bytes`,
+  `--source-exclude-dir` and `--source-exclude-ext`.
+- `system refresh` now preserves reviewed source `scan_limits` unless the
+  operator explicitly overrides them, avoiding the previous direct-JSON-edit
+  workflow for large real repositories.

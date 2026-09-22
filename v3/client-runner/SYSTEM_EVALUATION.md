@@ -70,6 +70,133 @@ The map does not turn discovery into proof. Each area is labelled as
 evidence strength. The report also shows which metric groups were verified and
 what action is needed next.
 
+Metric groups are area-scoped. A decision check that measures classification
+does not make cost/latency, RAG, security, or admin/config metrics appear
+verified unless those dimensions were actually measured for that area.
+
+Browser workflow failures distinguish assertion mismatch from incomplete suite
+execution. If a reviewed workflow pack has 14 planned journeys but only one
+journey executes, the system report marks the check as
+`workflow_suite_incomplete`, preserves planned/executed/blocked/not-run counts,
+and lists the blocked or not-run case rows so the evaluator can repair the
+session, persona, route binding, or case selection.
+
+## Coverage Readiness And Evidence Gaps
+
+Use the readiness commands before a costly or time-sensitive full run. They do
+not call the target application and they do not edit application code.
+
+```text
+esx-eval system validate-workflows --plan ./system-plan.json --out ./workflow-readiness.json
+esx-eval system draft-packs --plan ./system-plan.json --out ./coverage-drafts.json
+esx-eval system evidence-gaps --plan ./system-plan.json --out ./evidence-gaps.json
+```
+
+`validate-workflows` catches browser workflow authoring problems before
+Playwright starts: missing approved sessions, missing persona profiles, weak
+path/title/element-only assertions and workflow cases that are not bound to a
+reviewed behavior objective.
+
+`draft-packs` creates review-only templates for broader coverage: browser
+workflow cases for pages, API assertion checks for endpoints, decision/RAG
+dataset requirements for AI candidates, role/authorization review prompts and
+bounded reliability templates. Drafts contain explicit `REVIEW_*` placeholders,
+are disabled by design and never count as evidence until a tester reviews,
+binds, approves and executes them.
+
+`evidence-gaps` writes both JSON and HTML. It lists missing module layers,
+missing baseline metric dimensions, weak workflow assertions, enabled checks
+that did not execute and blocked checks. This is the practical repair list for
+the next run; it is not a release verdict by itself.
+
+The setup page and every evidence-gap report also include a **Full-platform
+setup checklist**. It converts missing coverage into ordered work:
+
+- confirm inventory and behavior scope
+- optionally export/import strict agent-authored drafts
+- repair browser sessions, personas and weak assertions
+- bind missing module evidence by pack type
+- approve, preflight and run only after review
+
+For each missing component, the checklist names the missing layers and metric
+dimensions, the suggested pack type, and the concrete evidence the tester must
+provide. This is the default repair path when a report says a module was
+discovered but not evaluated.
+
+System reports also embed the same evidence-gap panel after execution, so a
+failed or incomplete run explains what to fix next instead of only showing a
+headline coverage number.
+
+Reports are summary-first. The default HTML view starts with the verdict,
+coverage counts, proof-backed finding count and harness recommendation count.
+Large evidence tables, raw per-check payloads and setup repair maps are
+collapsed by default. The JSON still retains full details for audit review.
+
+Every system and evidence-gap report includes **Harness engineering
+recommendations** derived from the traceable findings. These are not additional
+application defects; they are workstreams that explain which harness to build or
+repair next, with priority, implementation guidance, acceptance criteria, owner
+inputs and linked finding IDs.
+
+## Agent-Assisted Authoring Without App Changes
+
+PRE-D can reduce manual setup by handing a coding agent a bounded authoring
+task, then validating what comes back. The agent can read and reason about
+metadata, source files and review gaps, but it cannot decide coverage, approve
+checks, score metrics or modify the application.
+
+```text
+esx-eval system agent-tasks --plan ./system-plan.json --out ./agent-tasks.json
+esx-eval system import-agent-pack --plan ./system-plan.json --pack ./agent-pack.json
+```
+
+`agent-tasks` exports a JSON task pack with component metadata, source evidence
+paths, existing checks, coverage readiness, evidence gaps, draft templates and
+a strict non-invasive contract. It includes paths and route metadata, not source
+file contents, and it makes no target calls.
+
+The coding agent returns a `pre-d-agent-pack-1.0` file containing proposed
+behavior objectives, system checks or evaluation-config bindings. Every
+proposal must carry at least one source anchor:
+
+- `component`: an existing PRE-D component ID.
+- `openapi_path`: a method/path that matches discovered API inventory.
+- `source_file`: a relative file path that PRE-D can verify against source
+  evidence or the protected source roots.
+
+`import-agent-pack` rejects stale plan hashes, missing anchors, target-call
+claims, application-code modification claims, enabled checks, reviewed checks,
+unknown components, hallucinated OpenAPI paths and unverifiable source files.
+Accepted proposals are written only into the PRE-D plan as disabled,
+unreviewed drafts with `agent_provenance`; approval is invalidated and the
+inventory must be reviewed again.
+
+This design keeps responsibilities separated:
+
+- Claude/Codex helps draft what should be evaluated and why.
+- PRE-D validates anchors, runs checks, calculates metrics and writes reports.
+- The human reviewer approves scope, expectations, identities, thresholds and
+  any executable action.
+
+## Source Protection Scan Limits
+
+Protected profiles hash bounded source files and intentionally skip generated
+or cache directories such as `.git`, `node_modules`, `.venv`, `dist`, `build`
+and `.terraform`. Large repositories can tune the scan without editing JSON:
+
+```text
+esx-eval system bootstrap --project my-app --version candidate \
+  --repo ../my-app --source-max-bytes 700000000 \
+  --source-exclude-dir backups --out ./system-plan.json
+
+esx-eval system refresh --plan ./system-plan.json \
+  --source-exclude-dir generated-cache
+```
+
+`system refresh` preserves reviewed scan limits by default. Override only the
+limits you want to change; the stored source snapshot is regenerated with the
+same effective limits.
+
 ## Install This Source Version
 
 From the repository root, use an evaluator virtual environment:

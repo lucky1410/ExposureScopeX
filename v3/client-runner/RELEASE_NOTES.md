@@ -1,12 +1,95 @@
-# PRE-D Local 0.15.4
+# PRE-D Local 0.15.8
+
+This patch makes broad-platform system reports easier to read and act on. It
+keeps the 0.15.7 proof-backed finding register, then adds concise harness
+engineering recommendations and a summary-first HTML layout.
+
+## What changed in 0.15.8
+
+- Added `harness_recommendations` to system reports and evidence-gap reports.
+  Recommendations are grouped from proof-backed findings into engineering
+  workstreams such as browser workflow hardening, API contract harnesses,
+  decision-quality packs, semantic evidence, security authorization,
+  reliability/cost regression and blocked-adapter repair.
+- Each recommendation includes priority, implementation guidance, acceptance
+  criteria, required owner inputs, linked finding IDs and a recommendation hash.
+- Final system reports now start with an executive summary that states the
+  verdict, executed/failed/blocked checks, component coverage, finding count,
+  harness recommendation count and high-priority harness work.
+- Long sections are collapsed by default: module coverage, behavior evidence,
+  baseline check outcomes, per-check raw evidence and setup repair maps remain
+  available without forcing readers to scroll through every row.
+- Standalone evidence-gap reports now include navigation, harness
+  recommendations and traceable findings, so incomplete setup produces a repair
+  plan instead of a wall of raw gaps.
+
+## What changed in 0.15.7
+
+This patch turns PRE-D findings into explicit local audit artifacts: read-only,
+proof-backed, traceable and trackable.
+
+- Added a `finding_register` to system reports and evidence-gap reports.
+- Every finding now carries a stable `finding_id`, severity, source,
+  `evidence_type`, PRE-D confidence label, proof payload, repro command,
+  owner action, non-invasive status and `audit_hash`.
+- HTML reports now include **Traceable findings** tables for final system runs
+  and evidence-gap reports.
+- Evidence-gap findings prove missing/weak evidence rather than product defects;
+  executed failures and source-integrity findings are separately marked as
+  observed traces.
+- The final system report hash now covers the finding register, so report-level
+  integrity includes the traceability layer.
+- Added regression coverage to ensure finding provenance remains present in JSON
+  and HTML output.
+
+## What changed in 0.15.6
+
+This patch fixes the rough edge found while creating a full-platform plan from
+a repository that already contained old PRE-D/app-generated output artifacts.
+
+- Discovery and protected bootstrap now consistently skip generated artifact
+  folders such as `results`, `outputs`, `work`, `dist`, `build`, cache trees
+  and vendor/build directories instead of walking stale generated reports.
+- `system discover` now exposes `--source-exclude-dir` and
+  `--source-exclude-ext` so discovery-only plans can use the same skip controls
+  as protected profiles.
+- `system evidence-gaps` now writes `command_status` to the JSON report and
+  prints `status` plus `exit_reason`. A nonzero exit means actionable gaps were
+  found; the JSON/HTML report was still generated successfully.
+- Added regression tests for generated-artifact discovery exclusion and the
+  clearer evidence-gap command/report status.
+
+## What changed in 0.15.5
+
+This patch makes the broad-platform workflow easier to test and repair. PRE-D
+now turns missing modules, layers and metric dimensions into an explicit
+full-platform setup checklist, and it adds a strict read-only handoff path for
+Claude/Codex-style agents to draft coverage without touching application code.
+
+- Added `system agent-tasks` to export a read-only task pack for coding agents:
+  inventory metadata, readiness state, evidence gaps, draft templates and a
+  non-invasive contract.
+- Added `system import-agent-pack` to import only source-anchored proposals as
+  disabled, unreviewed drafts. Stale packs, target-call claims, app-code-change
+  claims, enabled checks, reviewed checks, unknown components, hallucinated
+  routes and unverifiable source files are rejected.
+- Added a full-platform setup checklist to setup HTML, evidence-gap JSON/HTML
+  and embedded system reports. The checklist maps missing module/layer/dimension
+  evidence to required inputs, suggested pack types and copy-pasteable commands.
+- Evidence-gap reports now serve as the repair path for a broad platform run:
+  confirm inventory, optionally use agent drafting, repair browser workflows,
+  bind missing module evidence, then approve/preflight/run.
+- Added regression coverage for agent task export/import, source-anchor
+  rejection, disabled-draft import, setup checklist rendering and evidence-gap
+  setup-plan output.
+
+## What changed in 0.15.4
 
 This patch release adds the module evaluation map to PRE-D system reports. It
 keeps the 0.15.x source-first onboarding and protected-profile workflow, but
 makes broad-platform evaluation status easier to read: each major module type
 now shows what was discovered, configured, executed, verified, declared, missing
 or still only planned.
-
-## What changed in 0.15.4
 
 - System HTML/JSON reports now include a module evaluation map for AI decision,
   RAG/knowledge, browser workflow, API workflow, security, reliability,
@@ -126,7 +209,7 @@ Download the wheel, `SHA256SUMS`, README, and guides from this release. Verify
 checksums as described in the README, then install in the evaluator environment:
 
 ```text
-python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.4-py3-none-any.whl
+python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.8-py3-none-any.whl
 python -c "from esx_eval_runner import __version__; print(__version__)"
 esx-eval setup --application
 ```

@@ -78,10 +78,18 @@ def register_system_commands(commands: argparse._SubParsersAction) -> None:
     bootstrap.add_argument("--base-url", default="")
     bootstrap.add_argument("--role", action="append", default=[])
     bootstrap.add_argument("--max-files", type=int, default=2000)
+    bootstrap.add_argument("--source-max-files", type=int, help="Maximum regular source files to hash for source protection")
+    bootstrap.add_argument("--source-max-bytes", type=int, help="Maximum source bytes to hash for source protection")
+    bootstrap.add_argument("--source-exclude-dir", action="append", default=[], help="Additional generated/cache directory name to exclude from source protection")
+    bootstrap.add_argument("--source-exclude-ext", action="append", default=[], help="Additional file extension to exclude from source protection, such as .bin")
     bootstrap.add_argument("--out", required=True)
     refresh = actions.add_parser("refresh", help="Rediscover a profile, preserve reviewed work, report changes and invalidate approval")
     refresh.add_argument("--plan", required=True)
     refresh.add_argument("--version")
+    refresh.add_argument("--source-max-files", type=int, help="Override source-protection max_files while preserving other reviewed scan limits")
+    refresh.add_argument("--source-max-bytes", type=int, help="Override source-protection max_bytes while preserving other reviewed scan limits")
+    refresh.add_argument("--source-exclude-dir", action="append", default=[], help="Additional generated/cache directory name to exclude from source protection")
+    refresh.add_argument("--source-exclude-ext", action="append", default=[], help="Additional file extension to exclude from source protection, such as .bin")
     assist = actions.add_parser("assist", help="Create a reviewable proposal using templates or an explicitly selected local model; no target calls")
     assist.add_argument("--plan", required=True)
     assist.add_argument("--model", help="Existing Ollama model name; no model is downloaded")
@@ -104,6 +112,8 @@ def register_system_commands(commands: argparse._SubParsersAction) -> None:
     discover.add_argument("--openapi", help="Local OpenAPI 3.x JSON; no remote references are fetched")
     discover.add_argument("--base-url", default="")
     discover.add_argument("--max-files", type=int, default=2000)
+    discover.add_argument("--source-exclude-dir", action="append", default=[], help="Additional generated/cache directory name to exclude from discovery")
+    discover.add_argument("--source-exclude-ext", action="append", default=[], help="Additional file extension to exclude from discovery, such as .bin")
     discover.add_argument("--out", required=True)
     sample = actions.add_parser("sample", help="Stratify supplied labelled cases reproducibly; never invent labels or execute targets")
     sample.add_argument("--dataset", required=True)
@@ -129,6 +139,22 @@ def register_system_commands(commands: argparse._SubParsersAction) -> None:
     check = actions.add_parser("preflight", help="Validate scope, approvals, identities and coverage without target calls")
     check.add_argument("--plan", required=True)
     check.add_argument("--require-whole-system", action="store_true", help="Exit nonzero unless every reviewed behavior is bound and candidate checks are configured")
+    workflows = actions.add_parser("validate-workflows", help="Validate browser workflow packs, personas, sessions and assertions without target calls")
+    workflows.add_argument("--plan", required=True)
+    workflows.add_argument("--out", help="Optional JSON output path")
+    workflows.add_argument("--include-disabled", action="store_true", help="Also inspect disabled browser plans as authoring drafts")
+    drafts = actions.add_parser("draft-packs", help="Draft review-only workflow/API/AI coverage pack templates; never enables checks")
+    drafts.add_argument("--plan", required=True)
+    drafts.add_argument("--out", required=True)
+    agent_tasks = actions.add_parser("agent-tasks", help="Export strict read-only tasks for Claude/Codex authoring; no target calls")
+    agent_tasks.add_argument("--plan", required=True)
+    agent_tasks.add_argument("--out", required=True)
+    agent_import = actions.add_parser("import-agent-pack", help="Import source-anchored Claude/Codex drafts as disabled unreviewed checks/objectives")
+    agent_import.add_argument("--plan", required=True)
+    agent_import.add_argument("--pack", required=True)
+    gaps = actions.add_parser("evidence-gaps", help="Write a standalone evidence-gap JSON and HTML report without target calls")
+    gaps.add_argument("--plan", required=True)
+    gaps.add_argument("--out", required=True, help="JSON output path; HTML is written beside it")
     scope = actions.add_parser("scope", help="Draft or inspect behavior-level coverage without target calls")
     scope.add_argument("--plan", required=True)
     scope.add_argument("--init", action="store_true", help="Add unreviewed obligations; never overwrite an existing scope contract")
@@ -173,14 +199,17 @@ def system_command(args: argparse.Namespace) -> int:
 
 
 def _system_command(args: argparse.Namespace) -> int:
-    from .system_ui import render_report, serve_system_setup
+    from .system_ui import render_evidence_gap_report, render_report, serve_system_setup
     action = args.system_action
     from .audit import append_audit_event, verify_audit_log
     from .system_safety import guard_output
     if action == "bootstrap":
         from .system_profile import bootstrap
         plan = bootstrap(project=args.project, version=args.version, repository=args.repo, openapi=args.openapi,
-                         base_url=args.base_url, roles=args.role, max_files=args.max_files)
+                         base_url=args.base_url, roles=args.role, max_files=args.max_files,
+                         source_max_files=args.source_max_files, source_max_bytes=args.source_max_bytes,
+                         source_exclude_dirs=args.source_exclude_dir,
+                         source_exclude_extensions=args.source_exclude_ext)
         path = Path(args.out).resolve()
         guard_output(plan, path.with_suffix(".audit.jsonl"))
         write_json(path, plan)
@@ -201,7 +230,9 @@ def _system_command(args: argparse.Namespace) -> int:
         return 0
     if action == "discover":
         plan = discover_system(project_id=args.project, version=args.version, repository=args.repo,
-                               openapi=args.openapi, base_url=args.base_url, max_files=args.max_files)
+                               openapi=args.openapi, base_url=args.base_url, max_files=args.max_files,
+                               exclude_dirs=args.source_exclude_dir,
+                               exclude_extensions=args.source_exclude_ext)
         write_json(Path(args.out).resolve(), plan)
         print(json.dumps({"plan": str(Path(args.out).resolve()), "components": len(plan["components"]),
                           "next_step": "Run esx-eval system setup --plan <path>; review inventory and checks before approval."}))
@@ -245,12 +276,69 @@ def _system_command(args: argparse.Namespace) -> int:
         validate_plan(plan, path.parent)
         print(json.dumps({"scope_contract": assess_scope(plan, root=path.parent), "target_calls_made": False}))
         return 0
+    if action == "validate-workflows":
+        from .system_readiness import validate_workflow_packs
+        result = validate_workflow_packs(plan, path.parent, include_disabled=args.include_disabled)
+        if args.out:
+            guard_output(plan, Path(args.out))
+            write_json(Path(args.out), result)
+        print(json.dumps({"ready": result["ready"], "summary": result["summary"], "target_calls_made": False}))
+        return 0 if result["ready"] else 2
+    if action == "draft-packs":
+        from .system_readiness import draft_coverage_packs
+        guard_output(plan, Path(args.out))
+        result = draft_coverage_packs(plan, path.parent)
+        write_json(Path(args.out), result)
+        print(json.dumps({"drafts": args.out, "summary": result["summary"], "target_calls_made": False}))
+        return 0
+    if action == "agent-tasks":
+        from .system_agent_pack import build_agent_task_pack
+        guard_output(plan, Path(args.out))
+        result = build_agent_task_pack(plan, path.parent)
+        write_json(Path(args.out), result)
+        append_audit_event(audit_path, "agent_task_pack_created", {"plan_sha256": previous_digest, "task_pack_sha256": sha256(result)})
+        print(json.dumps({"task_pack": args.out, "component_count": result["inventory_summary"]["component_count"],
+                          "target_calls_made": False, "application_code_modified": False}))
+        return 0
+    if action == "import-agent-pack":
+        from .system_agent_pack import import_agent_pack
+        pack = document(args.pack)
+        plan = import_agent_pack(plan, path.parent, pack)
+        write_json(path, plan, replace=True)
+        append_audit_event(audit_path, "agent_pack_imported", {"before_sha256": previous_digest, "after_sha256": plan_digest(plan),
+                                                               "pack_sha256": sha256(pack)})
+        print(json.dumps({"plan": str(path), "imported_proposals": len(pack.get("proposals", [])),
+                          "approval_current": False, "target_calls_made": False, "application_code_modified": False}))
+        return 0
+    if action == "evidence-gaps":
+        from .system_readiness import evidence_gap_report
+        output = Path(args.out)
+        guard_output(plan, output)
+        result = evidence_gap_report(plan, path.parent)
+        has_gaps = bool(result["summary"]["action_item_count"])
+        status = "report_generated_with_actionable_gaps" if has_gaps else "report_generated_no_actionable_gaps"
+        exit_reason = (
+            "Report generated successfully; nonzero exit means actionable evidence gaps remain."
+            if has_gaps else
+            "Report generated successfully; no actionable evidence gaps were found."
+        )
+        result["command_status"] = {"status": status, "exit_code": 2 if has_gaps else 0, "exit_reason": exit_reason}
+        write_json(output, result)
+        html_path = output.with_suffix(".html")
+        guard_output(plan, html_path)
+        html_path.write_text(render_evidence_gap_report(result), encoding="utf-8")
+        print(json.dumps({"status": status, "report": str(html_path), "json": str(output), "summary": result["summary"],
+                          "exit_reason": exit_reason, "target_calls_made": False}))
+        return 2 if has_gaps else 0
     if action == "setup":
         serve_system_setup(path)
         return 0
     if action == "refresh":
         from .system_profile import refresh_profile
-        plan = refresh_profile(plan, version=args.version)
+        plan = refresh_profile(plan, version=args.version, source_max_files=args.source_max_files,
+                               source_max_bytes=args.source_max_bytes,
+                               source_exclude_dirs=args.source_exclude_dir,
+                               source_exclude_extensions=args.source_exclude_ext)
     elif action == "accept":
         from .system_assistant import apply_suggestions
         plan = apply_suggestions(plan, document(args.proposal), args.suggestion)

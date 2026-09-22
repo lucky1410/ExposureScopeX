@@ -48,14 +48,17 @@ esx_eval_runner/report_html.py
 esx_eval_runner/runner.py
 esx_eval_runner/semantic_grounding.py
 esx_eval_runner/setup.py
+esx_eval_runner/system_agent_pack.py
 esx_eval_runner/system_assistant.py
 esx_eval_runner/system_business.py
 esx_eval_runner/system_changes.py
 esx_eval_runner/system_cli.py
 esx_eval_runner/system_engine.py
+esx_eval_runner/system_findings.py
 esx_eval_runner/system_history.py
 esx_eval_runner/system_inventory.py
 esx_eval_runner/system_profile.py
+esx_eval_runner/system_readiness.py
 esx_eval_runner/system_safety.py
 esx_eval_runner/system_scope.py
 esx_eval_runner/system_ui.py

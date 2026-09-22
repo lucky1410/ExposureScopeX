@@ -31,5 +31,7 @@ webapp/backups/
 # Local evaluation credentials and generated artifacts
 secrets/
 tmp/
+outputs/
 my-agent-evaluation/
+v3/client-runner/work/
 gcm-diagnose.log

@@ -1,6 +1,6 @@
 # ExposureScopeX Local AI Evaluation Runner
 
-**PRE-D Local 0.15.4: source-first full-platform onboarding, module evaluation mapping, hardened source protection, coverage advisories, reviewed module scope, historical context, and local AI evaluation.**
+**PRE-D Local 0.15.8: executive-first system reports, harness engineering recommendations, proof-backed traceable findings, safer generated-artifact discovery, full-platform setup, agent-assisted authoring handoff, and local AI evaluation.**
 
 `esx-eval` is a **local-first pre-release evaluator** for a model, RAG
 application, agent, or multi-agent system. It runs next to the AI system being
@@ -24,7 +24,7 @@ code, traces, environment variables, stderr, credentials, or results.
 | Review required modules and decide what blocks a release | [Application release review](RELEASE_REVIEW.md) |
 | Compare two versions without hiding coverage changes | [Baseline comparison](RELEASE_REVIEW.md#compare-a-candidate-against-a-baseline) |
 | Connect groundedness, hallucination, or other metric evidence | [Evidence guide](PRE-D_EVIDENCE_GUIDE.md) |
-| See what changed and what remains unsupported | [0.15.4 release notes](RELEASE_NOTES.md) |
+| See what changed and what remains unsupported | [0.15.8 release notes](RELEASE_NOTES.md) |
 
 Python 3.11+ is required. Browser testing additionally needs Playwright and its
 Chromium runtime; semantic evaluation needs the configured independent local
@@ -34,7 +34,7 @@ make external requests.
 
 ## System Evaluation
 
-PRE-D Local 0.15.4 provides profile bootstrap/refresh, bounded planning
+PRE-D Local 0.15.8 provides profile bootstrap/refresh, bounded planning
 assistance, suggestion review and baseline comparisons. Protected profiles keep
 PRE-D artifacts outside application source and stop when observed source
 changes invalidate a run. Optional local models draft behavior objectives
@@ -54,6 +54,25 @@ decision modules, RAG/knowledge, browser workflows, API workflows, security,
 reliability, cost/latency, and admin/config. Each area shows what was
 discovered, configured, executed, verified, declared or missing, plus the next
 action required before claiming coverage.
+
+PRE-D also includes pre-run repair tools for broader platform evaluation:
+`system validate-workflows` checks browser workflow cases, personas, approved
+sessions and weak assertions before dispatch; `system draft-packs` creates
+review-only templates for workflow/API/AI/security/reliability coverage; and
+`system evidence-gaps` writes a JSON/HTML repair report that separates missing
+evidence from failed evidence. These commands are non-invasive and make no
+target calls. The setup page and report now include a full-platform setup
+checklist that turns each missing module/layer/dimension into a required input,
+suggested pack type, and next command.
+
+PRE-D can now hand off review-only authoring tasks to Claude/Codex-style coding
+agents without giving those agents authority over the evaluation. Use
+`system agent-tasks` to export source-linked metadata, gaps, templates and a
+strict non-invasive contract. Use `system import-agent-pack` to import only
+source-anchored proposals. Imported proposals become disabled, unreviewed
+drafts with audit provenance; PRE-D rejects stale packs, target-call claims,
+application-code modification claims, enabled checks, unknown components,
+hallucinated routes and unverifiable source files.
 
 The `decision_evidence` adapter crash is fixed. Classification no longer
 requires confidence, and semantic/evidence-only runs do not require unrelated
@@ -76,7 +95,54 @@ behavior evidence cannot be hidden behind a suite-level pass. Start with
 `--require-whole-system`. See [the testing guide](WHOLE_SYSTEM_TESTING.md) for
 the ten-module reference acceptance and real-application prerequisites.
 
-## What is new in 0.15.4
+## What is new in 0.15.8
+
+- System reports are now summary-first. The default view starts with an
+  executive summary, verdict explanation, proof-backed finding count, harness
+  recommendation count and high-priority workstream count before showing raw
+  evidence tables.
+- System and evidence-gap JSON/HTML now include
+  `harness_recommendations`: concise engineering workstreams generated from
+  proof-backed findings, with priority, implementation guidance, acceptance
+  criteria, required owner inputs and linked finding IDs.
+- Long audit tables are collapsed by default. The report still preserves module
+  maps, behavior evidence, raw per-check evidence and traceable findings, but
+  users no longer need to scroll through every detail before understanding what
+  matters.
+- Evidence-gap reports now have navigation, harness recommendations and
+  traceability sections so incomplete setup produces a readable repair plan,
+  not just a long gap dump.
+
+## What is new in 0.15.7
+
+- System reports and evidence-gap reports now include a `finding_register`.
+  Every gap or failed/blocked finding has a stable `finding_id`, severity,
+  source, evidence type, PRE-D confidence label, proof payload, repro command,
+  owner action, non-invasive status and `audit_hash`.
+- HTML reports now include **Traceable findings** sections so executives and
+  engineers can see whether each item came from an observed trace, missing
+  evidence, workflow static review or source protection.
+- Agent-authored or missing-evidence findings remain explicitly labelled as
+  repair items, not application defects. PRE-D does not allow generated claims
+  to become truth without reviewed evidence.
+- The finding register is included in the final report hash, making the report
+  tamper-evident at the finding level and the whole-report level.
+
+## What is new in 0.15.6
+
+- Discovery and protected bootstrap now consistently skip generated PRE-D/app
+  artifact folders such as `results`, `outputs`, `work`, `dist`, `build` and
+  cache/vendor trees. Stale local report artifacts no longer crash repository
+  discovery or inflate component inventory.
+- `system discover` now accepts the same `--source-exclude-dir` and
+  `--source-exclude-ext` style controls for discovery-only plans.
+- `system evidence-gaps` now writes `command_status` into the JSON report and
+  prints a clear `status` / `exit_reason`. A nonzero exit means actionable
+  gaps remain; it does not mean report generation failed.
+- Added regression coverage for generated artifact exclusion and the clearer
+  evidence-gap command/report status.
+
+## What is new in 0.15.5
 
 - System reports now include a module evaluation map covering AI decision,
   RAG/knowledge, browser workflow, API workflow, security, reliability,
@@ -89,6 +155,21 @@ the ten-module reference acceptance and real-application prerequisites.
   partial, blocked, missing, or not applicable.
 - Added regression coverage so generic API/service discovery does not
   accidentally make specialized areas like RAG, cost, or admin look evaluated.
+- Area metric groups are now scoped to that area. Cost/latency no longer shows
+  classification or decision-evidence just because a decision check requested
+  missing cost telemetry.
+- Source protection excludes `.terraform` by default and exposes scan controls
+  on `system bootstrap` / `system refresh`: `--source-max-files`,
+  `--source-max-bytes`, `--source-exclude-dir`, and `--source-exclude-ext`.
+  Refresh preserves reviewed scan limits unless explicitly overridden.
+- Agent-assisted authoring is now explicit and gated: PRE-D exports read-only
+  task packs for Claude/Codex and imports only validated, source-anchored,
+  disabled drafts. Agents do not edit app code, approve checks, score metrics,
+  or make release decisions.
+- The setup page and every evidence-gap report now include a full-platform setup
+  checklist. Missing modules, layers and metric dimensions are mapped to
+  required inputs, suggested pack types and next commands, so testers can repair
+  coverage without reverse-engineering the JSON report.
 
 ## What changed in 0.15.3
 
@@ -313,7 +394,7 @@ esx-eval release check --help
 ```
 
 Use `py` on Windows or `python3` on macOS/Linux if that is the interpreter for
-your evaluation environment. The version should be `0.15.4`. If the import
+your evaluation environment. The version should be `0.15.8`. If the import
 shows the new version but `esx-eval setup --help` has no `--application` option, the executable on
 PATH belongs to another environment; use the matching environment's executable.
 
@@ -775,7 +856,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 3. Verify and install the downloaded wheel. Use the published runner version:
 
    ```powershell
-   $version = "0.15.4"
+   $version = "0.15.8"
    $wheel = "exposurescopex_eval_runner-$version-py3-none-any.whl"
    $expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -like "*$wheel" }) -split "\s+")[0].ToLower()
    $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
@@ -789,7 +870,7 @@ instead of `py`, `cd` instead of `Set-Location`, and `./` paths instead of
 
    ```bash
    shasum -a 256 -c SHA256SUMS
-   python3 -m pip install --upgrade ./exposurescopex_eval_runner-0.15.4-py3-none-any.whl
+   python3 -m pip install --upgrade ./exposurescopex_eval_runner-0.15.8-py3-none-any.whl
    python3 -c "from esx_eval_runner import __version__; print(__version__)"
    ```
 

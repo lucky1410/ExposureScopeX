@@ -21,11 +21,15 @@ from esx_eval_runner.runner import RunnerError, build_package, sha256
 from esx_eval_runner.system_cli import bind_evaluation, write_json
 from esx_eval_runner.system_engine import (
     approve_plan, command_check, execute_system, http_check, plan_digest,
-    preflight, validate_plan, population_coverage,
+    preflight, validate_plan, population_coverage, evaluation_check,
 )
 from esx_eval_runner.system_history import history_runs, prune_history, record_run, signals, trend
 from esx_eval_runner.system_inventory import SCHEMA, add_role_matrix, discover_system, document, sample_population
-from esx_eval_runner.system_ui import render_report, setup_handler
+from esx_eval_runner.system_readiness import (
+    coverage_readiness, draft_coverage_packs, evidence_gap_report, full_platform_setup_plan,
+    validate_workflow_packs,
+)
+from esx_eval_runner.system_ui import render_evidence_gap_report, render_report, setup_handler, setup_html
 
 
 @contextmanager
@@ -341,6 +345,136 @@ class SystemEvaluationTests(unittest.TestCase):
             self.assertEqual(report["checks"][0]["metrics"]["classification"]["accuracy"], 1.0)
             self.assertTrue((root / "run" / "decisions.local-report.html").exists())
 
+    def test_workflow_suite_incomplete_lists_blocked_and_not_run_cases(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            out = root / "run"
+            out.mkdir()
+            config = {
+                "schema_version": "esx-client-runner-config-1.0",
+                "evaluation": {"project_key": "sample-app", "subject_version": "candidate", "required_dimensions": ["workflow_coverage"]},
+                "adapter": {"type": "browser_journey", "base_url": "http://127.0.0.1"},
+                "dataset": {"cases": [
+                    {"case_id": "dashboard", "input": {"journey": [{"type": "goto", "path": "/"}, {"type": "wait_for_text", "value": "Dashboard"}]}},
+                    {"case_id": "settings", "input": {"journey": [{"type": "goto", "path": "/settings"}, {"type": "wait_for_text", "value": "Settings"}]}},
+                    {"case_id": "audit", "input": {"journey": [{"type": "goto", "path": "/audit"}, {"type": "wait_for_text", "value": "Audit"}]}},
+                ]},
+            }
+            write_json(root / "workflow.json", config)
+            execution = {
+                "adapter_type": "browser_journey",
+                "case_count": 3,
+                "scored_case_count": 1,
+                "blocked_case_count": 1,
+                "browser_case_diagnostics": [
+                    {"case_id": "dashboard", "outcome": "passed"},
+                    {"case_id": "settings", "outcome": "blocked", "failure_stage": "session_setup", "failure_kind": "session_bootstrap_required"},
+                ],
+            }
+            write_json(out / "workflow.json", {"evaluation": {"case_ids": ["dashboard"], "predicted_labels": [], "expected_labels": []}, "execution": execution})
+            write_json(out / "workflow.local-report.json", {
+                "evaluation": {"required_dimensions": ["workflow_coverage"]},
+                "execution": execution,
+                "metrics": {"workflow_coverage": {"measurement_status": "measured", "trust_status": "verified", "workflow_execution_rate": 0.333333, "workflow_signal_match_rate": 1.0}},
+            })
+            check = {"id": "workflow", "config": "workflow.json", "timeout_seconds": 30,
+                     "gates": [{"signal": "workflow_coverage.workflow_execution_rate", "operator": "gte", "threshold": 1.0}]}
+            with patch("esx_eval_runner.system_engine._process", return_value=0):
+                result = evaluation_check(check, root, out)
+            self.assertEqual(result["reason"], "workflow_suite_incomplete")
+            self.assertEqual(result["planned_case_count"], 3)
+            self.assertEqual(result["case_count"], 1)
+            self.assertEqual(result["blocked_case_count"], 1)
+            self.assertEqual(result["not_run_case_count"], 1)
+            self.assertEqual([row["status"] for row in result["case_results"]], ["passed", "blocked", "not_run"])
+            self.assertEqual(result["case_results"][1]["failure_kind"], "session_bootstrap_required")
+
+    def test_workflow_readiness_blocks_missing_session_and_names_weak_cases(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = {
+                "schema_version": "esx-client-runner-config-1.0",
+                "evaluation": {"name": "Browser", "agent_id": "browser", "project_key": "sample-app",
+                               "subject_version": "candidate", "dataset_version": "ui-v1",
+                               "required_dimensions": ["workflow_coverage"]},
+                "adapter": {"type": "browser_journey", "base_url": "http://127.0.0.1:3000",
+                            "session_state_path": ".esx/session.json",
+                            "session_bootstrap": {"login_path": "/login", "success": {"type": "wait_for_text", "value": "Dashboard"}}},
+                "dataset": {"version": "ui-v1", "cases": [
+                    {"case_id": "dashboard", "input": {"journey": [{"type": "goto", "path": "/"}, {"type": "wait_for_text", "value": "Dashboard"}]},
+                     "expected_label": "pass", "requires_auth": True},
+                    {"case_id": "audit", "input": {"journey": [{"type": "goto", "path": "/audit"}, {"type": "assert_path", "path": "/audit"}]},
+                     "expected_label": "pass", "requires_auth": False},
+                ]},
+            }
+            write_json(root / "workflow.json", config)
+            plan = basic_plan("http://127.0.0.1:3000")
+            plan["components"][0].update(kind="page", required_layers=["workflow"], path="/")
+            plan["checks"] = [{"id": "core-workflows", "type": "evaluation", "layer": "workflow",
+                               "component_ids": ["api-health"], "enabled": True, "reviewed": True,
+                               "config": "workflow.json", "config_sha256": sha256(config), "timeout_seconds": 30,
+                               "requested_dimensions": ["workflow_coverage"],
+                               "gates": [{"signal": "workflow_coverage.workflow_execution_rate", "operator": "gte", "threshold": 1.0}]}]
+            plan["scope_contract"] = {"mode": "whole_system", "policy_reviewed": True, "inventory_totals_reviewed": True,
+                                      "inventory_totals": {"page": 1}, "build": {}, "objectives": [
+                {"id": "obj-ui", "component_id": "api-health", "title": "Dashboard renders",
+                 "layer": "workflow", "role": None, "reviewed": True, "check_id": "core-workflows",
+                 "case_ids": ["dashboard"], "assertion_paths": []}
+            ]}
+            approve_plan(plan, root)
+            workflows = validate_workflow_packs(plan, root)
+            self.assertFalse(workflows["ready"])
+            self.assertEqual(workflows["summary"]["planned_case_count"], 2)
+            self.assertEqual(workflows["summary"]["missing_session_case_count"], 1)
+            self.assertEqual(workflows["summary"]["weak_signal_case_count"], 1)
+            self.assertIn("dashboard", str(workflows["checks"][0]["issues"]))
+            self.assertIn("audit", str(workflows["checks"][0]["issues"]))
+            result = preflight(plan, root)
+            self.assertFalse(result["ready"])
+            self.assertIn("coverage_readiness", result)
+
+    def test_coverage_pack_drafts_and_evidence_gaps_are_review_only(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = basic_plan("http://127.0.0.1:3000")
+            plan["roles"].append("analyst")
+            plan["components"].extend([
+                {"id": "page-dashboard", "name": "Dashboard", "module": "workspace", "kind": "page",
+                 "path": "/", "required_layers": ["workflow"], "depends_on": [], "evidence": [], "enabled": "unknown"},
+                {"id": "ai-triage", "name": "Triage model", "module": "decisions", "kind": "ai_candidate",
+                 "path": "services/triage.py", "required_layers": ["ai"], "depends_on": [], "evidence": [],
+                 "enabled": "unknown", "suggested_dimensions": ["classification", "decision_evidence", "groundedness", "hallucination"]},
+            ])
+            drafts = draft_coverage_packs(plan, root)
+            self.assertFalse(drafts["target_calls_made"])
+            self.assertGreaterEqual(drafts["summary"]["workflow_case_templates"], 1)
+            self.assertGreaterEqual(drafts["summary"]["decision_pack_templates"], 1)
+            self.assertIn("REVIEW_VISIBLE_TEXT", json.dumps(drafts))
+            readiness = coverage_readiness(plan, root)
+            self.assertGreater(readiness["summary"]["metric_gap_count"], 0)
+            gaps = evidence_gap_report(plan, root)
+            self.assertFalse(gaps["target_calls_made"])
+            self.assertGreater(gaps["summary"]["component_gap_count"], 0)
+            self.assertIn("finding_register", gaps)
+            self.assertGreater(gaps["finding_register"]["summary"]["finding_count"], 0)
+            finding = gaps["finding_register"]["findings"][0]
+            self.assertTrue(finding["finding_id"].startswith("finding-"))
+            self.assertEqual(finding["confidence"], "verified")
+            self.assertIn("proof", finding)
+            self.assertIn("audit_hash", finding)
+            self.assertEqual(finding["non_invasive_status"], "pre_d_read_only_no_application_code_write")
+            self.assertIn("harness_recommendations", gaps)
+            self.assertGreater(gaps["harness_recommendations"]["summary"]["recommendation_count"], 0)
+            self.assertIn("decisions", json.dumps(gaps["module_gaps"]))
+            self.assertIn("setup_plan", gaps)
+            setup = full_platform_setup_plan(plan, root)
+            self.assertGreater(setup["summary"]["component_action_count"], 0)
+            self.assertIn("agent-tasks", json.dumps(setup))
+            self.assertIn("FULL-PLATFORM SETUP", setup_html(plan, "token", root / "system-plan.json"))
+            rendered = render_evidence_gap_report(gaps)
+            self.assertIn("EVIDENCE-GAP TRACEABILITY", rendered)
+            self.assertIn("HARNESS ENGINEERING RECOMMENDATIONS", rendered)
+
     def test_load_is_bounded_and_observed(self):
         with TemporaryDirectory() as directory, reference_app() as (url, state):
             plan = basic_plan(url)
@@ -366,6 +500,14 @@ class SystemEvaluationTests(unittest.TestCase):
             self.assertEqual(len(report["checks"]), 1)
             self.assertEqual(report["checks"][0]["reason"], "failure_injection_or_cleanup_failed")
             self.assertEqual(report["verdict"], "insufficient_evidence")
+            self.assertIn("finding_register", report)
+            self.assertGreater(report["finding_register"]["summary"]["finding_count"], 0)
+            self.assertIn("harness_recommendations", report)
+            self.assertGreater(report["harness_recommendations"]["summary"]["recommendation_count"], 0)
+            rendered = render_report(report)
+            self.assertIn("EXECUTIVE SUMMARY", rendered)
+            self.assertIn("HARNESS ENGINEERING RECOMMENDATIONS", rendered)
+            self.assertIn("TRACEABLE FINDINGS", rendered)
 
     def test_recovery_requires_observed_disruption_and_restoration(self):
         with TemporaryDirectory() as directory, reference_app() as (url, state):

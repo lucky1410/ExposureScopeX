@@ -351,6 +351,7 @@ def preflight(plan: dict, root: Path) -> dict:
     validate_plan(plan, root)
     approval = plan.get("approval", {})
     from .system_safety import protection_blockers
+    from .system_readiness import coverage_readiness
     blockers = protection_blockers(plan, root)
     if approval.get("plan_sha256") != plan_digest(plan):
         blockers.append("Plan is not approved or changed after approval")
@@ -366,16 +367,21 @@ def preflight(plan: dict, root: Path) -> dict:
                 blockers.append(check["id"] + ": write methods require isolated-write approval")
         if check["type"] == "recovery" and not approval.get("allow_disruption"):
             blockers.append(check["id"] + ": failure injection requires separate disruption approval")
+    readiness = coverage_readiness(plan, root)
+    for row in readiness["workflow_readiness"]["checks"]:
+        for issue in row["issues"]:
+            if issue["severity"] == "blocker":
+                blockers.append(row["check_id"] + ": " + issue["message"])
     coverage = coverage_rows(plan, [])
     planned = coverage_rows(plan, [{"id": c["id"], "status": "passed", "strength": "content_assertions" if c.get("json_assertions") else "status_only" if c["type"] == "http" else "planned"} for c in plan["checks"] if c["enabled"]])
     from .system_scope import assess_scope
     scope = assess_scope(plan, root=root)
     scope_ready = bool(plan["inventory_confirmed"]) and all(c["complete"] for c in planned) and not plan.get("discovery", {}).get("truncated", False)
     if scope["mode"] == "whole_system":
-        scope_ready = scope_ready and scope["complete"]
+        scope_ready = scope_ready and scope["complete"] and readiness["ready_for_whole_system_claim"]
     return {"ready": not blockers, "scope_ready": scope_ready, "whole_system_ready": scope["mode"] == "whole_system" and scope_ready and not blockers,
             "scope_contract": scope,
-            "blockers": blockers, "coverage": coverage,
+            "blockers": blockers, "coverage": coverage, "coverage_readiness": readiness,
             "enabled_checks": sum(c["enabled"] for c in plan["checks"]), "target_calls_made": False}
 
 
@@ -511,8 +517,16 @@ def _area_summary(area: dict, *, area_components: set[str], checks: list[dict],
     failed = [result for result in results if result.get("status") == "failed"]
     blocked = [result for result in results if result.get("status") == "blocked"]
     passed = [result for result in results if result.get("status") == "passed"]
-    verified_metrics, declared_metrics, measured_dimensions = _result_metric_sets(results)
+    area_dimensions = set(area["dimensions"])
+    verified_metrics, declared_metrics, measured_dimensions = _result_metric_sets(
+        results,
+        allowed_dimensions=area_dimensions,
+    )
     requested = _requested_dimensions(checks)
+    if area_dimensions:
+        requested &= area_dimensions
+    else:
+        requested = set()
     missing_requested = sorted(requested - measured_dimensions)
     complete_components = sum(bool(row.get("complete")) for row in coverage_rows)
     terminal = passed + failed
@@ -564,10 +578,12 @@ def _area_summary(area: dict, *, area_components: set[str], checks: list[dict],
     }
 
 
-def _result_metric_sets(results: list[dict]) -> tuple[list[str], list[str], set[str]]:
+def _result_metric_sets(results: list[dict], *, allowed_dimensions: set[str] | None = None) -> tuple[list[str], list[str], set[str]]:
     verified, declared, measured = set(), set(), set()
     for result in results:
         for dimension, metric in result.get("metrics", {}).items():
+            if allowed_dimensions is not None and dimension not in allowed_dimensions:
+                continue
             if not isinstance(metric, dict):
                 continue
             if metric.get("measurement_status") == "measured":
@@ -830,6 +846,7 @@ def evaluation_check(check: dict, root: Path, out: Path) -> dict:
     result = document(report)
     config_data = document(config)
     package_data = document(package)
+    browser = config_data["adapter"]["type"] == "browser_journey"
     observations = package_data.get("evaluation", {}).get("decision_observations", [])
     count = package_data.get("execution", {}).get("scored_case_count", 0)
     abstention_rate = sum(o["abstained"] for o in observations) / count if count and len(observations) == count and all(type(o.get("abstained")) is bool for o in observations) else None
@@ -847,26 +864,54 @@ def evaluation_check(check: dict, root: Path, out: Path) -> dict:
                          "trust": metric.get("trust_status", "missing"), "action": RECOMMENDATIONS[dimension][1]})
     required = result.get("evaluation", {}).get("required_dimensions", config_data["evaluation"].get("required_dimensions", []))
     ungated = sorted(set(required) - {g["signal"].split(".")[0] for g in outcomes})
-    incomplete = result.get("execution", {}).get("blocked_case_count", 0) != 0 or count != len(config_data["dataset"]["cases"])
+    execution = result.get("execution", {})
+    planned_count = len(config_data["dataset"]["cases"])
+    blocked_count = execution.get("blocked_case_count", 0)
+    incomplete = blocked_count != 0 or count != planned_count
     status = "failed" if any(g["status"] == "failed" for g in outcomes) else "blocked" if not outcomes or ungated or incomplete or any(g["status"] == "blocked" for g in outcomes) else "passed"
     evaluated = package_data.get("evaluation", {})
     label_matches = {key: predicted == expected for key, predicted, expected in zip(
         evaluated.get("case_ids", []), evaluated.get("predicted_labels", []), evaluated.get("expected_labels", []))}
     strengths = {r["case_id"]: r["signal_strength"] for r in workflow_signal_strength(config_data["dataset"]["cases"])["cases"]}
-    browser = config_data["adapter"]["type"] == "browser_journey"
-    case_results = [{"id": key, "status": "passed" if label_matches.get(key) is True else "failed" if label_matches.get(key) is False else "executed",
-                     **({"signal_strength": strengths.get(key, "no_explicit_signal")} if browser else {})}
-                    for key in package_data.get("evaluation", {}).get("case_ids", [])]
-    return {"status": status, "reason": "metric_gates", "gates": outcomes, "ungated_dimensions": ungated,
+    case_results = _workflow_case_results(config_data, package_data, strengths) if browser else [
+        {"id": key, "status": "passed" if label_matches.get(key) is True else "failed" if label_matches.get(key) is False else "executed"}
+        for key in package_data.get("evaluation", {}).get("case_ids", [])
+    ]
+    reason = "workflow_suite_incomplete" if browser and incomplete else "metric_gates"
+    action = ("Repair the browser workflow config, session/profile, and case binding so every planned journey executes. "
+              "Inspect blocked/not-run case rows, refresh the approved session if needed, then rerun the same workflow pack."
+              if browser and incomplete else
+              "Review per-case evaluation evidence and configure explicit gates for all requested dimensions; declared evidence cannot pass a verified gate.")
+    return {"status": status, "reason": reason, "gates": outcomes, "ungated_dimensions": ungated,
             "case_results": case_results,
-            "metrics": result.get("metrics", {}), "case_count": count, "evidence_complete": not incomplete,
+            "metrics": result.get("metrics", {}), "case_count": count, "planned_case_count": planned_count,
+            "blocked_case_count": blocked_count, "not_run_case_count": sum(1 for row in case_results if row["status"] == "not_run"),
+            "evidence_complete": not incomplete,
             "comparison_basis": result.get("evaluation", {}).get("comparison_basis"),
             "scored_case_ids_sha256": sha256(package_data.get("evaluation", {}).get("case_ids", [])),
-            "workflow_advisories": workflow_signal_advisories(workflow_signal_strength(config_data["dataset"]["cases"])) if config_data["adapter"]["type"] == "browser_journey" else [],
+            "workflow_advisories": workflow_signal_advisories(workflow_signal_strength(config_data["dataset"]["cases"])) if browser else [],
             "observed_abstention_rate": abstention_rate,
             "population": population_coverage(config_data, count),
             "artifact": report.name, "artifact_sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
-            "action": "Review per-case evaluation evidence and configure explicit gates for all requested dimensions; declared evidence cannot pass a verified gate."}
+            "action": action}
+
+
+def _workflow_case_results(config_data: dict, package_data: dict, strengths: dict[str, str]) -> list[dict]:
+    diagnostics = package_data.get("execution", {}).get("browser_case_diagnostics", [])
+    observed = {item.get("case_id"): item for item in diagnostics if isinstance(item, dict) and item.get("case_id")}
+    completed_ids = set(package_data.get("evaluation", {}).get("case_ids", []))
+    rows = []
+    for case in config_data.get("dataset", {}).get("cases", []):
+        case_id = case.get("case_id")
+        diagnostic = observed.get(case_id, {})
+        outcome = diagnostic.get("outcome")
+        status = outcome if outcome in {"passed", "failed", "blocked"} else "executed" if case_id in completed_ids else "not_run"
+        row = {"id": case_id, "status": status, "signal_strength": strengths.get(case_id, "no_explicit_signal")}
+        for key in ("failure_stage", "failure_kind", "session_status", "capability_area", "persona"):
+            if diagnostic.get(key) is not None:
+                row[key] = diagnostic[key]
+        rows.append(row)
+    return rows
 
 
 def population_coverage(config: dict, executed: int) -> dict:
@@ -1039,6 +1084,8 @@ def execute_system(plan: dict, root: Path, out: Path) -> dict:
                 row["gaps"].append("Behavior evidence incomplete: " + "; ".join(missing))
             row["complete"] = row["complete"] and component_scope["complete"]
     evaluation_summary = module_evaluation_summary(plan, results, coverage)
+    from .system_readiness import evidence_gap_report
+    evidence_gaps = evidence_gap_report(plan, root, results=results, coverage=coverage, module_summary=evaluation_summary)
     gaps = sum(not c["complete"] for c in coverage)
     failed = sum(r["status"] == "failed" for r in results)
     blocked = sum(r["status"] == "blocked" for r in results)
@@ -1060,6 +1107,7 @@ def execute_system(plan: dict, root: Path, out: Path) -> dict:
                           "checks_executed": len(results), "failed": failed, "blocked": blocked},
               "coverage": coverage, "checks": results, "discovery": plan.get("discovery", {}),
               "module_evaluation_summary": evaluation_summary,
+              "evidence_gap_report": evidence_gaps,
               "scope_contract": scope, "build_verification": build_evidence,
               "source_integrity": {**integrity, "before": source_before, "after": source_after,
                                    "notice": "Fingerprints cover readable regular files outside listed cache/build directories. Changes stop further checks; attribution is unknown. This is change detection, not an OS sandbox or proof of remote filesystem integrity."},
@@ -1068,6 +1116,9 @@ def execute_system(plan: dict, root: Path, out: Path) -> dict:
                                  "assistant_review": plan.get("assistant_review")},
               "profile_changes": plan.get("profile_changes"),
               "notice": "Results cover reviewed checks only. Discovered, disabled and untested components are not validated. Suggested causes are not established root causes. Hashes detect changes, not independent authenticity."}
+    from .system_findings import harness_recommendations, system_report_findings
+    report["finding_register"] = system_report_findings(report)
+    report["harness_recommendations"] = harness_recommendations(report["finding_register"])
     report["report_sha256"] = sha256(report)
     append_audit_event(audit, "system_completed", {"run_id": run_id, "report_sha256": report["report_sha256"], "verdict": verdict})
     return report

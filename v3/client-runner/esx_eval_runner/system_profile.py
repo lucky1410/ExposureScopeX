@@ -8,23 +8,57 @@ from pathlib import Path
 
 from .runner import RunnerError, sha256
 from .system_inventory import discover_system, document, add_role_matrix
-from .system_safety import POLICY, MAX_BYTES, MAX_FILES, EXCLUDED, EXCLUDED_EXTENSIONS, snapshot_sources, source_diff
+from . import system_safety
+from .system_safety import POLICY, MAX_BYTES, MAX_FILES, EXCLUDED, EXCLUDED_EXTENSIONS, snapshot_sources, source_diff, source_limits
 from .system_scope import draft_scope
 
 
 PROFILE = "pre-d-application-profile-1.0"
 
 
+def _scan_limits(existing: dict | None = None, *, max_files: int | None = None, max_bytes: int | None = None,
+                 excluded_directories: list[str] | None = None, excluded_extensions: list[str] | None = None) -> dict:
+    existing = existing or {}
+    limits = {
+        "max_files": max_files if max_files is not None else existing.get("max_files", system_safety.MAX_FILES),
+        "max_bytes": max_bytes if max_bytes is not None else existing.get("max_bytes", system_safety.MAX_BYTES),
+        "excluded_directories": sorted(set(existing.get("excluded_directories", sorted(system_safety.EXCLUDED))) | set(excluded_directories or [])),
+        "excluded_extensions": sorted(set(existing.get("excluded_extensions", sorted(system_safety.EXCLUDED_EXTENSIONS))) | {ext.lower() for ext in (excluded_extensions or [])}),
+    }
+    source_limits({"source_protection": {"scan_limits": limits}})
+    return limits
+
+
+def _snapshot(roots: list[Path], limits: dict) -> dict:
+    return snapshot_sources(
+        roots,
+        max_files=limits["max_files"],
+        max_bytes=limits["max_bytes"],
+        excluded_directories=set(limits["excluded_directories"]),
+        excluded_extensions=set(limits["excluded_extensions"]),
+    )
+
+
 def bootstrap(*, project: str, version: str, repository: str | None = None,
               openapi: str | None = None, base_url: str = "", roles: list[str] | None = None,
-              max_files: int = 2000) -> dict:
+              max_files: int = 2000, source_max_files: int | None = None,
+              source_max_bytes: int | None = None, source_exclude_dirs: list[str] | None = None,
+              source_exclude_extensions: list[str] | None = None,
+              source_scan_limits: dict | None = None) -> dict:
     inputs = {"repository": str(Path(repository).resolve()) if repository else None,
               "openapi": str(Path(openapi).resolve()) if openapi else None,
               "max_files": max_files}
     roots = [Path(inputs["repository"])] if repository else []
-    before = snapshot_sources(roots)
-    plan = discover_system(project_id=project, version=version, base_url=base_url, **inputs)
-    after = snapshot_sources(roots)
+    limits = _scan_limits(source_scan_limits, max_files=source_max_files, max_bytes=source_max_bytes,
+                          excluded_directories=source_exclude_dirs, excluded_extensions=source_exclude_extensions)
+    before = _snapshot(roots, limits)
+    plan = discover_system(
+        project_id=project, version=version, base_url=base_url,
+        exclude_dirs=limits["excluded_directories"],
+        exclude_extensions=limits["excluded_extensions"],
+        **inputs,
+    )
+    after = _snapshot(roots, limits)
     if source_diff(before, after)["status"] == "changed":
         raise RunnerError("Application source changed during discovery; retry against a stable checkout")
     for component in plan["components"]:
@@ -33,12 +67,7 @@ def bootstrap(*, project: str, version: str, repository: str | None = None,
         add_role_matrix(plan, roles)
     plan["source_protection"] = {"schema_version": POLICY, "mode": "read_only",
                                  "roots": [str(p) for p in roots],
-                                 "scan_limits": {
-                                     "max_files": MAX_FILES,
-                                     "max_bytes": MAX_BYTES,
-                                     "excluded_directories": sorted(EXCLUDED),
-                                     "excluded_extensions": sorted(EXCLUDED_EXTENSIONS),
-                                 },
+                                 "scan_limits": limits,
                                  "snapshot": after}
     plan["profile"] = {"schema_version": PROFILE, "revision": 1, "inputs": inputs,
                        "created_at": datetime.now(timezone.utc).isoformat(),
@@ -69,7 +98,9 @@ def onboarding_tasks(plan: dict) -> list[dict]:
     return tasks
 
 
-def refresh_profile(plan: dict, *, version: str | None = None) -> dict:
+def refresh_profile(plan: dict, *, version: str | None = None, source_max_files: int | None = None,
+                    source_max_bytes: int | None = None, source_exclude_dirs: list[str] | None = None,
+                    source_exclude_extensions: list[str] | None = None) -> dict:
     from .system_engine import plan_digest
     profile = plan.get("profile", {})
     if profile.get("schema_version") != PROFILE:
@@ -77,8 +108,11 @@ def refresh_profile(plan: dict, *, version: str | None = None) -> dict:
     inputs = profile.get("inputs")
     if not isinstance(inputs, dict):
         raise RunnerError("Profile discovery inputs are missing")
+    existing_limits = plan.get("source_protection", {}).get("scan_limits", {})
+    limits = _scan_limits(existing_limits, max_files=source_max_files, max_bytes=source_max_bytes,
+                          excluded_directories=source_exclude_dirs, excluded_extensions=source_exclude_extensions)
     fresh = bootstrap(project=plan["project_id"], version=version or plan["application_version"],
-                      base_url=plan.get("base_url", ""), roles=plan["roles"], **inputs)
+                      base_url=plan.get("base_url", ""), roles=plan["roles"], source_scan_limits=limits, **inputs)
     updated = deepcopy(plan)
     old = {c["id"]: c for c in plan["components"]}
     found = {c["id"]: c for c in fresh["components"]}

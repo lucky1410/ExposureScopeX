@@ -44,7 +44,7 @@ def scope_panel(report: dict) -> str:
     counts = ''.join(f'<li>{_esc(t["kind"])}: {t["mapped"]} mapped / {_esc(t["declared"])} declared</li>' for t in scope["inventory_totals"])
     issues = '<ul>' + ''.join(f'<li>{_esc(g)}</li>' for g in gaps) + '</ul>' if gaps else '<p>No inventory or policy gaps in the reviewed scope.</p>'
     build = report.get("build_verification", {})
-    return f'<section id="scope"><p class="eyebrow">WHOLE-SYSTEM SCOPE</p><h2>{summary["complete"]} / {summary["total"]} behavior objectives evaluated</h2><p>{summary["passed"]} passed; {summary["failed"]} failed. Failed objectives count as evaluated, not as release success.</p><p>Candidate identity: <strong>{_esc(build.get("status", "not_observed").replace("_", " "))}</strong>.</p>{issues}<details><summary>Inventory reconciliation</summary><ul>{counts}</ul></details><details open><summary>Behavior evidence and next actions</summary><div class="scroll"><table><tr><th>Expected behavior</th><th>Role</th><th>Result</th><th>Bound evidence</th><th>Next action</th></tr>{rows}</table></div></details><p class="muted">{_esc(scope["notice"])}</p></section>'
+    return f'<section id="scope"><p class="eyebrow">WHOLE-SYSTEM SCOPE</p><h2>{summary["complete"]} / {summary["total"]} behavior objectives evaluated</h2><p>{summary["passed"]} passed; {summary["failed"]} failed. Failed objectives count as evaluated, not as release success.</p><p>Candidate identity: <strong>{_esc(build.get("status", "not_observed").replace("_", " "))}</strong>.</p>{issues}<details><summary>Inventory reconciliation</summary><ul>{counts}</ul></details><details><summary>Behavior evidence and next actions</summary><div class="scroll"><table><tr><th>Expected behavior</th><th>Role</th><th>Result</th><th>Bound evidence</th><th>Next action</th></tr>{rows}</table></div></details><p class="muted">{_esc(scope["notice"])}</p></section>'
 
 
 def render_report(report: dict) -> str:
@@ -68,9 +68,9 @@ def render_report(report: dict) -> str:
         s = delta["summary"]
         rows = "".join(f'<tr><td>{_esc(r["check_id"])}</td><td>{_esc(r["before_status"])}</td><td>{_esc(r["after_status"])}</td><td>{_esc("Regression" if r["regression"] else r["status"].replace("_", " "))}</td><td>{_esc("; ".join(d["signal"] + ": " + str(d["before"]) + " to " + str(d["after"]) for d in r["metric_deltas"]) or "No comparable numeric change")}</td></tr>' for r in delta["checks"])
         changes = "".join(f'<li>{_esc(c["kind"])}: {_esc(c.get("id", c.get("check_id", "")))} {_esc(c.get("change", str(c.get("before")) + " to " + str(c.get("after"))))}</li>' for c in delta["changes"])
-        comparison = f'<section id="changes"><p class="eyebrow">BASELINE COMPARISON</p><h2>{s["regressions"]} regressions in comparable checks</h2><p>{s["changed_fields"]} scope/result changes; {s["changed_source_files"]} source files changed; {s["incomparable_checks"]} checks need a new comparable baseline.</p><p>{_esc(delta["notice"])}</p><details open><summary>Check outcomes</summary><div class="scroll"><table><tr><th>Check</th><th>Baseline</th><th>Current</th><th>Interpretation</th><th>Verified signal changes</th></tr>{rows}</table></div></details><details><summary>Scope and evidence changes</summary><ul>{changes}</ul></details><small>Baseline run {_esc(delta["baseline_run_id"])} / Current run {_esc(delta["current_run_id"])}<br>Comparison {_esc(delta["changes_sha256"])}</small></section>'
+        comparison = f'<section id="changes"><p class="eyebrow">BASELINE COMPARISON</p><h2>{s["regressions"]} regressions in comparable checks</h2><p>{s["changed_fields"]} scope/result changes; {s["changed_source_files"]} source files changed; {s["incomparable_checks"]} checks need a new comparable baseline.</p><p>{_esc(delta["notice"])}</p><details><summary>Check outcomes</summary><div class="scroll"><table><tr><th>Check</th><th>Baseline</th><th>Current</th><th>Interpretation</th><th>Verified signal changes</th></tr>{rows}</table></div></details><details><summary>Scope and evidence changes</summary><ul>{changes}</ul></details><small>Baseline run {_esc(delta["baseline_run_id"])} / Current run {_esc(delta["current_run_id"])}<br>Comparison {_esc(delta["changes_sha256"])}</small></section>'
     page = _render_report(report)
-    return page.replace('<a href="#findings">', '<a href="#changes">What changed</a><a href="#source-integrity">Source integrity</a><a href="#findings">').replace('<section id="findings">', comparison + source + '<section id="findings">')
+    return page.replace('<a href="#findings">', '<a href="#changes">What changed</a><a href="#source-integrity">Source integrity</a><a href="#evidence-gaps">Evidence gaps</a><a href="#findings">').replace('<section id="findings">', comparison + source + evidence_gap_panel(report.get("evidence_gap_report")) + '<section id="findings">')
 
 
 def _render_report(report: dict) -> str:
@@ -106,7 +106,102 @@ def _render_report(report: dict) -> str:
     caution = f'<p class="blocked">Status-only checks: {_esc(", ".join(weak))}. These prove response status, not correct content or business behavior.</p>' if weak else ""
     caution += "".join(f'<p class="blocked">{_esc(row["id"])}: {_esc(advice["summary"])} {_esc(advice["action"])}</p>' for row in report["checks"] for advice in row.get("workflow_advisories", []))
     definition = "A component is counted as executed only when each required reviewed layer has an enabled check that ran to a pass/fail terminal state. Drafted, disabled, unbound, blocked, or status-only evidence remains a gap."
-    return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D system review</title><style>{STYLE}</style><main><p class="eyebrow">PRE-D / SYSTEM RELEASE REVIEW</p><h1>{_esc(title)}</h1><p>{_esc(report["project_id"])} / {_esc(report["application_version"])}</p><nav><a href="#findings">What to fix</a><a href="#module-evaluation">Module evaluation map</a><a href="#scope">Behavior coverage</a><a href="#coverage">Modules</a><a href="#evidence">Evidence</a></nav><p>{_esc(report["notice"])}</p><div class="grid">{cards}</div><p class="muted">{_esc(definition)}</p>{caution}<section id="findings"><h2>What needs attention</h2>{"".join(findings) or "<p>No executed check failed. Review uncovered components before drawing a release conclusion.</p>"}</section>{module_evaluation_panel(report)}{scope_panel(report)}<section id="coverage"><h2>Coverage, not assumptions</h2><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Execution</th><th>Boundary / next step</th></tr>{coverage}</table></div></section><section id="evidence"><h2>Inspect the evidence</h2>{"".join(details)}</section><small>Run {_esc(report["run_id"])} | {_esc(report["created_at"])} | {_esc(report.get("report_sha256", ""))}</small></main></html>'
+    return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D system review</title><style>{STYLE}</style><main><p class="eyebrow">PRE-D / SYSTEM RELEASE REVIEW</p><h1>{_esc(title)}</h1><p>{_esc(report["project_id"])} / {_esc(report["application_version"])}</p><nav><a href="#executive-summary">Executive summary</a><a href="#harness-recommendations">Harness recommendations</a><a href="#findings">What to fix</a><a href="#traceability">Traceable findings</a><a href="#module-evaluation">Module evaluation map</a><a href="#scope">Behavior coverage</a><a href="#coverage">Modules</a><a href="#evidence">Evidence</a></nav><p>{_esc(report["notice"])}</p><div class="grid">{cards}</div>{executive_summary_panel(report)}<p class="muted">{_esc(definition)}</p>{caution}{harness_recommendations_panel(report.get("harness_recommendations"))}<section id="findings"><h2>What needs attention</h2>{"".join(findings) or "<p>No executed check failed. Review uncovered components before drawing a release conclusion.</p>"}</section>{finding_register_panel(report.get("finding_register"))}{module_evaluation_panel(report)}{scope_panel(report)}<section id="coverage"><h2>Coverage, not assumptions</h2><details><summary>Open module coverage table</summary><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Execution</th><th>Boundary / next step</th></tr>{coverage}</table></div></details></section><section id="evidence"><h2>Inspect the evidence</h2><details><summary>Open per-check raw evidence</summary>{"".join(details)}</details></section><small>Run {_esc(report["run_id"])} | {_esc(report["created_at"])} | {_esc(report.get("report_sha256", ""))}</small></main></html>'
+
+
+def executive_summary_panel(report: dict) -> str:
+    summary = report.get("summary", {})
+    findings = report.get("finding_register", {}).get("summary", {})
+    harness = report.get("harness_recommendations", {}).get("summary", {})
+    module = report.get("module_evaluation_summary", {}).get("summary", {})
+    verdict = report.get("verdict", "unknown").replace("_", " ")
+    if report.get("verdict") == "checks_passed_within_reviewed_scope":
+        headline = "Reviewed checks passed, but unreviewed scope still stays outside the claim."
+    elif report.get("verdict") == "do_not_ship":
+        headline = "Do not ship: at least one reviewed check failed."
+    else:
+        headline = "Insufficient evidence: fix the listed harness gaps before making a platform trust claim."
+    return (
+        '<section id="executive-summary"><p class="eyebrow">EXECUTIVE SUMMARY</p>'
+        f'<h2>{_esc(headline)}</h2>'
+        f'<p><strong>Verdict:</strong> {_esc(verdict)}. '
+        f'{_esc(summary.get("checks_executed", 0))} checks executed; '
+        f'{_esc(summary.get("failed", 0))} failed; {_esc(summary.get("blocked", 0))} blocked. '
+        f'{_esc(summary.get("complete_components", 0))}/{_esc(summary.get("components", 0))} components have required executed evidence.</p>'
+        f'<div class="grid"><div class="card"><small>Proof-backed findings</small><div class="number">{_esc(findings.get("finding_count", 0))}</div></div>'
+        f'<div class="card"><small>Harness recommendations</small><div class="number">{_esc(harness.get("recommendation_count", 0))}</div></div>'
+        f'<div class="card"><small>Evaluation areas with evidence</small><div class="number">{_esc(module.get("areas_with_executed_evidence", 0))}/{_esc(module.get("area_count", 0))}</div></div>'
+        f'<div class="card"><small>High-priority harness work</small><div class="number">{_esc(harness.get("high_priority_count", 0))}</div></div></div>'
+        '<p class="muted">Read this top section first. Detailed module maps, raw evidence and all findings are preserved below as expandable audit sections.</p>'
+        '</section>'
+    )
+
+
+def finding_register_panel(register: dict | None, *, anchor: str = "traceability", title: str = "TRACEABLE FINDINGS") -> str:
+    if not isinstance(register, dict):
+        return ""
+    summary = register.get("summary", {})
+    def row_html(finding: dict) -> str:
+        proof = finding.get("proof", {})
+        if isinstance(proof, dict):
+            proof_text = "; ".join(
+                f"{key}: {value}" for key, value in proof.items()
+                if key in {"check_id", "component_id", "module", "status", "reason", "evidence_type", "missing_layers", "missing_metric_dimensions", "source_integrity_status"}
+            ) or json.dumps(proof, sort_keys=True)[:400]
+        else:
+            proof_text = str(proof)
+        return (
+            f'<tr><td><strong>{_esc(finding.get("finding_id", ""))}</strong><br><small>{_esc(finding.get("audit_hash", ""))}</small></td>'
+            f'<td class="{_esc(finding.get("severity", "info"))}">{_esc(finding.get("severity", ""))}</td>'
+            f'<td>{_esc(finding.get("category", ""))}<br><small>{_esc(finding.get("title", ""))}</small></td>'
+            f'<td>{_esc(finding.get("source", ""))}<br><small>{_esc(finding.get("evidence_type", ""))} / {_esc(finding.get("confidence", ""))}</small></td>'
+            f'<td>{_esc(proof_text)}</td><td>{_esc(finding.get("owner_action", ""))}</td></tr>'
+        )
+    findings = register.get("findings", [])
+    preview_rows = "".join(row_html(finding) for finding in findings[:12])
+    all_rows = "".join(row_html(finding) for finding in findings[:250])
+    extra_note = (
+        f'<p class="muted">Showing the first 12 findings here. The expandable table keeps up to 250 findings in the HTML; the JSON register keeps the complete set.</p>'
+        if len(findings) > 12 else ""
+    )
+    return (
+        f'<section id="{_esc(anchor)}"><p class="eyebrow">{_esc(title)}</p>'
+        f'<h2>{_esc(summary.get("finding_count", 0))} proof-backed finding(s)</h2>'
+        f'<p>{_esc(register.get("notice", ""))}</p>'
+        f'<div class="grid"><div class="card"><small>Verified</small><div class="number">{_esc(summary.get("by_confidence", {}).get("verified", 0))}</div></div>'
+        f'<div class="card"><small>Missing evidence</small><div class="number">{_esc(summary.get("by_evidence_type", {}).get("missing_evidence", 0))}</div></div>'
+        f'<div class="card"><small>Observed traces</small><div class="number">{_esc(summary.get("by_evidence_type", {}).get("observed_trace", 0))}</div></div>'
+        f'<div class="card"><small>Read-only</small><div class="number">{_esc(summary.get("read_only_finding_count", 0))}</div></div></div>'
+        f'{extra_note}<div class="scroll"><table><tr><th>Finding</th><th>Severity</th><th>Category</th><th>Source / provenance</th><th>Proof</th><th>Action</th></tr>{preview_rows or "<tr><td colspan=6>No findings recorded.</td></tr>"}</table></div>'
+        f'<details><summary>Open all traceable findings shown in this report</summary><div class="scroll"><table><tr><th>Finding</th><th>Severity</th><th>Category</th><th>Source / provenance</th><th>Proof</th><th>Action</th></tr>{all_rows or "<tr><td colspan=6>No findings recorded.</td></tr>"}</table></div></details>'
+        f'<details><summary>Finding register summary</summary><pre>{_esc(json.dumps(summary, indent=2))}</pre></details>'
+        '</section>'
+    )
+
+
+def harness_recommendations_panel(recommendations: dict | None, *, anchor: str = "harness-recommendations") -> str:
+    if not isinstance(recommendations, dict):
+        return ""
+    summary = recommendations.get("summary", {})
+    rows = []
+    for item in recommendations.get("recommendations", [])[:12]:
+        criteria = "".join(f'<li>{_esc(value)}</li>' for value in item.get("acceptance_criteria", []))
+        inputs = ", ".join(item.get("owner_input_needed", []))
+        rows.append(
+            f'<tr><td class="{_esc(item.get("priority", "medium"))}">{_esc(item.get("priority", ""))}</td>'
+            f'<td><strong>{_esc(item.get("title", ""))}</strong><br><small>{_esc(item.get("why", ""))}</small></td>'
+            f'<td>{_esc(item.get("implementation", ""))}</td>'
+            f'<td><ul>{criteria}</ul></td>'
+            f'<td>{_esc(inputs)}<br><small>{_esc(item.get("finding_count", 0))} finding(s): {_esc(", ".join(item.get("based_on_finding_ids", [])[:5]))}</small></td></tr>'
+        )
+    return (
+        f'<section id="{_esc(anchor)}"><p class="eyebrow">HARNESS ENGINEERING RECOMMENDATIONS</p>'
+        f'<h2>{_esc(summary.get("recommendation_count", 0))} workstream(s) to improve evidence strength</h2>'
+        f'<p>{_esc(recommendations.get("notice", ""))}</p>'
+        f'<div class="scroll"><table><tr><th>Priority</th><th>Recommendation</th><th>Implementation</th><th>Acceptance criteria</th><th>Input needed / linked proof</th></tr>{"".join(rows) or "<tr><td colspan=5>No harness recommendations generated.</td></tr>"}</table></div>'
+        f'<details><summary>Recommendation register summary</summary><pre>{_esc(json.dumps(summary, indent=2))}</pre></details>'
+        '</section>'
+    )
 
 
 def module_evaluation_panel(report: dict) -> str:
@@ -149,6 +244,99 @@ def module_evaluation_panel(report: dict) -> str:
     )
 
 
+def evidence_gap_panel(gaps: dict | None) -> str:
+    if not isinstance(gaps, dict):
+        return ""
+    summary = gaps.get("summary", {})
+    command_status = gaps.get("command_status", {})
+    status_message = ""
+    if isinstance(command_status, dict) and command_status.get("exit_reason"):
+        status_message = (
+            f'<p><strong>{_esc(command_status.get("status", ""))}.</strong> '
+            f'{_esc(command_status.get("exit_reason", ""))}</p>'
+        )
+    action_rows = "".join(
+        f'<tr><td class="{_esc(item.get("priority", "medium"))}">{_esc(item.get("priority", ""))}</td>'
+        f'<td>{_esc(item.get("category", ""))}</td><td>{_esc(item.get("message", ""))}</td>'
+        f'<td>{_esc(item.get("action", ""))}</td></tr>'
+        for item in gaps.get("action_items", [])[:100]
+    )
+    module_rows = "".join(
+        f'<tr><td>{_esc(row.get("module", ""))}</td><td>{_esc(row.get("component", ""))}</td>'
+        f'<td>{_esc(", ".join(row.get("missing_layers", [])) or "None")}</td>'
+        f'<td>{_esc(", ".join(row.get("missing_metric_dimensions", [])) or "None")}</td>'
+        f'<td>{_esc(row.get("action", ""))}</td></tr>'
+        for row in gaps.get("module_gaps", [])[:200]
+    )
+    workflow_rows = "".join(
+        f'<tr><td>{_esc(row.get("check_id", ""))}</td><td>{_esc(", ".join(row.get("case_ids", [])))}</td>'
+        f'<td>{_esc(row.get("message", ""))}</td><td>{_esc(row.get("action", ""))}</td></tr>'
+        for row in gaps.get("weak_workflows", [])[:100]
+    )
+    setup = setup_plan_panel(gaps.get("setup_plan"))
+    return (
+        '<section id="evidence-gaps"><p class="eyebrow">EVIDENCE GAP REPORT</p>'
+        f'<h2>{_esc(summary.get("action_item_count", 0))} action item(s) before a stronger platform claim</h2>'
+        f'<div class="grid"><div class="card"><small>Component gaps</small><div class="number">{_esc(summary.get("component_gap_count", 0))}</div></div>'
+        f'<div class="card"><small>Workflow gaps</small><div class="number">{_esc(summary.get("workflow_gap_count", 0))}</div></div>'
+        f'<div class="card"><small>Blocked checks</small><div class="number">{_esc(summary.get("blocked_check_count", 0))}</div></div>'
+        f'<div class="card"><small>Not executed checks</small><div class="number">{_esc(summary.get("not_executed_check_count", 0))}</div></div></div>'
+        f'{status_message}'
+        f'<p>{_esc(gaps.get("notice", ""))}</p>'
+        f'{harness_recommendations_panel(gaps.get("harness_recommendations"), anchor="evidence-gap-harness-recommendations")}'
+        f'{finding_register_panel(gaps.get("finding_register"), anchor="evidence-gap-traceability", title="EVIDENCE-GAP TRACEABILITY")}'
+        f'<details><summary>Next actions</summary><div class="scroll"><table><tr><th>Priority</th><th>Category</th><th>Gap</th><th>Fix</th></tr>{action_rows or "<tr><td colspan=4>No gap actions recorded.</td></tr>"}</table></div></details>'
+        f'<details><summary>Module gaps</summary><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Missing layers</th><th>Missing metrics</th><th>Fix</th></tr>{module_rows or "<tr><td colspan=5>No module gaps recorded.</td></tr>"}</table></div></details>'
+        f'<details><summary>Workflow assertion gaps</summary><div class="scroll"><table><tr><th>Check</th><th>Cases</th><th>Gap</th><th>Fix</th></tr>{workflow_rows or "<tr><td colspan=4>No weak workflow assertions recorded.</td></tr>"}</table></div></details>'
+        f'{setup}</section>'
+    )
+
+
+def setup_plan_panel(setup: dict | None) -> str:
+    if not isinstance(setup, dict):
+        return ""
+    summary = setup.get("summary", {})
+    step_rows = []
+    component_rows = []
+    for step in setup.get("steps", []):
+        commands = "<br>".join(f'<code>{_esc(command)}</code>' for command in step.get("commands", []))
+        actions = "".join(f'<li>{_esc(action)}</li>' for action in step.get("actions", []))
+        step_rows.append(
+            f'<tr><td class="{_esc(step.get("priority", "medium"))}">{_esc(step.get("priority", ""))}</td>'
+            f'<td><strong>{_esc(step.get("title", ""))}</strong><br><small>{_esc(step.get("why", ""))}</small></td>'
+            f'<td><ul>{actions}</ul></td><td>{commands}</td></tr>'
+        )
+        for item in step.get("component_actions", [])[:250]:
+            component_rows.append(
+                f'<tr><td>{_esc(item.get("module", ""))}</td><td>{_esc(item.get("component", ""))}</td>'
+                f'<td>{_esc(", ".join(item.get("missing_layers", [])) or "None")}</td>'
+                f'<td>{_esc(", ".join(item.get("missing_metric_dimensions", [])) or "None")}</td>'
+                f'<td>{_esc("; ".join(item.get("recommended_templates", [])) or "custom_check")}</td>'
+                f'<td>{_esc(item.get("summary", ""))}</td></tr>'
+            )
+    return (
+        '<section id="full-platform-setup"><p class="eyebrow">FULL-PLATFORM SETUP CHECKLIST</p>'
+        f'<h2>{_esc(summary.get("step_count", 0))} setup step(s), {_esc(summary.get("component_action_count", 0))} component action(s)</h2>'
+        f'<p>{_esc(setup.get("notice", ""))}</p>'
+        f'<div class="scroll"><table><tr><th>Priority</th><th>Step</th><th>Actions</th><th>Commands</th></tr>{"".join(step_rows) or "<tr><td colspan=4>No setup steps recorded.</td></tr>"}</table></div>'
+        f'<details><summary>Missing module/dimension repair map</summary><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Missing layers</th><th>Missing metrics</th><th>Suggested pack</th><th>Required input</th></tr>{"".join(component_rows) or "<tr><td colspan=6>No component repair actions recorded.</td></tr>"}</table></div></details>'
+        '</section>'
+    )
+
+
+def render_evidence_gap_report(gaps: dict) -> str:
+    title = "PRE-D evidence gaps"
+    return (
+        f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>{_esc(title)}</title><style>{STYLE}</style><main><p class="eyebrow">PRE-D / EVIDENCE GAP REPORT</p>'
+        f'<h1>{_esc(title)}</h1><p>{_esc(gaps.get("notice", ""))}</p>'
+        '<nav><a href="#evidence-gaps">Summary</a><a href="#evidence-gap-harness-recommendations">Harness recommendations</a><a href="#evidence-gap-traceability">Traceable findings</a><a href="#full-platform-setup">Setup checklist</a></nav>'
+        f'{evidence_gap_panel(gaps)}'
+        f'<details><summary>Raw readiness JSON</summary><pre>{_esc(json.dumps(gaps.get("readiness", {}), indent=2))}</pre></details>'
+        '</main></html>'
+    )
+
+
 def dimension_details(component: dict) -> str:
     rows = component.get("dimension_inventory", [])
     if not rows:
@@ -160,14 +348,17 @@ def dimension_details(component: dict) -> str:
 
 
 def setup_html(plan: dict, token: str, path: Path) -> str:
-    initial = json.dumps({"plan": plan, "token": token, "digest": plan_digest(plan)}).replace("<", "\\u003c").replace("&", "\\u0026")
+    from .system_readiness import full_platform_setup_plan
+    initial = json.dumps({"plan": plan, "token": token, "digest": plan_digest(plan), "plan_path": str(path),
+                          "setup_plan": full_platform_setup_plan(plan, path.parent)}).replace("<", "\\u003c").replace("&", "\\u0026")
     return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D system setup</title><style>{STYLE}</style><main><p class="eyebrow">PRE-D / LOCAL SYSTEM SETUP</p><h1>From discovered surface to reviewed evidence.</h1><p>No target is called here. Review scope, choose assertions and attach existing AI/browser plans. Approve execution separately from the CLI.</p><p><small>{_esc(path)}</small></p><section><h2>1. Confirm the system</h2><div class="grid"><label>Application version<input id="version"></label><label>Target base URL<input id="base"></label><label>Environment<select id="environment"><option>local</option><option>staging</option></select></label></div><label>Isolation / disposable tenant setup<input id="isolation"></label><label><input type="checkbox" id="confirmed">I reviewed the inventory and required layers, including missing and disabled capabilities.</label><div id="components"></div><details><summary>Add a missing component or role matrix</summary><label>Component name<input id="component-name"></label><label>Module<input id="component-module"></label><button id="add-component">Add component</button><label>Roles (comma-separated)<input id="roles"></label><button id="add-roles">Draft API role matrix</button></details></section><section><h2>2. Review executable checks</h2><p>Do not use today\'s target output as its own expected answer. Status-only checks are narrow evidence. Identities reference environment variables, never stored passwords.</p><div id="checks"></div></section><section><h2>3. Add a check or existing evaluation</h2><label>Component<select id="component"></select></label><label>Check ID<input id="checkid"></label><label>Check template<select id="template"><option value="http">HTTP content / integration</option><option value="tenant">Cross-tenant isolation</option><option value="command">Code or security test suite (JUnit)</option><option value="load">Bounded read-only load</option><option value="recovery">Isolated failure and recovery</option></select></label><button id="add-check">Add disabled draft</button><label>Existing local esx-eval.json path<input id="config"></label><button id="bind">Attach AI/browser plan for review</button></section><section><h2>4. Save, then approve</h2><button id="save">Save reviewed plan</button><pre>esx-eval system approve --plan &quot;{_esc(path)}&quot;\nesx-eval system preflight --plan &quot;{_esc(path)}&quot;\nesx-eval system run --plan &quot;{_esc(path)}&quot; --out ./new-system-run --history ./pred-history.sqlite</pre><p role="status" id="status"></p></section></main><script>const initial={initial};</script>' + SETUP_SCRIPT + '</html>'
 
 
 SETUP_SCRIPT = r"""<script>
-let plan=initial.plan,digest=initial.digest,proposal=null;
+let plan=initial.plan,digest=initial.digest,proposal=null,setupPlan=initial.setup_plan||null,planPath=initial.plan_path||'<system-plan.json>';
 const byId=id=>document.getElementById(id);
 const el=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n};
+const cmd=text=>String(text).replaceAll('<system-plan.json>',planPath);
 function field(parent,title,value,change){const label=el('label',title),input=el('input');input.value=value;input.oninput=()=>change(input.value);label.append(input);parent.append(label);return input;}
 function jsonField(parent,title,value,change){const label=el('label',title),input=el('textarea');input.rows=4;input.value=JSON.stringify(value,null,2);input.oninput=()=>{try{change(JSON.parse(input.value));input.setCustomValidity('');byId('status').textContent=''}catch{input.setCustomValidity('Invalid JSON');byId('status').textContent='Correct invalid JSON before saving.'}};label.append(input);parent.append(label);}
 function render(){
@@ -190,6 +381,15 @@ if(c.type==='evaluation'){d.append(el('p','Requested dimensions: '+(c.requested_
 byId('checks').append(d)});
 renderScope();
 renderOnboarding();
+renderSetupChecklist();
+}
+function renderSetupChecklist(){
+let host=byId('setup-checklist');if(!host){host=el('section');host.id='setup-checklist';const main=document.querySelector('main');const after=byId('onboarding');main.insertBefore(host,after?after.nextSibling:main.querySelector('section'));}
+if(!setupPlan){host.replaceChildren(el('h2','Full-platform setup checklist unavailable'));return;}
+const summary=setupPlan.summary||{};host.replaceChildren(el('p','PRE-D / FULL-PLATFORM SETUP'),el('h2',(summary.step_count||0)+' setup steps, '+(summary.component_action_count||0)+' module actions'));
+host.append(el('p',setupPlan.notice||'These steps are authoring guidance only; they do not execute the target or modify application code.'));
+const pre=el('pre',cmd('esx-eval system agent-tasks --plan "<system-plan.json>" --out "./agent-tasks.json"\nesx-eval system draft-packs --plan "<system-plan.json>" --out "./coverage-drafts.json"\nesx-eval system evidence-gaps --plan "<system-plan.json>" --out "./evidence-gaps.json"'));host.append(pre);
+(setupPlan.steps||[]).forEach(step=>{const d=el('details');d.open=step.priority==='high';d.append(el('summary',step.priority.toUpperCase()+': '+step.title),el('p',step.why||''));const ul=el('ul');(step.actions||[]).forEach(a=>ul.append(el('li',a)));d.append(ul);if((step.commands||[]).length)d.append(el('pre',step.commands.map(cmd).join('\n')));if((step.component_actions||[]).length){const table=el('table');table.innerHTML='<tr><th>Module</th><th>Component</th><th>Missing</th><th>Pack</th><th>Input needed</th></tr>';step.component_actions.slice(0,100).forEach(item=>{const row=document.createElement('tr');row.innerHTML='<td></td><td></td><td></td><td></td><td></td>';row.children[0].textContent=item.module;row.children[1].textContent=item.component;row.children[2].textContent=[...(item.missing_layers||[]),...(item.missing_metric_dimensions||[])].join(', ')||'Review';row.children[3].textContent=(item.recommended_templates||[]).join(', ')||'custom_check';row.children[4].textContent=item.summary||'';table.append(row)});d.append(table);}host.append(d);});
 }
 function renderOnboarding(){
 let host=byId('onboarding');if(!host){host=el('section');host.id='onboarding';const main=document.querySelector('main');main.insertBefore(host,main.querySelector('section'));}
@@ -219,7 +419,7 @@ for(const [key,title] of [['check_id','Build check ID'],['assertion_path','JSON 
 scope.objectives.forEach(o=>{const d=el('details');d.append(el('summary',o.title+(o.reviewed?' / reviewed':' / review needed')));field(d,'Expected behavior',o.title,v=>o.title=v);if(o.business_rule_id){d.append(el('p','Business rule: '+o.business_rule_id));field(d,'Intended business behavior',o.expected_business_behavior||'',v=>o.expected_business_behavior=v);field(d,'Evidence needed',o.business_evidence_needed||'',v=>o.business_evidence_needed=v);}field(d,'Role (blank if not role-specific)',o.role||'',v=>o.role=v||null);const label=el('label','Expected behavior independently reviewed'),box=el('input');box.type='checkbox';box.checked=o.reviewed;box.onchange=()=>o.reviewed=box.checked;label.prepend(box);d.append(label);const select=el('select');select.append(el('option',''));plan.checks.filter(c=>c.component_ids.includes(o.component_id)&&c.layer===o.layer).forEach(c=>{const option=el('option',c.id);option.value=c.id;select.append(option)});select.value=o.check_id||'';select.onchange=()=>o.check_id=select.value;const binding=el('label','Bound check');binding.append(select);d.append(binding);field(d,'Case IDs (evaluation/JUnit, comma-separated)',(o.case_ids||[]).join(', '),v=>o.case_ids=v.split(',').map(x=>x.trim()).filter(Boolean));field(d,'JSON assertion paths (HTTP/load/recovery, comma-separated)',(o.assertion_paths||[]).join(', '),v=>o.assertion_paths=v.split(',').map(x=>x.trim()).filter(Boolean));field(d,'Exclusion reason (still a whole-system gap)',o.exclude_reason||'',v=>o.exclude_reason=v);d.append(el('small','Component: '+o.component_id+' / Layer: '+o.layer));host.append(d);});
 const add=el('details');add.append(el('summary','Add another critical behavior'));const name=field(add,'Behavior description','',()=>{}),component=el('select');plan.components.forEach(c=>{const option=el('option',c.name);option.value=c.id;component.append(option)});add.append(component);const layer=field(add,'Layer','functional',()=>{}),button=el('button','Add behavior for review');button.onclick=()=>{if(!name.value.trim())return;scope.objectives.push({id:'objective-'+crypto.randomUUID(),title:name.value.trim(),component_id:component.value,layer:layer.value,role:layer.value==='authorization'?plan.roles[0]:null,reviewed:false,check_id:'',case_ids:[],assertion_paths:[]});renderScope();};add.append(button);host.append(add);
 }
-async function post(action,extra={}){if([...document.querySelectorAll('textarea')].some(x=>!x.checkValidity()))throw Error('Correct invalid JSON before saving.');plan.application_version=byId('version').value;plan.base_url=byId('base').value;plan.environment=byId('environment').value;plan.isolation_note=byId('isolation').value;plan.inventory_confirmed=byId('confirmed').checked;const response=await fetch('/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:initial.token,digest,plan,...extra})});const result=await response.json();if(!response.ok)throw Error(result.error);plan=result.plan;digest=result.digest;proposal=result.proposal||null;render();byId('status').textContent=result.message;}
+async function post(action,extra={}){if([...document.querySelectorAll('textarea')].some(x=>!x.checkValidity()))throw Error('Correct invalid JSON before saving.');plan.application_version=byId('version').value;plan.base_url=byId('base').value;plan.environment=byId('environment').value;plan.isolation_note=byId('isolation').value;plan.inventory_confirmed=byId('confirmed').checked;const response=await fetch('/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:initial.token,digest,plan,...extra})});const result=await response.json();if(!response.ok)throw Error(result.error);plan=result.plan;digest=result.digest;setupPlan=result.setup_plan||setupPlan;proposal=result.proposal||null;render();byId('status').textContent=result.message;}
 byId('save').onclick=()=>post('save').catch(e=>byId('status').textContent=e.message);
 byId('bind').onclick=()=>post('bind',{config:byId('config').value,id:byId('checkid').value,component:byId('component').value}).catch(e=>byId('status').textContent=e.message);
 byId('add-check').onclick=()=>post('add',{kind:byId('template').value,id:byId('checkid').value,component:byId('component').value}).catch(e=>byId('status').textContent=e.message);
@@ -324,7 +524,9 @@ def setup_handler(path: Path, token: str):
                 write_json(path, plan, replace=True)
                 append_audit_event(audit, "setup_" + self.path[1:], {"before_sha256": data["digest"], "after_sha256": plan_digest(plan),
                                                                   "proposal_sha256": proposal.get("proposal_sha256") if proposal else None})
+                from .system_readiness import full_platform_setup_plan
                 output = {"plan": plan, "digest": plan_digest(plan), "proposal": proposal,
+                          "setup_plan": full_platform_setup_plan(plan, path.parent),
                           "message": "Saved for review. Approval invalidated; no target called."}
                 self.reply(200, json.dumps(output).encode(), "application/json")
             except (RunnerError, OSError, ValueError, KeyError, TypeError) as exc:
