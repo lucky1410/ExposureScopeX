@@ -457,14 +457,18 @@ class SystemEvaluationTests(unittest.TestCase):
             self.assertGreater(gaps["summary"]["component_gap_count"], 0)
             self.assertIn("finding_register", gaps)
             self.assertGreater(gaps["finding_register"]["summary"]["finding_count"], 0)
+            self.assertGreater(gaps["finding_register"]["summary"]["coverage_gap_count"], 0)
+            self.assertIn("by_finding_class", gaps["finding_register"]["summary"])
             finding = gaps["finding_register"]["findings"][0]
             self.assertTrue(finding["finding_id"].startswith("finding-"))
+            self.assertIn(finding["finding_class"], {"coverage_gap", "setup_gap"})
             self.assertEqual(finding["confidence"], "verified")
             self.assertIn("proof", finding)
             self.assertIn("audit_hash", finding)
             self.assertEqual(finding["non_invasive_status"], "pre_d_read_only_no_application_code_write")
             self.assertIn("harness_recommendations", gaps)
             self.assertGreater(gaps["harness_recommendations"]["summary"]["recommendation_count"], 0)
+            self.assertGreater(gaps["harness_recommendations"]["summary"]["linked_coverage_gap_count"], 0)
             self.assertIn("decisions", json.dumps(gaps["module_gaps"]))
             self.assertIn("setup_plan", gaps)
             setup = full_platform_setup_plan(plan, root)
@@ -472,8 +476,10 @@ class SystemEvaluationTests(unittest.TestCase):
             self.assertIn("agent-tasks", json.dumps(setup))
             self.assertIn("FULL-PLATFORM SETUP", setup_html(plan, "token", root / "system-plan.json"))
             rendered = render_evidence_gap_report(gaps)
+            self.assertIn("Evidence gap repair plan", rendered)
             self.assertIn("EVIDENCE-GAP TRACEABILITY", rendered)
             self.assertIn("HARNESS ENGINEERING RECOMMENDATIONS", rendered)
+            self.assertIn("Coverage gaps prove missing evidence, not product defects", rendered)
 
     def test_load_is_bounded_and_observed(self):
         with TemporaryDirectory() as directory, reference_app() as (url, state):
@@ -502,12 +508,20 @@ class SystemEvaluationTests(unittest.TestCase):
             self.assertEqual(report["verdict"], "insufficient_evidence")
             self.assertIn("finding_register", report)
             self.assertGreater(report["finding_register"]["summary"]["finding_count"], 0)
+            self.assertGreater(report["finding_register"]["summary"]["blocked_evidence_count"], 0)
+            self.assertIn("by_finding_class", report["finding_register"]["summary"])
             self.assertIn("harness_recommendations", report)
             self.assertGreater(report["harness_recommendations"]["summary"]["recommendation_count"], 0)
             rendered = render_report(report)
             self.assertIn("EXECUTIVE SUMMARY", rendered)
+            self.assertIn("Release evidence review", rendered)
+            self.assertIn("Verdict: Insufficient evidence", rendered)
+            self.assertNotIn("<h1>Insufficient evidence</h1>", rendered)
             self.assertIn("HARNESS ENGINEERING RECOMMENDATIONS", rendered)
             self.assertIn("TRACEABLE FINDINGS", rendered)
+            self.assertIn("Observed defects", rendered)
+            self.assertIn("Blocked evidence", rendered)
+            self.assertIn("Coverage gaps", rendered)
 
     def test_recovery_requires_observed_disruption_and_restoration(self):
         with TemporaryDirectory() as directory, reference_app() as (url, state):

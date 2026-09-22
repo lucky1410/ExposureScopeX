@@ -1,10 +1,40 @@
-# PRE-D Local 0.15.8
+# PRE-D Local 0.15.9
+
+This patch fixes report semantics after the first clean broad-platform run:
+PRE-D now separates executed findings from missing coverage so large reports do
+not make untested surface area look like thousands of product defects.
+
+## What changed in 0.15.9
+
+- Added `finding_class` to traceable findings: `observed_defect`,
+  `blocked_evidence`, `coverage_gap`, `setup_gap`, or `informational`.
+- Coverage gaps now use `coverage_priority` and neutral severity instead of
+  showing as high-severity defects.
+- Finding summaries now include class counts such as observed defects, blocked
+  evidence, setup gaps and coverage gaps.
+- The executive summary now includes “what this report proved” and “what
+  remains uncovered” text before raw evidence sections.
+- Final system reports now open with a polished **Release evidence review**
+  hero and verdict badge. `insufficient_evidence` remains visible, but it is no
+  longer used as the page title or first visual impression.
+- The system/evidence-gap report theme now uses a futuristic blue/crimson visual
+  treatment with glass panels, stronger typography, glow accents, pill
+  navigation and clearer status contrast for executive review.
+- Standalone evidence-gap HTML now presents itself as an **Evidence gap repair
+  plan**, making the output read like next-step guidance instead of a raw error
+  page.
+- The traceable findings table now shows class/priority rather than treating
+  every item as a defect severity.
+- Harness recommendations now include class breakdowns for linked findings and
+  warn that coverage-gap links can overlap across workstreams.
+- Blocked metric-gate and external-suite cases now have clearer report wording
+  when evidence was collected but the configured release gate could not pass.
+
+## What changed in 0.15.8
 
 This patch makes broad-platform system reports easier to read and act on. It
 keeps the 0.15.7 proof-backed finding register, then adds concise harness
 engineering recommendations and a summary-first HTML layout.
-
-## What changed in 0.15.8
 
 - Added `harness_recommendations` to system reports and evidence-gap reports.
   Recommendations are grouped from proof-backed findings into engineering
@@ -209,7 +239,7 @@ Download the wheel, `SHA256SUMS`, README, and guides from this release. Verify
 checksums as described in the README, then install in the evaluator environment:
 
 ```text
-python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.8-py3-none-any.whl
+python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.9-py3-none-any.whl
 python -c "from esx_eval_runner import __version__; print(__version__)"
 esx-eval setup --application
 ```

@@ -2,6 +2,17 @@
 
 Published scope for the 0.15.1 release.
 
+- 0.15.9 splits report findings into observed defects, blocked evidence,
+  coverage gaps and setup gaps. Missing coverage now carries coverage priority
+  instead of defect severity, and executive summaries state what was proved
+  separately from what remains uncovered.
+- 0.15.9 system reports now open as professional release evidence reviews with
+  a verdict badge and key counters. Evidence-gap HTML now reads as a repair
+  plan. `insufficient_evidence` remains explicit but is no longer the page
+  title.
+- 0.15.9 report HTML now uses the blue/crimson command-center theme with glass
+  panels, glow accents, improved typography and higher-contrast status signals.
+
 - 0.15.8 adds harness engineering recommendations and summary-first HTML
   system reports. Reports now open with verdict, coverage, proof-backed
   findings, recommendation counts and high-priority workstreams, while raw

@@ -132,6 +132,11 @@ coverage counts, proof-backed finding count and harness recommendation count.
 Large evidence tables, raw per-check payloads and setup repair maps are
 collapsed by default. The JSON still retains full details for audit review.
 
+Finding counts are classed before they are shown. Executed evidence appears as
+`observed_defect` or `blocked_evidence`. Missing or weak harness work appears as
+`coverage_gap` or `setup_gap`. Coverage gaps carry `coverage_priority`; they do
+not use defect severity and must not be read as application failures.
+
 Every system and evidence-gap report includes **Harness engineering
 recommendations** derived from the traceable findings. These are not additional
 application defects; they are workstreams that explain which harness to build or

@@ -11,6 +11,7 @@ from .runner import sha256
 SCHEMA = "pre-d-finding-register-1.0"
 HARNESS_SCHEMA = "pre-d-harness-recommendations-1.0"
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+FINDING_CLASS_ORDER = {"observed_defect": 0, "blocked_evidence": 1, "setup_gap": 2, "coverage_gap": 3, "informational": 4}
 
 
 def _component_index(plan: dict) -> dict[str, dict]:
@@ -28,13 +29,17 @@ def _finding(
     proof: dict,
     owner_action: str,
     repro_steps: list[str] | None = None,
+    finding_class: str | None = None,
+    coverage_priority: str | None = None,
     status: str = "open",
     non_invasive_status: str = "pre_d_read_only_no_application_code_write",
 ) -> dict:
+    classification = finding_class or _default_finding_class(category, evidence_type)
     row = {
         "category": category,
         "title": title,
         "severity": severity,
+        "finding_class": classification,
         "source": source,
         "evidence_type": evidence_type,
         "confidence": confidence,
@@ -44,27 +49,55 @@ def _finding(
         "owner_action": owner_action,
         "non_invasive_status": non_invasive_status,
     }
+    if coverage_priority:
+        row["coverage_priority"] = coverage_priority
     row["finding_id"] = "finding-" + sha256(row)[:20]
     row["audit_hash"] = sha256(row)
     return row
+
+
+def _default_finding_class(category: str, evidence_type: str) -> str:
+    if category in {"coverage_gap", "workflow_assertion_gap"} or evidence_type in {"missing_evidence", "static_workflow_review"}:
+        return "coverage_gap"
+    if category in {"blocked_execution", "source_integrity"}:
+        return "blocked_evidence"
+    if category == "not_executed":
+        return "setup_gap"
+    if category == "executed_check_result":
+        return "observed_defect"
+    return "informational"
 
 
 def finding_register(findings: list[dict], *, context: dict | None = None, notice: str | None = None) -> dict:
     """Create a deterministic register with summary counts and stable hashes."""
     ordered = sorted(
         findings,
-        key=lambda row: (SEVERITY_ORDER.get(row.get("severity", "info"), 9), row.get("category", ""), row.get("finding_id", "")),
+        key=lambda row: (
+            FINDING_CLASS_ORDER.get(row.get("finding_class", "informational"), 9),
+            SEVERITY_ORDER.get(row.get("severity", "info"), 9),
+            row.get("category", ""),
+            row.get("finding_id", ""),
+        ),
     )
     confidence = Counter(row.get("confidence", "unknown") for row in ordered)
     evidence = Counter(row.get("evidence_type", "unknown") for row in ordered)
     severity = Counter(row.get("severity", "info") for row in ordered)
+    finding_class = Counter(row.get("finding_class", "informational") for row in ordered)
+    coverage_priority = Counter(row.get("coverage_priority", "none") for row in ordered)
     result = {
         "schema_version": SCHEMA,
         "summary": {
             "finding_count": len(ordered),
             "by_severity": dict(sorted(severity.items())),
+            "by_finding_class": dict(sorted(finding_class.items())),
+            "by_coverage_priority": dict(sorted(coverage_priority.items())),
             "by_confidence": dict(sorted(confidence.items())),
             "by_evidence_type": dict(sorted(evidence.items())),
+            "observed_defect_count": finding_class.get("observed_defect", 0),
+            "blocked_evidence_count": finding_class.get("blocked_evidence", 0),
+            "setup_gap_count": finding_class.get("setup_gap", 0),
+            "coverage_gap_count": finding_class.get("coverage_gap", 0),
+            "execution_finding_count": finding_class.get("observed_defect", 0) + finding_class.get("blocked_evidence", 0),
             "read_only_finding_count": sum(row.get("non_invasive_status") == "pre_d_read_only_no_application_code_write" for row in ordered),
         },
         "context": context or {},
@@ -89,6 +122,7 @@ def harness_recommendations(register: dict) -> dict:
     for key, rows in groups.items():
         spec = _HARNESS_RECOMMENDATION_SPECS[key]
         related = sorted({row["finding_id"] for row in rows})
+        classes = Counter(row.get("finding_class", "informational") for row in rows)
         row = {
             "recommendation_id": "harness-" + sha256({"key": key, "findings": related})[:16],
             "type": key,
@@ -100,6 +134,11 @@ def harness_recommendations(register: dict) -> dict:
             "owner_input_needed": spec["owner_input_needed"],
             "based_on_finding_ids": related,
             "finding_count": len(related),
+            "finding_classes": dict(sorted(classes.items())),
+            "observed_defect_count": classes.get("observed_defect", 0),
+            "blocked_evidence_count": classes.get("blocked_evidence", 0),
+            "setup_gap_count": classes.get("setup_gap", 0),
+            "coverage_gap_count": classes.get("coverage_gap", 0),
             "evidence_basis": sorted({row.get("evidence_type", "unknown") for row in rows}),
         }
         row["recommendation_hash"] = sha256(row)
@@ -111,6 +150,15 @@ def harness_recommendations(register: dict) -> dict:
             "recommendation_count": len(recommendations),
             "high_priority_count": sum(row["priority"] in {"critical", "high"} for row in recommendations),
             "linked_finding_count": len({fid for row in recommendations for fid in row["based_on_finding_ids"]}),
+            "linked_observed_defect_count": len({
+                row["finding_id"] for rows in groups.values() for row in rows if row.get("finding_class") == "observed_defect"
+            }),
+            "linked_blocked_evidence_count": len({
+                row["finding_id"] for rows in groups.values() for row in rows if row.get("finding_class") == "blocked_evidence"
+            }),
+            "linked_coverage_gap_count": len({
+                row["finding_id"] for rows in groups.values() for row in rows if row.get("finding_class") == "coverage_gap"
+            }),
         },
         "recommendations": recommendations,
         "notice": (
@@ -247,7 +295,9 @@ def evidence_gap_findings(plan: dict, gaps: dict) -> dict:
         findings.append(_finding(
             category="coverage_gap",
             title=f'{row.get("module", "unknown")}: missing reviewed evidence for {row.get("component", "component")}',
-            severity="high" if missing_layers else "medium",
+            severity="info",
+            finding_class="coverage_gap",
+            coverage_priority="high" if missing_layers else "medium",
             source="pre_d_coverage_readiness",
             evidence_type="missing_evidence",
             confidence="verified",
@@ -268,7 +318,9 @@ def evidence_gap_findings(plan: dict, gaps: dict) -> dict:
         findings.append(_finding(
             category="workflow_assertion_gap",
             title=f'{row.get("check_id", "workflow")}: weak or unbound browser workflow evidence',
-            severity="medium",
+            severity="info",
+            finding_class="coverage_gap",
+            coverage_priority="medium",
             source="pre_d_workflow_static_review",
             evidence_type="static_workflow_review",
             confidence="verified",
@@ -286,6 +338,7 @@ def evidence_gap_findings(plan: dict, gaps: dict) -> dict:
             category="blocked_execution",
             title=f'{row.get("check_id", "check")}: execution blocked',
             severity="high",
+            finding_class="blocked_evidence",
             source="pre_d_system_runner",
             evidence_type="observed_trace",
             confidence="verified",
@@ -297,7 +350,8 @@ def evidence_gap_findings(plan: dict, gaps: dict) -> dict:
         findings.append(_finding(
             category="not_executed",
             title=f'{row.get("check_id", "check")}: enabled check did not execute',
-            severity="high",
+            severity="medium",
+            finding_class="setup_gap",
             source="pre_d_system_runner",
             evidence_type="configured_not_executed",
             confidence="verified",
@@ -321,10 +375,12 @@ def system_report_findings(report: dict) -> dict:
         if check.get("status") == "passed":
             continue
         severity = "high" if check.get("status") in {"failed", "blocked"} else "medium"
+        finding_class = "observed_defect" if check.get("status") == "failed" else "blocked_evidence" if check.get("status") == "blocked" else "setup_gap"
         findings.append(_finding(
             category="executed_check_result",
             title=f'{check.get("id", "check")}: {check.get("status", "unknown")}',
             severity=severity,
+            finding_class=finding_class,
             source="pre_d_system_runner",
             evidence_type="observed_trace",
             confidence="verified",
@@ -347,6 +403,7 @@ def system_report_findings(report: dict) -> dict:
             category="source_integrity",
             title="Application source changed or became unreadable during evaluation",
             severity="high",
+            finding_class="blocked_evidence",
             source="pre_d_source_protection",
             evidence_type="observed_trace",
             confidence="verified",

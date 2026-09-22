@@ -16,17 +16,77 @@ from .system_engine import plan_digest, validate_plan
 
 
 STYLE = """
-:root{--bg:#101a1d;--panel:#192a2d;--ink:#eff5ef;--muted:#b1c6c4;--accent:#ff936e;--line:#385052;--good:#c7ee84}
-*{box-sizing:border-box}body{margin:0;color:var(--ink);background:radial-gradient(at 0 0,#274139,transparent 55%),var(--bg);font:16px Georgia,serif}
-main{max-width:1220px;margin:auto;padding:42px 28px}h1{font-size:clamp(32px,5vw,62px);line-height:1.04;max-width:900px}h2{font-size:28px}h3{font-size:21px}p{line-height:1.6}
-.eyebrow,button,label,th,nav,small{font-family:'Courier New',monospace}.eyebrow{color:var(--accent);letter-spacing:2px}section,.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px;margin:20px 0}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}.card{margin:0}.number{font-size:38px}small,.muted{color:var(--muted)}a{color:var(--accent)}nav{display:flex;gap:22px;flex-wrap:wrap}button{background:var(--accent);border:0;border-radius:6px;padding:12px 18px;cursor:pointer;color:#101a1d;font-weight:bold}button.secondary{background:var(--good)}button:disabled{opacity:.5}
-input,select,textarea{width:100%;background:#0f2022;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:10px;margin:8px 0 16px}input[type=checkbox]{width:auto;margin:10px}label{display:block;font-size:13px}details{border-top:1px solid var(--line);padding:16px 0}summary{cursor:pointer;font-size:20px}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:12px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-size:12px}.scroll{overflow:auto}.failed,.blocked{color:#ffc4a6}.passed,.evaluated,.verified{color:var(--good)}.partial,.configured_not_run,.planned_only,.missing,.declared{color:#ffd59c}.not_applicable{color:var(--muted)}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:'Courier New',monospace}#status{white-space:pre-wrap}small,p,summary{overflow-wrap:anywhere}.grid>*{min-width:0}@media(max-width:600px){main{padding:24px 14px}section{padding:16px}td,th{padding:8px}.grid{grid-template-columns:minmax(0,1fr)}}
+:root{--bg:#050914;--panel:#0b1628;--panel-strong:#101f38;--ink:#f6f8ff;--muted:#9db5d7;--accent:#ff315d;--accent-2:#35d7ff;--line:rgba(80,177,255,.25);--good:#7df7c2;--warn:#ffd166;--bad:#ff4d6d;--shadow:0 32px 90px rgba(0,0,0,.46);--glass:rgba(10,24,45,.76)}
+*{box-sizing:border-box}body{margin:0;color:var(--ink);background:radial-gradient(circle at 12% -8%,rgba(53,215,255,.27),transparent 30%),radial-gradient(circle at 86% 10%,rgba(255,49,93,.22),transparent 34%),linear-gradient(135deg,#040711 0%,#071326 46%,#100712 100%);font:16px "Space Grotesk","Sora","Aptos Display","Bahnschrift",sans-serif}body:before{content:"";position:fixed;inset:0;pointer-events:none;background:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(to bottom,rgba(0,0,0,.9),transparent 82%)}
+main{max-width:1280px;margin:auto;padding:48px 30px 74px}h1{font-size:clamp(44px,7vw,86px);line-height:.9;max-width:940px;margin:10px 0 20px;letter-spacing:-3px;text-wrap:balance}h2{font-size:30px;letter-spacing:-.8px}h3{font-size:21px;letter-spacing:-.25px}p{line-height:1.65}
+.eyebrow,button,label,th,nav,small,.verdict-badge{font-family:"Geist Mono","IBM Plex Mono","Cascadia Code","Courier New",monospace}.eyebrow{color:var(--accent-2);letter-spacing:2.6px;text-transform:uppercase;text-shadow:0 0 22px rgba(53,215,255,.35)}.subtitle{color:var(--muted);font-size:18px;max-width:760px}.hero{position:relative;overflow:hidden;display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.9fr);gap:26px;align-items:stretch;background:linear-gradient(135deg,rgba(53,215,255,.13),rgba(255,49,93,.12)),var(--glass);border:1px solid rgba(124,207,255,.34);border-radius:30px;padding:38px;box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.13);margin:0 0 24px;backdrop-filter:blur(18px)}.hero:after{content:"";position:absolute;right:-120px;top:-120px;width:360px;height:360px;border-radius:50%;background:radial-gradient(circle,rgba(255,49,93,.26),transparent 63%);filter:blur(4px)}.hero-copy{position:relative;z-index:1;min-width:0}.hero .grid{margin-top:28px}.verdict-panel{position:relative;z-index:1;background:linear-gradient(160deg,rgba(5,12,24,.9),rgba(22,10,25,.82));border:1px solid rgba(255,49,93,.32);border-radius:24px;padding:26px;display:flex;flex-direction:column;gap:14px;box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 20px 50px rgba(255,49,93,.09)}.verdict-badge{display:inline-flex;align-self:flex-start;border-radius:999px;padding:8px 12px;font-size:12px;font-weight:800;letter-spacing:1px;text-transform:uppercase;background:rgba(255,49,93,.1);border:1px solid rgba(255,49,93,.45)}.verdict-panel strong{font-size:25px;line-height:1.16}.verdict-panel.insufficient_evidence .verdict-badge,.verdict-panel.blocked .verdict-badge{color:var(--warn);border-color:rgba(255,209,102,.6);background:rgba(255,209,102,.08)}.verdict-panel.do_not_ship .verdict-badge,.verdict-panel.failed .verdict-badge{color:var(--bad);border-color:rgba(255,77,109,.68);background:rgba(255,77,109,.13)}.verdict-panel.checks_passed_within_reviewed_scope .verdict-badge,.verdict-panel.passed .verdict-badge{color:var(--good);border-color:rgba(125,247,194,.58);background:rgba(125,247,194,.09)}
+section,.card{background:var(--glass);border:1px solid var(--line);border-radius:22px;padding:26px;margin:22px 0;box-shadow:0 20px 60px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.08);backdrop-filter:blur(14px)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:15px}.card{margin:0;background:linear-gradient(180deg,rgba(18,37,68,.76),rgba(8,18,34,.72));transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}.card:hover{transform:translateY(-2px);border-color:rgba(53,215,255,.55);box-shadow:0 22px 60px rgba(53,215,255,.08)}.number{font-size:38px;font-weight:900;letter-spacing:-1px;background:linear-gradient(90deg,var(--ink),var(--accent-2));-webkit-background-clip:text;background-clip:text;color:transparent}small,.muted{color:var(--muted)}a{color:var(--accent-2)}nav{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0 24px}nav a{border:1px solid rgba(53,215,255,.28);border-radius:999px;padding:9px 13px;text-decoration:none;background:rgba(53,215,255,.055);color:#dff7ff;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}nav a:hover{border-color:rgba(255,49,93,.65);color:#fff;background:rgba(255,49,93,.12)}button{background:linear-gradient(135deg,var(--accent-2),var(--accent));border:0;border-radius:10px;padding:12px 18px;cursor:pointer;color:#061020;font-weight:900}button.secondary{background:linear-gradient(135deg,var(--good),var(--accent-2))}button:disabled{opacity:.5}
+input,select,textarea{width:100%;background:rgba(4,11,23,.86);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:11px;margin:8px 0 16px}input[type=checkbox]{width:auto;margin:10px}label{display:block;font-size:13px;color:#c9d9ef}details{border-top:1px solid var(--line);padding:17px 0}summary{cursor:pointer;font-size:20px}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:13px;border-bottom:1px solid rgba(80,177,255,.16);vertical-align:top}th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:1px}.scroll{overflow:auto}.failed,.blocked,.observed_defect,.blocked_evidence{color:var(--bad)}.passed,.evaluated,.verified{color:var(--good)}.partial,.configured_not_run,.planned_only,.missing,.declared,.coverage_gap,.setup_gap{color:var(--warn)}.not_applicable,.informational{color:var(--muted)}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:rgba(3,8,18,.56);border:1px solid rgba(80,177,255,.16);border-radius:14px;padding:14px}code{font-family:"Geist Mono","IBM Plex Mono","Cascadia Code","Courier New",monospace}#status{white-space:pre-wrap}small,p,summary{overflow-wrap:anywhere}.grid>*{min-width:0}@media(max-width:760px){main{padding:24px 14px}.hero{grid-template-columns:minmax(0,1fr);padding:22px;border-radius:22px}section{padding:17px}td,th{padding:9px}.grid{grid-template-columns:minmax(0,1fr)}h1{letter-spacing:-2px}}
 """
 
 
 def _esc(value: object) -> str:
     return html.escape(str(value), quote=True)
+
+
+def verdict_copy(report: dict) -> dict[str, str]:
+    verdict = report.get("verdict", "unknown")
+    if verdict == "checks_passed_within_reviewed_scope":
+        return {
+            "tone": "checks_passed_within_reviewed_scope",
+            "label": "Reviewed scope passed",
+            "headline": "Reviewed checks passed within the approved evidence scope.",
+            "body": "Use this as a scoped release signal only; uncovered modules and dimensions still need explicit evidence before making a full-platform claim.",
+        }
+    if verdict == "do_not_ship":
+        return {
+            "tone": "do_not_ship",
+            "label": "Do not ship",
+            "headline": "Reviewed evidence found at least one release-blocking failure.",
+            "body": "Start with the failed checks and observed-defect findings, then rerun against the same candidate after the fix is verified.",
+        }
+    if verdict == "insufficient_evidence":
+        return {
+            "tone": "insufficient_evidence",
+            "label": "Insufficient evidence",
+            "headline": "Not enough executed evidence for a full-platform release claim.",
+            "body": "This is a coverage and evidence-strength verdict: review the blocked checks, missing modules and setup actions before treating the product as release-ready.",
+        }
+    if verdict == "blocked":
+        return {
+            "tone": "blocked",
+            "label": "Blocked",
+            "headline": "Execution was blocked before PRE-D could form a release conclusion.",
+            "body": "Resolve the setup or collection blocker, then rerun so the report can distinguish application defects from missing evidence.",
+        }
+    label = verdict.replace("_", " ").capitalize()
+    return {
+        "tone": "unknown",
+        "label": label,
+        "headline": f"Release evidence review completed with verdict: {label}.",
+        "body": "Inspect the executive summary and traceable findings for the precise evidence basis.",
+    }
+
+
+def report_hero(report: dict, cards: str) -> str:
+    verdict = verdict_copy(report)
+    project = report.get("project_id", "project")
+    version = report.get("application_version", "candidate")
+    return (
+        '<section class="hero">'
+        '<div class="hero-copy">'
+        '<p class="eyebrow">PRE-D / RELEASE EVIDENCE REVIEW</p>'
+        '<h1>Release evidence review</h1>'
+        f'<p class="subtitle">{_esc(project)} / {_esc(version)}. {_esc(report.get("notice", ""))}</p>'
+        f'<div class="grid">{cards}</div>'
+        '</div>'
+        f'<aside class="verdict-panel {_esc(verdict["tone"])}">'
+        f'<span class="verdict-badge">Verdict: {_esc(verdict["label"])}</span>'
+        f'<strong>{_esc(verdict["headline"])}</strong>'
+        f'<p>{_esc(verdict["body"])}</p>'
+        '</aside>'
+        '</section>'
+    )
 
 
 def scope_panel(report: dict) -> str:
@@ -75,7 +135,6 @@ def render_report(report: dict) -> str:
 
 def _render_report(report: dict) -> str:
     s = report["summary"]
-    title = report["verdict"].replace("_", " ").capitalize()
     module_summary = report.get("module_evaluation_summary", {}).get("summary", {})
     card_items = [
         ("Components with required checks executed", f'{s["complete_components"]}/{s["components"]}'),
@@ -91,7 +150,8 @@ def _render_report(report: dict) -> str:
     details = []
     for row in report["checks"]:
         if row["status"] != "passed":
-            findings.append(f'<article><h3 class="{_esc(row["status"])}">{_esc(row["id"])}: {_esc(row["reason"])}</h3><p>{_esc(row.get("action", "Review the detailed evidence."))}</p><small>Components: {_esc(", ".join(row["component_ids"]))}. Root cause: not established.</small></article>')
+            interpretation = check_interpretation(row)
+            findings.append(f'<article><h3 class="{_esc(row["status"])}">{_esc(row["id"])}: {_esc(row["reason"])}</h3><p>{_esc(interpretation)}</p><p>{_esc(row.get("action", "Review the detailed evidence."))}</p><small>Components: {_esc(", ".join(row["component_ids"]))}. Root cause: not established.</small></article>')
         raw = {k: v for k, v in row.items() if k != "metrics"}
         metric_rows = []
         for dimension, metric in row.get("metrics", {}).items():
@@ -106,7 +166,7 @@ def _render_report(report: dict) -> str:
     caution = f'<p class="blocked">Status-only checks: {_esc(", ".join(weak))}. These prove response status, not correct content or business behavior.</p>' if weak else ""
     caution += "".join(f'<p class="blocked">{_esc(row["id"])}: {_esc(advice["summary"])} {_esc(advice["action"])}</p>' for row in report["checks"] for advice in row.get("workflow_advisories", []))
     definition = "A component is counted as executed only when each required reviewed layer has an enabled check that ran to a pass/fail terminal state. Drafted, disabled, unbound, blocked, or status-only evidence remains a gap."
-    return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D system review</title><style>{STYLE}</style><main><p class="eyebrow">PRE-D / SYSTEM RELEASE REVIEW</p><h1>{_esc(title)}</h1><p>{_esc(report["project_id"])} / {_esc(report["application_version"])}</p><nav><a href="#executive-summary">Executive summary</a><a href="#harness-recommendations">Harness recommendations</a><a href="#findings">What to fix</a><a href="#traceability">Traceable findings</a><a href="#module-evaluation">Module evaluation map</a><a href="#scope">Behavior coverage</a><a href="#coverage">Modules</a><a href="#evidence">Evidence</a></nav><p>{_esc(report["notice"])}</p><div class="grid">{cards}</div>{executive_summary_panel(report)}<p class="muted">{_esc(definition)}</p>{caution}{harness_recommendations_panel(report.get("harness_recommendations"))}<section id="findings"><h2>What needs attention</h2>{"".join(findings) or "<p>No executed check failed. Review uncovered components before drawing a release conclusion.</p>"}</section>{finding_register_panel(report.get("finding_register"))}{module_evaluation_panel(report)}{scope_panel(report)}<section id="coverage"><h2>Coverage, not assumptions</h2><details><summary>Open module coverage table</summary><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Execution</th><th>Boundary / next step</th></tr>{coverage}</table></div></details></section><section id="evidence"><h2>Inspect the evidence</h2><details><summary>Open per-check raw evidence</summary>{"".join(details)}</details></section><small>Run {_esc(report["run_id"])} | {_esc(report["created_at"])} | {_esc(report.get("report_sha256", ""))}</small></main></html>'
+    return f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PRE-D release evidence review</title><style>{STYLE}</style><main>{report_hero(report, cards)}<nav><a href="#executive-summary">Executive summary</a><a href="#harness-recommendations">Harness recommendations</a><a href="#findings">What to fix</a><a href="#traceability">Traceable findings</a><a href="#module-evaluation">Module evaluation map</a><a href="#scope">Behavior coverage</a><a href="#coverage">Modules</a><a href="#evidence">Evidence</a></nav>{executive_summary_panel(report)}<p class="muted">{_esc(definition)}</p>{caution}{harness_recommendations_panel(report.get("harness_recommendations"))}<section id="findings"><h2>What needs attention</h2>{"".join(findings) or "<p>No executed check failed. Review uncovered components before drawing a release conclusion.</p>"}</section>{finding_register_panel(report.get("finding_register"))}{module_evaluation_panel(report)}{scope_panel(report)}<section id="coverage"><h2>Coverage, not assumptions</h2><details><summary>Open module coverage table</summary><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Execution</th><th>Boundary / next step</th></tr>{coverage}</table></div></details></section><section id="evidence"><h2>Inspect the evidence</h2><details><summary>Open per-check raw evidence</summary>{"".join(details)}</details></section><small>Run {_esc(report["run_id"])} | {_esc(report["created_at"])} | {_esc(report.get("report_sha256", ""))}</small></main></html>'
 
 
 def executive_summary_panel(report: dict) -> str:
@@ -114,13 +174,28 @@ def executive_summary_panel(report: dict) -> str:
     findings = report.get("finding_register", {}).get("summary", {})
     harness = report.get("harness_recommendations", {}).get("summary", {})
     module = report.get("module_evaluation_summary", {}).get("summary", {})
+    source = report.get("source_integrity", {})
     verdict = report.get("verdict", "unknown").replace("_", " ")
+    observed = findings.get("observed_defect_count", 0)
+    blocked = findings.get("blocked_evidence_count", 0)
+    coverage = findings.get("coverage_gap_count", 0)
+    setup = findings.get("setup_gap_count", 0)
     if report.get("verdict") == "checks_passed_within_reviewed_scope":
         headline = "Reviewed checks passed, but unreviewed scope still stays outside the claim."
     elif report.get("verdict") == "do_not_ship":
         headline = "Do not ship: at least one reviewed check failed."
     else:
         headline = "Insufficient evidence: fix the listed harness gaps before making a platform trust claim."
+    proved = (
+        f'What this report proved: {_esc(summary.get("checks_executed", 0))} reviewed check(s) executed; '
+        f'{_esc(summary.get("failed", 0))} failed; {_esc(summary.get("blocked", 0))} were blocked; '
+        f'{_esc(module.get("areas_with_executed_evidence", 0))}/{_esc(module.get("area_count", 0))} evaluation areas have executed evidence; '
+        f'source status is {_esc(source.get("status", "not_configured").replace("_", " "))}.'
+    )
+    uncovered = (
+        f'What remains uncovered: {_esc(coverage)} coverage gap(s) and {_esc(setup)} setup/config gap(s). '
+        'These are missing evidence work items, not application defects.'
+    )
     return (
         '<section id="executive-summary"><p class="eyebrow">EXECUTIVE SUMMARY</p>'
         f'<h2>{_esc(headline)}</h2>'
@@ -128,13 +203,31 @@ def executive_summary_panel(report: dict) -> str:
         f'{_esc(summary.get("checks_executed", 0))} checks executed; '
         f'{_esc(summary.get("failed", 0))} failed; {_esc(summary.get("blocked", 0))} blocked. '
         f'{_esc(summary.get("complete_components", 0))}/{_esc(summary.get("components", 0))} components have required executed evidence.</p>'
-        f'<div class="grid"><div class="card"><small>Proof-backed findings</small><div class="number">{_esc(findings.get("finding_count", 0))}</div></div>'
+        f'<p>{proved}</p><p>{uncovered}</p>'
+        f'<div class="grid"><div class="card"><small>Observed defects</small><div class="number">{_esc(observed)}</div></div>'
+        f'<div class="card"><small>Blocked evidence</small><div class="number">{_esc(blocked)}</div></div>'
+        f'<div class="card"><small>Coverage gaps</small><div class="number">{_esc(coverage)}</div></div>'
         f'<div class="card"><small>Harness recommendations</small><div class="number">{_esc(harness.get("recommendation_count", 0))}</div></div>'
-        f'<div class="card"><small>Evaluation areas with evidence</small><div class="number">{_esc(module.get("areas_with_executed_evidence", 0))}/{_esc(module.get("area_count", 0))}</div></div>'
-        f'<div class="card"><small>High-priority harness work</small><div class="number">{_esc(harness.get("high_priority_count", 0))}</div></div></div>'
+        f'<div class="card"><small>Evaluation areas with evidence</small><div class="number">{_esc(module.get("areas_with_executed_evidence", 0))}/{_esc(module.get("area_count", 0))}</div></div></div>'
         '<p class="muted">Read this top section first. Detailed module maps, raw evidence and all findings are preserved below as expandable audit sections.</p>'
         '</section>'
     )
+
+
+def check_interpretation(row: dict) -> str:
+    reason = row.get("reason")
+    status = row.get("status")
+    case_count = row.get("case_count") or row.get("planned_case_count")
+    blocked_cases = row.get("blocked_case_count", 0)
+    if status == "failed" and reason == "metric_gates":
+        return "Measured evidence ran and failed one or more configured gates."
+    if status == "blocked" and reason == "metric_gates" and case_count and blocked_cases == 0:
+        return "Cases produced evidence, but a required metric gate could not be satisfied or was not decision-grade for this pack. This is gate-blocked evidence, not a transport timeout."
+    if status == "blocked" and reason == "external_test_results":
+        return "The external suite returned results, but PRE-D could not treat the suite as clean release evidence under the configured gate or skipped/blocked-result policy."
+    if status == "blocked":
+        return "PRE-D could not collect the intended release evidence for this check; this is neither pass nor product defect without the blocked evidence."
+    return "Review the detailed evidence and configured gate for this check."
 
 
 def finding_register_panel(register: dict | None, *, anchor: str = "traceability", title: str = "TRACEABLE FINDINGS") -> str:
@@ -152,7 +245,7 @@ def finding_register_panel(register: dict | None, *, anchor: str = "traceability
             proof_text = str(proof)
         return (
             f'<tr><td><strong>{_esc(finding.get("finding_id", ""))}</strong><br><small>{_esc(finding.get("audit_hash", ""))}</small></td>'
-            f'<td class="{_esc(finding.get("severity", "info"))}">{_esc(finding.get("severity", ""))}</td>'
+            f'<td class="{_esc(finding.get("finding_class", "informational"))}">{_esc(finding.get("finding_class", "informational").replace("_", " "))}<br><small>{_esc(finding.get("coverage_priority", finding.get("severity", "")))} priority</small></td>'
             f'<td>{_esc(finding.get("category", ""))}<br><small>{_esc(finding.get("title", ""))}</small></td>'
             f'<td>{_esc(finding.get("source", ""))}<br><small>{_esc(finding.get("evidence_type", ""))} / {_esc(finding.get("confidence", ""))}</small></td>'
             f'<td>{_esc(proof_text)}</td><td>{_esc(finding.get("owner_action", ""))}</td></tr>'
@@ -166,14 +259,15 @@ def finding_register_panel(register: dict | None, *, anchor: str = "traceability
     )
     return (
         f'<section id="{_esc(anchor)}"><p class="eyebrow">{_esc(title)}</p>'
-        f'<h2>{_esc(summary.get("finding_count", 0))} proof-backed finding(s)</h2>'
+        f'<h2>{_esc(summary.get("execution_finding_count", 0))} executed finding(s), {_esc(summary.get("coverage_gap_count", 0))} coverage gap(s)</h2>'
         f'<p>{_esc(register.get("notice", ""))}</p>'
-        f'<div class="grid"><div class="card"><small>Verified</small><div class="number">{_esc(summary.get("by_confidence", {}).get("verified", 0))}</div></div>'
-        f'<div class="card"><small>Missing evidence</small><div class="number">{_esc(summary.get("by_evidence_type", {}).get("missing_evidence", 0))}</div></div>'
-        f'<div class="card"><small>Observed traces</small><div class="number">{_esc(summary.get("by_evidence_type", {}).get("observed_trace", 0))}</div></div>'
-        f'<div class="card"><small>Read-only</small><div class="number">{_esc(summary.get("read_only_finding_count", 0))}</div></div></div>'
-        f'{extra_note}<div class="scroll"><table><tr><th>Finding</th><th>Severity</th><th>Category</th><th>Source / provenance</th><th>Proof</th><th>Action</th></tr>{preview_rows or "<tr><td colspan=6>No findings recorded.</td></tr>"}</table></div>'
-        f'<details><summary>Open all traceable findings shown in this report</summary><div class="scroll"><table><tr><th>Finding</th><th>Severity</th><th>Category</th><th>Source / provenance</th><th>Proof</th><th>Action</th></tr>{all_rows or "<tr><td colspan=6>No findings recorded.</td></tr>"}</table></div></details>'
+        '<p class="muted">Observed defects and blocked evidence come from executed checks. Coverage gaps prove missing evidence, not product defects.</p>'
+        f'<div class="grid"><div class="card"><small>Observed defects</small><div class="number">{_esc(summary.get("observed_defect_count", 0))}</div></div>'
+        f'<div class="card"><small>Blocked evidence</small><div class="number">{_esc(summary.get("blocked_evidence_count", 0))}</div></div>'
+        f'<div class="card"><small>Coverage gaps</small><div class="number">{_esc(summary.get("coverage_gap_count", 0))}</div></div>'
+        f'<div class="card"><small>Setup/config gaps</small><div class="number">{_esc(summary.get("setup_gap_count", 0))}</div></div></div>'
+        f'{extra_note}<div class="scroll"><table><tr><th>Finding</th><th>Class / priority</th><th>Category</th><th>Source / provenance</th><th>Proof</th><th>Action</th></tr>{preview_rows or "<tr><td colspan=6>No findings recorded.</td></tr>"}</table></div>'
+        f'<details><summary>Open all traceable findings shown in this report</summary><div class="scroll"><table><tr><th>Finding</th><th>Class / priority</th><th>Category</th><th>Source / provenance</th><th>Proof</th><th>Action</th></tr>{all_rows or "<tr><td colspan=6>No findings recorded.</td></tr>"}</table></div></details>'
         f'<details><summary>Finding register summary</summary><pre>{_esc(json.dumps(summary, indent=2))}</pre></details>'
         '</section>'
     )
@@ -187,17 +281,23 @@ def harness_recommendations_panel(recommendations: dict | None, *, anchor: str =
     for item in recommendations.get("recommendations", [])[:12]:
         criteria = "".join(f'<li>{_esc(value)}</li>' for value in item.get("acceptance_criteria", []))
         inputs = ", ".join(item.get("owner_input_needed", []))
+        class_counts = (
+            f'{_esc(item.get("observed_defect_count", 0))} observed, '
+            f'{_esc(item.get("blocked_evidence_count", 0))} blocked, '
+            f'{_esc(item.get("coverage_gap_count", 0))} coverage gap(s)'
+        )
         rows.append(
             f'<tr><td class="{_esc(item.get("priority", "medium"))}">{_esc(item.get("priority", ""))}</td>'
             f'<td><strong>{_esc(item.get("title", ""))}</strong><br><small>{_esc(item.get("why", ""))}</small></td>'
             f'<td>{_esc(item.get("implementation", ""))}</td>'
             f'<td><ul>{criteria}</ul></td>'
-            f'<td>{_esc(inputs)}<br><small>{_esc(item.get("finding_count", 0))} finding(s): {_esc(", ".join(item.get("based_on_finding_ids", [])[:5]))}</small></td></tr>'
+            f'<td>{_esc(inputs)}<br><small>{class_counts}. Linked IDs may overlap across workstreams: {_esc(", ".join(item.get("based_on_finding_ids", [])[:5]))}</small></td></tr>'
         )
     return (
         f'<section id="{_esc(anchor)}"><p class="eyebrow">HARNESS ENGINEERING RECOMMENDATIONS</p>'
         f'<h2>{_esc(summary.get("recommendation_count", 0))} workstream(s) to improve evidence strength</h2>'
         f'<p>{_esc(recommendations.get("notice", ""))}</p>'
+        f'<p class="muted">Linked findings can overlap across workstreams. Coverage-gap links are harness work, not separate product defects.</p>'
         f'<div class="scroll"><table><tr><th>Priority</th><th>Recommendation</th><th>Implementation</th><th>Acceptance criteria</th><th>Input needed / linked proof</th></tr>{"".join(rows) or "<tr><td colspan=5>No harness recommendations generated.</td></tr>"}</table></div>'
         f'<details><summary>Recommendation register summary</summary><pre>{_esc(json.dumps(summary, indent=2))}</pre></details>'
         '</section>'
@@ -325,7 +425,7 @@ def setup_plan_panel(setup: dict | None) -> str:
 
 
 def render_evidence_gap_report(gaps: dict) -> str:
-    title = "PRE-D evidence gaps"
+    title = "Evidence gap repair plan"
     return (
         f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
         f'<title>{_esc(title)}</title><style>{STYLE}</style><main><p class="eyebrow">PRE-D / EVIDENCE GAP REPORT</p>'
