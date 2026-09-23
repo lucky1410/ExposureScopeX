@@ -760,29 +760,67 @@ def _percentile(values: list[int], percentile: float) -> int:
     return ordered[max(0, min(len(ordered) - 1, math.ceil(len(ordered) * percentile) - 1))] if ordered else 0
 
 
+def _cost_observation_totals(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    total_cost = sum(float(item.get("cost_usd", 0.0)) for item in observations)
+    input_tokens = sum(int(item.get("input_tokens", 0)) for item in observations)
+    output_tokens = sum(int(item.get("output_tokens", 0)) for item in observations)
+    total_tokens = input_tokens + output_tokens
+    request_count = sum(int(item.get("request_count", 0)) for item in observations)
+    retry_count = sum(int(item.get("retry_count", 0)) for item in observations)
+    tool_call_count = sum(int(item.get("tool_call_count", 0)) for item in observations)
+    latencies = [int(item.get("latency_ms", 0)) for item in observations]
+    case_count = len(observations)
+    return {
+        "case_count": case_count,
+        "total_cost_usd": _rounded(total_cost),
+        "cost_per_case_usd": _rounded(_ratio(total_cost, case_count)),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "tokens_per_case": _rounded(_ratio(total_tokens, case_count)),
+        "request_count": request_count,
+        "requests_per_case": _rounded(_ratio(request_count, case_count)),
+        "retry_count": retry_count,
+        "tool_call_count": tool_call_count,
+        "cache_hit_rate": _rounded(_ratio(sum(bool(item.get("cache_hit")) for item in observations), case_count)),
+        "fallback_rate": _rounded(_ratio(sum(bool(item.get("fallback_used")) for item in observations), case_count)),
+        "timeout_rate": _rounded(_ratio(sum(bool(item.get("timed_out")) for item in observations), case_count)),
+        "median_latency_ms": _percentile(latencies, 0.50),
+        "p95_latency_ms": _percentile(latencies, 0.95),
+        "max_latency_ms": max(latencies) if latencies else 0,
+    }
+
+
 def cost_efficiency_metrics(cost: dict[str, Any] | None, expected: list[str], predicted: list[str]) -> dict[str, Any]:
     observations = cost.get("observations", []) if cost else []
     if not observations:
         return _unavailable("No redacted provider or metered usage observations were supplied; cost and efficiency cannot be measured.")
     if len(observations) != len(expected):
-        return _unavailable("Cost observations must cover every labelled evaluation case before efficiency can be measured.", observation_count=len(observations), labelled_case_count=len(expected))
-    total_cost = sum(item["cost_usd"] for item in observations)
-    total_tokens = sum(item["input_tokens"] + item["output_tokens"] for item in observations)
+        totals = _cost_observation_totals(observations)
+        return {
+            "measurement_status": "partial",
+            "cost_source": cost.get("cost_source", "unknown") if cost else "unknown",
+            **totals,
+            "observation_count": len(observations),
+            "labelled_case_count": len(expected),
+            "telemetry_coverage_rate": _rounded(_ratio(len(observations), len(expected))),
+            "missing_case_count": max(0, len(expected) - len(observations)),
+            "cost_per_correct_case_usd": None,
+            "reason": (
+                f"Cost observations covered {len(observations)} of {len(expected)} labelled cases; "
+                "available usage telemetry is reported as partial evidence."
+            ),
+            "limitations": [
+                "Telemetry coverage is incomplete; this metric cannot satisfy release gates until every labelled case has usage telemetry.",
+                "PRE-D cannot align partial cost observations to every expected label unless the full case denominator is present.",
+            ],
+        }
+    totals = _cost_observation_totals(observations)
+    total_cost = totals["total_cost_usd"]
     correct_count = sum(actual == guess for actual, guess in zip(expected, predicted, strict=True))
-    latencies = [item["latency_ms"] for item in observations]
     return {
-        "measurement_status": "measured", "cost_source": cost["cost_source"], "case_count": len(observations),
-        "total_cost_usd": _rounded(total_cost), "cost_per_case_usd": _rounded(_ratio(total_cost, len(observations))),
+        "measurement_status": "measured", "cost_source": cost["cost_source"], **totals,
         "cost_per_correct_case_usd": _rounded(_ratio(total_cost, correct_count)) if correct_count else None,
-        "input_tokens": sum(item["input_tokens"] for item in observations), "output_tokens": sum(item["output_tokens"] for item in observations),
-        "total_tokens": total_tokens, "tokens_per_case": _rounded(_ratio(total_tokens, len(observations))),
-        "request_count": sum(item["request_count"] for item in observations),
-        "requests_per_case": _rounded(_ratio(sum(item["request_count"] for item in observations), len(observations))),
-        "retry_count": sum(item["retry_count"] for item in observations), "tool_call_count": sum(item["tool_call_count"] for item in observations),
-        "cache_hit_rate": _rounded(_ratio(sum(item["cache_hit"] for item in observations), len(observations))),
-        "fallback_rate": _rounded(_ratio(sum(item["fallback_used"] for item in observations), len(observations))),
-        "timeout_rate": _rounded(_ratio(sum(item["timed_out"] for item in observations), len(observations))),
-        "median_latency_ms": _percentile(latencies, 0.50), "p95_latency_ms": _percentile(latencies, 0.95), "max_latency_ms": max(latencies),
     }
 
 
@@ -807,6 +845,17 @@ def _annotate_metric_trust(
     annotated: dict[str, dict[str, Any]] = {}
     for name, raw_metric in metrics.items():
         metric = dict(raw_metric)
+        if metric.get("measurement_status") == "partial":
+            partial_verified = name == "cost_efficiency" and (
+                name in telemetry_dimensions or metric.get("cost_source") == "metered"
+            )
+            metric.update({
+                "trust_status": "verified" if partial_verified else "declared",
+                "evidence_source": "Partial local usage telemetry was present but did not cover the full labelled denominator.",
+                "representativeness": "partial",
+            })
+            annotated[name] = metric
+            continue
         if metric.get("measurement_status") != "measured":
             metric.update({
                 "trust_status": "missing",

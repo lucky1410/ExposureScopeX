@@ -220,6 +220,46 @@ class LocalRunTests(unittest.TestCase):
         self.assertIn("Confusion matrix", page)
         self.assertIn("Confidence diagnostics by numeric range", page)
 
+    def test_partial_cost_telemetry_is_reported_not_erased(self) -> None:
+        package = {
+            "execution": {"adapter_type": "command_json_v2"},
+            "evaluation": {
+                "required_dimensions": ["classification", "confidence", "cost_efficiency"],
+                "expected_labels": ["safe", "unsafe"],
+                "predicted_labels": ["safe", "safe"],
+                "confidences": [0.9, 0.8],
+                "confidence_provenance": {"kind": "native_probability", "meaning": "predicted_label_correctness"},
+                "cost_efficiency": {
+                    "cost_source": "metered",
+                    "observations": [{
+                        "case_id": "case-a",
+                        "input_tokens": 120,
+                        "output_tokens": 40,
+                        "request_count": 1,
+                        "retry_count": 0,
+                        "tool_call_count": 0,
+                        "cache_hit": False,
+                        "fallback_used": False,
+                        "cost_usd": 0.012,
+                        "latency_ms": 180,
+                        "timed_out": False,
+                    }],
+                },
+            },
+        }
+
+        metrics = calculate_local_metrics(package)
+        cost = metrics["cost_efficiency"]
+        self.assertEqual(cost["measurement_status"], "partial")
+        self.assertEqual(cost["trust_status"], "verified")
+        self.assertEqual(cost["representativeness"], "partial")
+        self.assertEqual(cost["observation_count"], 1)
+        self.assertEqual(cost["labelled_case_count"], 2)
+        self.assertEqual(cost["telemetry_coverage_rate"], 0.5)
+        self.assertEqual(cost["total_cost_usd"], 0.012)
+        self.assertEqual(cost["p95_latency_ms"], 180)
+        self.assertIn("partial evidence", cost["reason"])
+
     def test_opaque_gold_supports_controls_but_not_semantic_groundedness(self) -> None:
         fixture = read_json(METRIC_FIXTURES / "groundedness-good.json")
         gold = validate_ground_truth(fixture["ground_truth"])

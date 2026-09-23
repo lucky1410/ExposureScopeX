@@ -524,7 +524,11 @@ class SystemEvaluationTests(unittest.TestCase):
             self.assertIn("AI SCORECARD", rendered)
             self.assertIn("AI metrics and scoring evidence", rendered)
             self.assertIn("How calculated:", rendered)
-            self.assertIn("What it considered:", rendered)
+            self.assertIn("What this measured:", rendered)
+            self.assertIn("Evidence included:", rendered)
+            self.assertIn("Evidence excluded:", rendered)
+            self.assertIn("Denominator:", rendered)
+            self.assertIn("Partial scores", rendered)
             self.assertIn("Classification", rendered)
             self.assertIn("Groundedness", rendered)
             self.assertIn("Hallucination", rendered)
@@ -546,6 +550,8 @@ class SystemEvaluationTests(unittest.TestCase):
             self.assertIn("Observed defects", rendered)
             self.assertIn("Blocked evidence", rendered)
             self.assertIn("Coverage gaps", rendered)
+            self.assertEqual(rendered.count("FIX PLAN / HARNESS ENGINEERING RECOMMENDATIONS"), 1)
+            self.assertEqual(rendered.count("FINDINGS AND PROOF"), 1)
 
     def test_recovery_requires_observed_disruption_and_restoration(self):
         with TemporaryDirectory() as directory, reference_app() as (url, state):

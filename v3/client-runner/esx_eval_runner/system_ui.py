@@ -21,7 +21,7 @@ STYLE = """
 main{max-width:1280px;margin:auto;padding:48px 30px 74px}h1{font-size:clamp(44px,7vw,86px);line-height:.9;max-width:940px;margin:10px 0 20px;letter-spacing:-3px;text-wrap:balance}h2{font-size:30px;letter-spacing:-.8px}h3{font-size:21px;letter-spacing:-.25px}p{line-height:1.65}
 .eyebrow,button,label,th,nav,small,.verdict-badge{font-family:"Geist Mono","IBM Plex Mono","Cascadia Code","Courier New",monospace}.eyebrow{color:var(--accent-2);letter-spacing:2.6px;text-transform:uppercase;text-shadow:0 0 22px rgba(53,215,255,.35)}.subtitle{color:var(--muted);font-size:18px;max-width:760px}.hero{position:relative;overflow:hidden;display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.9fr);gap:26px;align-items:stretch;background:linear-gradient(135deg,rgba(53,215,255,.13),rgba(255,49,93,.12)),var(--glass);border:1px solid rgba(124,207,255,.34);border-radius:30px;padding:38px;box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.13);margin:0 0 24px;backdrop-filter:blur(18px)}.hero:after{content:"";position:absolute;right:-120px;top:-120px;width:360px;height:360px;border-radius:50%;background:radial-gradient(circle,rgba(255,49,93,.26),transparent 63%);filter:blur(4px)}.hero-copy{position:relative;z-index:1;min-width:0}.hero .grid{margin-top:28px}.verdict-panel{position:relative;z-index:1;background:linear-gradient(160deg,rgba(5,12,24,.9),rgba(22,10,25,.82));border:1px solid rgba(255,49,93,.32);border-radius:24px;padding:26px;display:flex;flex-direction:column;gap:14px;box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 20px 50px rgba(255,49,93,.09)}.verdict-badge{display:inline-flex;align-self:flex-start;border-radius:999px;padding:8px 12px;font-size:12px;font-weight:800;letter-spacing:1px;text-transform:uppercase;background:rgba(255,49,93,.1);border:1px solid rgba(255,49,93,.45)}.verdict-panel strong{font-size:25px;line-height:1.16}.verdict-panel.insufficient_evidence .verdict-badge,.verdict-panel.blocked .verdict-badge{color:var(--warn);border-color:rgba(255,209,102,.6);background:rgba(255,209,102,.08)}.verdict-panel.do_not_ship .verdict-badge,.verdict-panel.failed .verdict-badge{color:var(--bad);border-color:rgba(255,77,109,.68);background:rgba(255,77,109,.13)}.verdict-panel.checks_passed_within_reviewed_scope .verdict-badge,.verdict-panel.passed .verdict-badge{color:var(--good);border-color:rgba(125,247,194,.58);background:rgba(125,247,194,.09)}
 section,.card{background:var(--glass);border:1px solid var(--line);border-radius:22px;padding:26px;margin:22px 0;box-shadow:0 20px 60px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.08);backdrop-filter:blur(14px)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:15px}.card{margin:0;background:linear-gradient(180deg,rgba(18,37,68,.76),rgba(8,18,34,.72));transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}.card:hover{transform:translateY(-2px);border-color:rgba(53,215,255,.55);box-shadow:0 22px 60px rgba(53,215,255,.08)}.number{font-size:38px;font-weight:900;letter-spacing:-1px;background:linear-gradient(90deg,var(--ink),var(--accent-2));-webkit-background-clip:text;background-clip:text;color:transparent}small,.muted{color:var(--muted)}a{color:var(--accent-2)}nav{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0 24px}nav a{border:1px solid rgba(53,215,255,.28);border-radius:999px;padding:9px 13px;text-decoration:none;background:rgba(53,215,255,.055);color:#dff7ff;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}nav a:hover{border-color:rgba(255,49,93,.65);color:#fff;background:rgba(255,49,93,.12)}button{background:linear-gradient(135deg,var(--accent-2),var(--accent));border:0;border-radius:10px;padding:12px 18px;cursor:pointer;color:#061020;font-weight:900}button.secondary{background:linear-gradient(135deg,var(--good),var(--accent-2))}button:disabled{opacity:.5}
-.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:15px}.metric-card{margin:0;min-height:190px;display:flex;flex-direction:column;gap:10px}.status-pill{align-self:flex-start;border:1px solid var(--line);border-radius:999px;padding:6px 10px;font:700 11px "Geist Mono","IBM Plex Mono","Cascadia Code","Courier New",monospace;letter-spacing:.8px;text-transform:uppercase}.status-pill.verified,.status-pill.measured{color:var(--good);border-color:rgba(125,247,194,.55);background:rgba(125,247,194,.08)}.status-pill.declared{color:var(--warn);border-color:rgba(255,209,102,.55);background:rgba(255,209,102,.08)}.status-pill.blocked,.status-pill.missing,.status-pill.not_measured{color:var(--bad);border-color:rgba(255,77,109,.55);background:rgba(255,77,109,.1)}.metric-score{font-size:25px;font-weight:900;letter-spacing:-.5px}.metric-card p{margin:.1rem 0}.metric-card details{margin-top:auto}.compact-list{margin:.25rem 0 0;padding-left:18px}.compact-list li{margin:.25rem 0}
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:15px}.metric-card{margin:0;min-height:190px;display:flex;flex-direction:column;gap:10px}.status-pill{align-self:flex-start;border:1px solid var(--line);border-radius:999px;padding:6px 10px;font:700 11px "Geist Mono","IBM Plex Mono","Cascadia Code","Courier New",monospace;letter-spacing:.8px;text-transform:uppercase}.status-pill.verified,.status-pill.measured{color:var(--good);border-color:rgba(125,247,194,.55);background:rgba(125,247,194,.08)}.status-pill.declared,.status-pill.partial{color:var(--warn);border-color:rgba(255,209,102,.55);background:rgba(255,209,102,.08)}.status-pill.blocked,.status-pill.missing,.status-pill.not_measured{color:var(--bad);border-color:rgba(255,77,109,.55);background:rgba(255,77,109,.1)}.metric-score{font-size:25px;font-weight:900;letter-spacing:-.5px}.metric-card p{margin:.1rem 0}.metric-card details{margin-top:auto}.compact-list{margin:.25rem 0 0;padding-left:18px}.compact-list li{margin:.25rem 0}
 .explain{border-left:3px solid rgba(53,215,255,.55);padding-left:12px;color:#dbe8fb}.explain strong{color:#fff}.section-intro{font-size:18px;color:var(--muted);max-width:940px}.plain-title{font-size:clamp(30px,4vw,48px);letter-spacing:-1.3px}
 input,select,textarea{width:100%;background:rgba(4,11,23,.86);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:11px;margin:8px 0 16px}input[type=checkbox]{width:auto;margin:10px}label{display:block;font-size:13px;color:#c9d9ef}details{border-top:1px solid var(--line);padding:17px 0}summary{cursor:pointer;font-size:20px}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:13px;border-bottom:1px solid rgba(80,177,255,.16);vertical-align:top}th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:1px}.scroll{overflow:auto}.failed,.blocked,.observed_defect,.blocked_evidence{color:var(--bad)}.passed,.evaluated,.verified{color:var(--good)}.partial,.configured_not_run,.planned_only,.missing,.declared,.coverage_gap,.setup_gap{color:var(--warn)}.not_applicable,.informational{color:var(--muted)}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:rgba(3,8,18,.56);border:1px solid rgba(80,177,255,.16);border-radius:14px;padding:14px}code{font-family:"Geist Mono","IBM Plex Mono","Cascadia Code","Courier New",monospace}#status{white-space:pre-wrap}small,p,summary{overflow-wrap:anywhere}.grid>*{min-width:0}@media(max-width:760px){main{padding:24px 14px}.hero{grid-template-columns:minmax(0,1fr);padding:22px;border-radius:22px}section{padding:17px}td,th{padding:9px}.grid{grid-template-columns:minmax(0,1fr)}h1{letter-spacing:-2px}}
 """
@@ -93,6 +93,40 @@ METRIC_CALCULATION_TEXT = {
     "reproducibility": "Compares repeated executions of the same pack across runs.",
     "cost_efficiency": "Aggregates captured tokens, runtime, cost, timeouts and latency observations.",
     "workflow_coverage": "Checks whether browser/API workflows reached the expected pages, responses or visible signals.",
+}
+
+METRIC_MEASURES = {
+    "classification": "AI decision-label correctness over labelled decision cases.",
+    "confidence": "Confidence calibration for returned AI decision labels.",
+    "decision_evidence": "Whether decisions used the expected evidence references and abstention behavior.",
+    "groundedness": "Whether response claims are supported by supplied local evidence.",
+    "hallucination": "Whether responses contain unsupported claims or miss required abstentions.",
+    "rag": "Whether retrieved evidence was relevant and covered the expected source material.",
+    "security": "Whether configured security, authorization and unsafe-action cases behaved as expected.",
+    "tool_use": "Whether observed tool calls matched allowed tools, authorization and expected outcomes.",
+    "trajectory": "Whether the observed execution path matched expected steps and milestones.",
+    "robustness": "Whether repeated or perturbed cases stayed stable enough for the configured gate.",
+    "judge_agreement": "Whether repeated or multiple judge decisions agreed on the same cases.",
+    "reproducibility": "Whether repeated runs of the same cases produced stable outcomes.",
+    "cost_efficiency": "Cost, token, latency and timeout telemetry for evaluated cases.",
+    "workflow_coverage": "Browser/API workflow reachability and visible or response signal coverage.",
+}
+
+METRIC_CATEGORIES = {
+    "classification": "AI quality",
+    "confidence": "AI quality",
+    "decision_evidence": "AI quality",
+    "groundedness": "AI quality",
+    "hallucination": "AI quality",
+    "rag": "RAG / knowledge",
+    "security": "Security",
+    "tool_use": "Tool use",
+    "trajectory": "Trajectory",
+    "robustness": "Reliability",
+    "judge_agreement": "Evaluation quality",
+    "reproducibility": "Reliability",
+    "cost_efficiency": "Cost / latency",
+    "workflow_coverage": "Workflow coverage",
 }
 
 
@@ -180,13 +214,17 @@ def _metric_requested_dimensions(report: dict) -> set[str]:
 
 
 def _metric_status_counts(report: dict) -> dict[str, int]:
-    counts = {"verified": 0, "declared": 0, "missing": 0}
+    counts = {"verified": 0, "declared": 0, "partial": 0, "missing": 0}
     for dimension in _metric_dimensions(report):
-        label, _ = _metric_state(_metric_entries(report, dimension), dimension in _metric_requested_dimensions(report))
+        entries = _metric_entries(report, dimension)
+        included = _included_metric_entries(entries)
+        label, _ = _metric_state(included, entries, dimension in _metric_requested_dimensions(report))
         if label == "Verified":
             counts["verified"] += 1
         elif label == "Declared":
             counts["declared"] += 1
+        elif label == "Partial":
+            counts["partial"] += 1
         else:
             counts["missing"] += 1
     return counts
@@ -209,6 +247,20 @@ def _metric_entries(report: dict, dimension: str) -> list[dict]:
         if isinstance(metric, dict):
             entries.append({"check": row, "metric": metric})
     return entries
+
+
+def _included_metric_entries(entries: list[dict]) -> list[dict]:
+    return [
+        entry for entry in entries
+        if entry["metric"].get("measurement_status") in {"measured", "partial"}
+    ]
+
+
+def _excluded_metric_entries(entries: list[dict]) -> list[dict]:
+    return [
+        entry for entry in entries
+        if entry["metric"].get("measurement_status") not in {"measured", "partial"}
+    ]
 
 
 def _is_number(value: object) -> bool:
@@ -237,7 +289,7 @@ def _metric_score(dimension: str, entries: list[dict]) -> str:
         "robustness": ["stability_rate", "pass_rate", "variance"],
         "judge_agreement": ["agreement_rate", "cohen_kappa", "judge_agreement_rate"],
         "reproducibility": ["repeatability_rate", "outcome_stability_rate"],
-        "cost_efficiency": ["p95_latency_ms", "usd_per_case", "total_usd", "timeout_rate"],
+        "cost_efficiency": ["p95_latency_ms", "cost_per_case_usd", "total_cost_usd", "telemetry_coverage_rate", "timeout_rate"],
         "workflow_coverage": ["workflow_execution_rate", "workflow_signal_match_rate", "page_reach_rate"],
     }
     metrics = [entry["metric"] for entry in entries]
@@ -258,8 +310,9 @@ def _metric_score(dimension: str, entries: list[dict]) -> str:
         "workflow_execution_rate": "workflow execution",
         "workflow_signal_match_rate": "signal match",
         "p95_latency_ms": "p95 latency ms",
-        "usd_per_case": "USD/case",
-        "total_usd": "total USD",
+        "cost_per_case_usd": "USD/case",
+        "total_cost_usd": "total USD",
+        "telemetry_coverage_rate": "telemetry coverage",
     }
     parts = []
     for metric in metrics:
@@ -280,29 +333,33 @@ def _metric_score(dimension: str, entries: list[dict]) -> str:
     return "No score"
 
 
-def _metric_state(entries: list[dict], requested: bool) -> tuple[str, str]:
-    if any(e["metric"].get("measurement_status") == "measured" and e["metric"].get("trust_status") == "verified" for e in entries):
+def _metric_state(included: list[dict], all_entries: list[dict], requested: bool) -> tuple[str, str]:
+    if any(e["metric"].get("measurement_status") == "partial" for e in included):
+        return "Partial", "partial"
+    if any(e["metric"].get("measurement_status") == "measured" and e["metric"].get("trust_status") == "verified" for e in included):
         return "Verified", "verified"
-    if any(e["metric"].get("measurement_status") == "measured" and e["metric"].get("trust_status") == "declared" for e in entries):
+    if any(e["metric"].get("measurement_status") == "measured" and e["metric"].get("trust_status") == "declared" for e in included):
         return "Declared", "declared"
-    if any(e["metric"].get("measurement_status") == "measured" for e in entries):
+    if any(e["metric"].get("measurement_status") == "measured" for e in included):
         return "Measured", "measured"
-    if entries and any(e["check"].get("status") == "blocked" for e in entries):
+    if all_entries and any(e["check"].get("status") == "blocked" for e in all_entries):
         return "Blocked", "blocked"
-    if entries:
+    if all_entries:
         return "Not measured", "not_measured"
     if requested:
         return "Missing", "missing"
     return "Missing", "missing"
 
 
-def _metric_reason(dimension: str, entries: list[dict], label: str, requested: bool) -> str:
+def _metric_reason(dimension: str, included: list[dict], all_entries: list[dict], label: str, requested: bool) -> str:
     if label == "Verified":
-        return f"Calculated from local evidence in {len(entries)} check(s)."
+        return f"Calculated from included local evidence in {len(included)} check(s)."
     if label == "Declared":
         return "Accepted from target-declared local evidence; not independently verified."
     if label == "Measured":
         return "Measured, but provenance is not marked verified."
+    if label == "Partial":
+        return "Some compatible evidence was present, but the denominator was incomplete."
     if label == "Blocked":
         return "Configured evidence exists, but execution or gate status blocked a release-grade result."
     if requested:
@@ -312,22 +369,68 @@ def _metric_reason(dimension: str, entries: list[dict], label: str, requested: b
     return "No measured evidence for this dimension in this system report."
 
 
-def _metric_considered_text(entries: list[dict]) -> str:
+def _entry_case_count(entry: dict) -> int | None:
+    count = entry["check"].get("case_count")
+    return int(count) if _is_number(count) else None
+
+
+def _metric_evidence_text(entries: list[dict]) -> str:
     if not entries:
-        return "No executed check in this system report carried this metric."
+        return "None."
     case_total = 0
     has_case_count = False
     statuses = {}
+    checks = []
     for entry in entries:
         check = entry["check"]
+        checks.append(str(check.get("id", "unknown")))
         statuses[check.get("status", "unknown")] = statuses.get(check.get("status", "unknown"), 0) + 1
-        count = check.get("case_count")
-        if _is_number(count):
+        count = _entry_case_count(entry)
+        if count is not None:
             has_case_count = True
-            case_total += int(count)
+            case_total += count
     status_text = ", ".join(f"{count} {status}" for status, count in sorted(statuses.items()))
     case_text = f"{case_total} case(s)" if has_case_count else "case count not reported"
-    return f"{len(entries)} check(s); {case_text}; statuses: {status_text}."
+    check_text = ", ".join(checks[:3])
+    if len(checks) > 3:
+        check_text += f", +{len(checks) - 3} more"
+    return f"{len(entries)} check(s): {check_text}; {case_text}; statuses: {status_text}."
+
+
+def _metric_denominator_text(dimension: str, included: list[dict], all_entries: list[dict]) -> str:
+    if included:
+        observed = sum(count for entry in included for count in [_entry_case_count(entry)] if count is not None)
+        if observed:
+            denominator = "included case(s)"
+            if dimension in {"classification", "confidence", "decision_evidence"}:
+                denominator = "labelled AI decision case(s)"
+            elif dimension == "workflow_coverage":
+                denominator = "workflow case(s)"
+            elif dimension == "security":
+                denominator = "security case/check(s)"
+            elif dimension == "cost_efficiency":
+                denominator = "case(s) with usage telemetry"
+            return f"{observed} {denominator}."
+    if all_entries:
+        observed = sum(count for entry in all_entries for count in [_entry_case_count(entry)] if count is not None)
+        if observed:
+            return f"0 compatible measured cases included; {observed} nearby case(s) were excluded or not measurable."
+    return "No compatible denominator reached this metric."
+
+
+def _metric_excluded_text(entries: list[dict]) -> str:
+    if not entries:
+        return "None."
+    parts = []
+    for entry in entries[:4]:
+        check = entry["check"]
+        metric = entry["metric"]
+        status = str(metric.get("measurement_status", "not_measured")).replace("_", " ")
+        reason = str(metric.get("reason", "Not compatible evidence for this metric."))
+        parts.append(f'{check.get("id", "unknown")}: {status} ({reason})')
+    if len(entries) > 4:
+        parts.append(f"{len(entries) - 4} more excluded check(s).")
+    return " ".join(parts)
 
 
 def ai_quality_metrics_panel(report: dict) -> str:
@@ -337,14 +440,20 @@ def ai_quality_metrics_panel(report: dict) -> str:
     detail_rows = []
     for dimension in _metric_dimensions(report):
         entries = _metric_entries(report, dimension)
-        label, css_class = _metric_state(entries, dimension in requested)
-        score = _metric_score(dimension, entries)
-        reason = _metric_reason(dimension, entries, label, dimension in requested)
+        included = _included_metric_entries(entries)
+        excluded = _excluded_metric_entries(entries)
+        label, css_class = _metric_state(included, entries, dimension in requested)
+        score = _metric_score(dimension, included)
+        reason = _metric_reason(dimension, included, entries, label, dimension in requested)
         calculation = METRIC_CALCULATION_TEXT.get(dimension, "Calculated from the supplied local metric evidence for this dimension.")
-        considered = _metric_considered_text(entries)
-        checks = [entry["check"].get("id", "unknown") for entry in entries]
+        included_text = _metric_evidence_text(included)
+        excluded_text = _metric_excluded_text(excluded)
+        denominator = _metric_denominator_text(dimension, included, entries)
+        category = METRIC_CATEGORIES.get(dimension, "Evaluation evidence")
+        measure = METRIC_MEASURES.get(dimension, "Local metric evidence for this dimension.")
+        checks = [entry["check"].get("id", "unknown") for entry in included]
         artifact = ""
-        for entry in entries:
+        for entry in included or entries:
             value = entry["check"].get("artifact")
             if isinstance(value, str) and Path(value).name == value and value.endswith(".json"):
                 artifact = f'<a href="{_esc(value[:-5] + ".html")}">Open detailed local report</a>'
@@ -352,21 +461,25 @@ def ai_quality_metrics_panel(report: dict) -> str:
         check_list = "".join(f"<li>{_esc(check)}</li>" for check in checks[:5])
         extra = f"<li>{_esc(len(checks) - 5)} more check(s)</li>" if len(checks) > 5 else ""
         if not check_list:
-            check_list = "<li>No executed check carried this metric.</li>"
+            check_list = "<li>No compatible measured check contributed to this metric.</li>"
         cards.append(
             f'<article class="card metric-card"><span class="status-pill {css_class}">{_esc(label)}</span>'
             f'<h3>{_esc(METRIC_LABELS.get(dimension, dimension.replace("_", " ").title()))}</h3>'
+            f'<p><strong>Category:</strong> {_esc(category)}</p>'
             f'<div class="metric-score">{_esc(score)}</div><p>{_esc(reason)}</p>'
+            f'<p class="explain"><strong>What this measured:</strong> {_esc(measure)}</p>'
             f'<p class="explain"><strong>How calculated:</strong> {_esc(calculation)}</p>'
-            f'<p class="explain"><strong>What it considered:</strong> {_esc(considered)}</p>'
+            f'<p class="explain"><strong>Evidence included:</strong> {_esc(included_text)}</p>'
+            f'<p class="explain"><strong>Evidence excluded:</strong> {_esc(excluded_text)}</p>'
+            f'<p class="explain"><strong>Denominator:</strong> {_esc(denominator)}</p>'
             f'<p><strong>Action:</strong> {_esc(METRIC_ACTIONS.get(dimension, "Attach measured evidence and rerun."))}</p>'
             f'{artifact}'
             f'<details><summary>Checks and evidence</summary><ul class="compact-list">{check_list}{extra}</ul></details></article>'
         )
         detail_rows.append(
             f'<tr><td>{_esc(METRIC_LABELS.get(dimension, dimension.replace("_", " ").title()))}</td>'
-            f'<td class="{css_class}">{_esc(label)}</td><td>{_esc(score)}</td>'
-            f'<td>{_esc(reason)}</td><td>{_esc(METRIC_ACTIONS.get(dimension, "Attach measured evidence and rerun."))}</td></tr>'
+            f'<td>{_esc(category)}</td><td class="{css_class}">{_esc(label)}</td><td>{_esc(score)}</td>'
+            f'<td>{_esc(denominator)}</td><td>{_esc(reason)}</td><td>{_esc(METRIC_ACTIONS.get(dimension, "Attach measured evidence and rerun."))}</td></tr>'
         )
     return (
         '<section id="ai-quality"><p class="eyebrow">AI SCORECARD</p>'
@@ -374,9 +487,10 @@ def ai_quality_metrics_panel(report: dict) -> str:
         '<p class="section-intro">This section answers four practical questions for every AI metric: did PRE-D score it, is the score independently verified or target-declared, how was it calculated, and what evidence did it use?</p>'
         f'<div class="grid"><div class="card"><small>Verified scores</small><div class="number">{_esc(counts["verified"])}</div><p class="muted">Calculated from local labels, observed traces or independently checked evidence.</p></div>'
         f'<div class="card"><small>Declared scores</small><div class="number">{_esc(counts["declared"])}</div><p class="muted">Accepted from target-provided payloads and clearly marked as not independently verified.</p></div>'
+        f'<div class="card"><small>Partial scores</small><div class="number">{_esc(counts["partial"])}</div><p class="muted">Some evidence exists, but the denominator is incomplete.</p></div>'
         f'<div class="card"><small>Missing scores</small><div class="number">{_esc(counts["missing"])}</div><p class="muted">Not enough evidence reached the report, so PRE-D does not invent a score.</p></div></div>'
         f'<div class="metric-grid">{"".join(cards)}</div>'
-        f'<details><summary>Open metric evidence table</summary><div class="scroll"><table><tr><th>Metric</th><th>Status</th><th>Score</th><th>Meaning</th><th>Fix</th></tr>{"".join(detail_rows)}</table></div></details>'
+        f'<details><summary>Open metric evidence table</summary><div class="scroll"><table><tr><th>Metric</th><th>Category</th><th>Status</th><th>Score</th><th>Denominator</th><th>Meaning</th><th>Fix</th></tr>{"".join(detail_rows)}</table></div></details>'
         '</section>'
     )
 
@@ -422,7 +536,7 @@ def render_report(report: dict) -> str:
         changes = "".join(f'<li>{_esc(c["kind"])}: {_esc(c.get("id", c.get("check_id", "")))} {_esc(c.get("change", str(c.get("before")) + " to " + str(c.get("after"))))}</li>' for c in delta["changes"])
         comparison = f'<section id="changes"><p class="eyebrow">BASELINE COMPARISON</p><h2>{s["regressions"]} regressions in comparable checks</h2><p>{s["changed_fields"]} scope/result changes; {s["changed_source_files"]} source files changed; {s["incomparable_checks"]} checks need a new comparable baseline.</p><p>{_esc(delta["notice"])}</p><details><summary>Check outcomes</summary><div class="scroll"><table><tr><th>Check</th><th>Baseline</th><th>Current</th><th>Interpretation</th><th>Verified signal changes</th></tr>{rows}</table></div></details><details><summary>Scope and evidence changes</summary><ul>{changes}</ul></details><small>Baseline run {_esc(delta["baseline_run_id"])} / Current run {_esc(delta["current_run_id"])}<br>Comparison {_esc(delta["changes_sha256"])}</small></section>'
     page = _render_report(report)
-    return page.replace('<a href="#findings">', '<a href="#changes">What changed</a><a href="#source-integrity">Source integrity</a><a href="#evidence-gaps">Evidence gaps</a><a href="#findings">').replace('<section id="findings">', comparison + source + evidence_gap_panel(report.get("evidence_gap_report")) + '<section id="findings">')
+    return page.replace('<a href="#findings">', '<a href="#changes">What changed</a><a href="#source-integrity">Source integrity</a><a href="#evidence-gaps">Evidence gaps</a><a href="#findings">').replace('<section id="findings">', comparison + source + evidence_gap_panel(report.get("evidence_gap_report"), include_nested=False) + '<section id="findings">')
 
 
 def _render_report(report: dict) -> str:
@@ -501,9 +615,9 @@ def executive_summary_panel(report: dict) -> str:
         f'<p>{proved}</p><p>{uncovered}</p>'
         f'<div class="grid"><div class="card"><small>Observed defects</small><div class="number">{_esc(observed)}</div></div>'
         f'<div class="card"><small>Blocked evidence</small><div class="number">{_esc(blocked)}</div></div>'
-        f'<div class="card"><small>Coverage gaps</small><div class="number">{_esc(coverage)}</div></div>'
         f'<div class="card"><small>Harness recommendations</small><div class="number">{_esc(harness.get("recommendation_count", 0))}</div></div>'
         f'<div class="card"><small>Evaluation areas with evidence</small><div class="number">{_esc(module.get("areas_with_executed_evidence", 0))}/{_esc(module.get("area_count", 0))}</div></div></div>'
+        f'<p class="muted">Coverage backlog: {_esc(coverage)} generated review item(s). This is intentionally not treated as a product-defect score.</p>'
         '<p class="muted">Read this summary first. Detailed module maps, raw evidence and all findings are preserved below as expandable audit sections.</p>'
         '</section>'
     )
@@ -596,12 +710,15 @@ def harness_recommendations_panel(recommendations: dict | None, *, anchor: str =
             f'{_esc(item.get("blocked_evidence_count", 0))} blocked, '
             f'{_esc(item.get("coverage_gap_count", 0))} coverage gap(s)'
         )
+        scope_note = ""
+        if int(item.get("coverage_gap_count", 0) or 0) and not int(item.get("observed_defect_count", 0) or 0):
+            scope_note = "Scope: uncovered modules/components, not checks already measured elsewhere."
         rows.append(
             f'<tr><td class="{_esc(item.get("priority", "medium"))}">{_esc(item.get("priority", ""))}</td>'
             f'<td><strong>{_esc(item.get("title", ""))}</strong><br><small>{_esc(item.get("why", ""))}</small></td>'
             f'<td>{_esc(item.get("implementation", ""))}</td>'
             f'<td><ul>{criteria}</ul></td>'
-            f'<td>{_esc(inputs)}<br><small>{class_counts}. Linked IDs may overlap across workstreams: {_esc(", ".join(item.get("based_on_finding_ids", [])[:5]))}</small></td></tr>'
+            f'<td>{_esc(inputs)}<br><small>{class_counts}. {_esc(scope_note)} Linked IDs may overlap across workstreams: {_esc(", ".join(item.get("based_on_finding_ids", [])[:5]))}</small></td></tr>'
         )
     return (
         f'<section id="{_esc(anchor)}"><p class="eyebrow">FIX PLAN / HARNESS ENGINEERING RECOMMENDATIONS</p>'
@@ -614,12 +731,28 @@ def harness_recommendations_panel(recommendations: dict | None, *, anchor: str =
     )
 
 
+def _authorization_summary(report: dict) -> dict[str, int]:
+    checks = [
+        row for row in report.get("checks", [])
+        if row.get("layer") == "authorization" or "authorization" in row.get("id", "") or row.get("id", "").startswith("authz-")
+    ]
+    executed = sum(1 for row in checks if row.get("status") in {"passed", "failed", "blocked"})
+    failed = sum(1 for row in checks if row.get("status") == "failed")
+    backlog = 0
+    for component in report.get("coverage", []):
+        gaps = component.get("gaps", [])
+        if any("authorization" in str(gap).lower() for gap in gaps):
+            backlog += 1
+    return {"executed": executed, "failed": failed, "backlog": backlog}
+
+
 def module_evaluation_panel(report: dict) -> str:
     matrix = report.get("module_evaluation_summary")
     if not isinstance(matrix, dict):
         return ""
     summary = matrix.get("summary", {})
     report_summary = report.get("summary", {})
+    authz = _authorization_summary(report)
     rows = []
     for area in matrix.get("areas", []):
         metrics = ", ".join(area.get("verified_metrics") or area.get("declared_metrics") or area.get("missing_requested_metrics") or [])
@@ -650,6 +783,7 @@ def module_evaluation_panel(report: dict) -> str:
         f'<div class="card"><small>Failed areas</small><div class="number">{_esc(summary.get("areas_with_failures", 0))}</div></div>'
         f'<div class="card"><small>Blocked areas</small><div class="number">{_esc(summary.get("areas_blocked", 0))}</div></div>'
         f'<div class="card"><small>Verified metric groups</small><div class="number">{_esc(summary.get("verified_metric_groups", 0))}</div></div>'
+        f'<div class="card"><small>Authorization checks executed</small><div class="number">{_esc(authz["executed"])}</div><small>{_esc(authz["failed"])} failed. {_esc(authz["backlog"])} component(s) still mention authorization gaps.</small></div>'
         f'<div class="card"><small>Strictly complete components</small><div class="number">{_esc(report_summary.get("complete_components", 0))}/{_esc(report_summary.get("components", 0))}</div><small>This is the strict all-required-evidence count, not the execution count.</small></div></div>'
         f'<details><summary>Open evaluation area table</summary><div class="scroll"><table><tr><th>Evaluation area</th><th>Status</th><th>Evidence</th><th>Execution</th><th>Metrics</th><th>Meaning / next action</th></tr>{"".join(rows)}</table></div></details>'
         f'<details><summary>Per-module result map</summary><div class="scroll"><table><tr><th>Module</th><th>Status</th><th>Categories</th><th>Checks</th><th>Verified metrics</th><th>Next action</th></tr>{"".join(module_rows)}</table></div></details>'
@@ -657,7 +791,7 @@ def module_evaluation_panel(report: dict) -> str:
     )
 
 
-def evidence_gap_panel(gaps: dict | None) -> str:
+def evidence_gap_panel(gaps: dict | None, *, include_nested: bool = True) -> str:
     if not isinstance(gaps, dict):
         return ""
     summary = gaps.get("summary", {})
@@ -686,6 +820,14 @@ def evidence_gap_panel(gaps: dict | None) -> str:
         f'<td>{_esc(row.get("message", ""))}</td><td>{_esc(row.get("action", ""))}</td></tr>'
         for row in gaps.get("weak_workflows", [])[:100]
     )
+    nested_sections = ""
+    if include_nested:
+        nested_sections = (
+            harness_recommendations_panel(gaps.get("harness_recommendations"), anchor="evidence-gap-harness-recommendations")
+            + finding_register_panel(gaps.get("finding_register"), anchor="evidence-gap-traceability", title="EVIDENCE-GAP TRACEABILITY")
+        )
+    else:
+        nested_sections = '<p class="muted">Full fix plan and traceable findings are shown once in the main report sections below, so this evidence-gap section only lists the repair backlog.</p>'
     setup = setup_plan_panel(gaps.get("setup_plan"))
     return (
         '<section id="evidence-gaps"><p class="eyebrow">EVIDENCE GAP REPORT</p>'
@@ -696,8 +838,7 @@ def evidence_gap_panel(gaps: dict | None) -> str:
         f'<div class="card"><small>Not executed checks</small><div class="number">{_esc(summary.get("not_executed_check_count", 0))}</div></div></div>'
         f'{status_message}'
         f'<p>{_esc(gaps.get("notice", ""))}</p>'
-        f'{harness_recommendations_panel(gaps.get("harness_recommendations"), anchor="evidence-gap-harness-recommendations")}'
-        f'{finding_register_panel(gaps.get("finding_register"), anchor="evidence-gap-traceability", title="EVIDENCE-GAP TRACEABILITY")}'
+        f'{nested_sections}'
         f'<details><summary>Next actions</summary><div class="scroll"><table><tr><th>Priority</th><th>Category</th><th>Gap</th><th>Fix</th></tr>{action_rows or "<tr><td colspan=4>No gap actions recorded.</td></tr>"}</table></div></details>'
         f'<details><summary>Module gaps</summary><div class="scroll"><table><tr><th>Module</th><th>Component</th><th>Missing layers</th><th>Missing metrics</th><th>Fix</th></tr>{module_rows or "<tr><td colspan=5>No module gaps recorded.</td></tr>"}</table></div></details>'
         f'<details><summary>Workflow assertion gaps</summary><div class="scroll"><table><tr><th>Check</th><th>Cases</th><th>Gap</th><th>Fix</th></tr>{workflow_rows or "<tr><td colspan=4>No weak workflow assertions recorded.</td></tr>"}</table></div></details>'
