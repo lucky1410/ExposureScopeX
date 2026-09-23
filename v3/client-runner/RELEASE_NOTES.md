@@ -1,10 +1,35 @@
-# PRE-D Local 0.15.10
+# PRE-D Local 0.15.11
+
+This patch hardens the system report semantics so developers and stakeholders
+can quickly tell what each score means, what evidence contributed to it, and
+what evidence was excluded.
+
+## What changed in 0.15.11
+
+- Metric cards now explicitly show **what the metric measured**, **how it was
+  calculated**, **what evidence was included**, **what evidence was excluded**,
+  the **denominator**, metric **category**, and the next action.
+- Browser workflow evidence is no longer visually blended into AI
+  classification scoring. Incompatible evidence is shown as excluded, so
+  workflow coverage and AI quality stay separated.
+- Cost/latency telemetry can now appear as a **Partial** score when usage data
+  exists but does not cover every labelled case. PRE-D reports the available
+  cost, token and latency observations while clearly marking the denominator as
+  incomplete.
+- Fixed system-report cost display keys so generated reports surface
+  `cost_per_case_usd`, `total_cost_usd`, `telemetry_coverage_rate` and latency
+  fields correctly.
+- Full system reports no longer repeat the same fix-plan and traceable-finding
+  sections inside the evidence-gap section. Those sections appear once, and the
+  evidence-gap section focuses on repair backlog.
+- Added regression coverage for partial cost telemetry and report
+  explainability wording.
+
+## What changed in 0.15.10
 
 This patch makes the system report easier to understand for developers,
 technical evaluators and non-developer stakeholders without weakening the
 underlying proof model.
-
-## What changed in 0.15.10
 
 - Added a plain-language **Report Guide** that explains how product owners,
   developers and auditors should read the report.
@@ -265,7 +290,7 @@ Download the wheel, `SHA256SUMS`, README, and guides from this release. Verify
 checksums as described in the README, then install in the evaluator environment:
 
 ```text
-python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.10-py3-none-any.whl
+python -m pip install --upgrade ./exposurescopex_eval_runner-0.15.11-py3-none-any.whl
 python -c "from esx_eval_runner import __version__; print(__version__)"
 esx-eval setup --application
 ```

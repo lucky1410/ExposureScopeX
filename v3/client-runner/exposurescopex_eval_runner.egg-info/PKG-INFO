@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: exposurescopex-eval-runner
-Version: 0.15.10
+Version: 0.15.11
 Summary: Run local-first ExposureScopeX AI pre-release evaluations in a customer environment.
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
